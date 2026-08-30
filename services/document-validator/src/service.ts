@@ -1,0 +1,1055 @@
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
+import { constants as fsConstants } from "node:fs";
+import {
+  chmod,
+  lstat,
+  mkdir,
+  mkdtemp,
+  open,
+  realpath,
+  rmdir,
+  unlink,
+  type FileHandle,
+} from "node:fs/promises";
+import {
+  createServer,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
+import { dirname, join, relative, sep } from "node:path";
+import type { Duplex } from "node:stream";
+
+import type { ValidatorConfiguration } from "./config.js";
+import { RunnerFailure, SafeHttpError, safeErrorBody } from "./errors.js";
+import { NULL_LOGGER } from "./logger.js";
+import {
+  SUPPORTED_PDF_VERSIONS,
+  type ExternalDocumentValidationResponse,
+  type MalwareInspection,
+  type PdfInspection,
+  type StructuredLogger,
+  type ValidatorService,
+  type ValidatorServiceDependencies,
+} from "./types.js";
+
+const SHA256_PATTERN = /^[a-f0-9]{64}$/;
+const SAFE_IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:+-]*$/;
+const ISO_TIMESTAMP_PATTERN =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+const STORAGE_VERSION_MAX_CHARACTERS = 256;
+const PDF_VERSIONS = new Set<string>(SUPPORTED_PDF_VERSIONS);
+const RUNNER_ABORT_CLEANUP_GRACE_MS = 2_500;
+
+interface ValidatedRequestHeaders {
+  expectedSha256: string;
+  expectedSizeBytes: number;
+  storageVersion: string;
+}
+
+interface PrivateRequestFile {
+  directoryPath: string;
+  filePath: string;
+  handle: FileHandle;
+}
+
+interface CompletedInspection<T> {
+  value: T;
+  completedAt: Date;
+  durationMs: number;
+}
+
+function safeNow(clock: () => Date): Date {
+  const value = clock();
+  if (!(value instanceof Date) || !Number.isFinite(value.getTime())) {
+    throw new RunnerFailure("protocol");
+  }
+  return new Date(value.getTime());
+}
+
+function canonicalDuration(startedAt: number, monotonicClock: () => number, maximum: number): number {
+  const endedAt = monotonicClock();
+  const duration = Math.max(0, Math.round(endedAt - startedAt));
+  if (!Number.isSafeInteger(duration) || duration > maximum) {
+    throw new RunnerFailure("timeout");
+  }
+  return duration;
+}
+
+function exactHeaderCount(request: IncomingMessage, name: string): number {
+  let count = 0;
+  for (let index = 0; index < request.rawHeaders.length; index += 2) {
+    if (request.rawHeaders[index]?.toLowerCase() === name) count += 1;
+  }
+  return count;
+}
+
+function singleHeader(request: IncomingMessage, name: string): string | null {
+  if (exactHeaderCount(request, name) !== 1) return null;
+  const value = request.headers[name];
+  return typeof value === "string" ? value : null;
+}
+
+function authorized(raw: string | null, expectedSecret: string): boolean {
+  const candidate = raw?.startsWith("Bearer ") ? raw.slice(7) : "";
+  const actualDigest = createHash("sha256").update(candidate, "utf8").digest();
+  const expectedDigest = createHash("sha256").update(expectedSecret, "utf8").digest();
+  return candidate.length > 0 && timingSafeEqual(actualDigest, expectedDigest);
+}
+
+function validateHttp11Host(request: IncomingMessage): void {
+  if (
+    request.httpVersion !== "1.1"
+    || exactHeaderCount(request, "host") !== 1
+    || !/^[\x21-\x7e]{1,255}$/.test(singleHeader(request, "host") ?? "")
+  ) {
+    throw new SafeHttpError("invalid_headers");
+  }
+}
+
+function validateHealthRequestHeaders(request: IncomingMessage): void {
+  validateHttp11Host(request);
+  for (const forbidden of ["content-encoding", "transfer-encoding", "expect", "te", "trailer"]) {
+    if (request.headers[forbidden] !== undefined) throw new SafeHttpError("invalid_headers");
+  }
+  const contentLengthCount = exactHeaderCount(request, "content-length");
+  if (
+    contentLengthCount > 1
+    || (contentLengthCount === 1 && singleHeader(request, "content-length") !== "0")
+  ) {
+    throw new SafeHttpError("invalid_headers");
+  }
+}
+
+function validateRequestHeaders(
+  request: IncomingMessage,
+  configuration: ValidatorConfiguration,
+): ValidatedRequestHeaders {
+  validateHttp11Host(request);
+  const allowedPaperPilotHeaders = new Set([
+    "x-paperpilot-content-sha256",
+    "x-paperpilot-storage-version",
+    "x-paperpilot-validation-policy",
+  ]);
+  for (let index = 0; index < request.rawHeaders.length; index += 2) {
+    const name = request.rawHeaders[index]?.toLowerCase();
+    if (name?.startsWith("x-paperpilot-") && !allowedPaperPilotHeaders.has(name)) {
+      throw new SafeHttpError("invalid_headers");
+    }
+  }
+  for (const forbidden of ["content-encoding", "transfer-encoding", "expect", "te", "trailer"]) {
+    if (request.headers[forbidden] !== undefined) throw new SafeHttpError("invalid_headers");
+  }
+
+  if (exactHeaderCount(request, "authorization") !== 1) {
+    throw new SafeHttpError("invalid_headers");
+  }
+  const authorization = singleHeader(request, "authorization");
+  if (!authorized(authorization, configuration.bearerSecret)) {
+    throw new SafeHttpError("unauthorized");
+  }
+  if (singleHeader(request, "content-type")?.toLowerCase() !== "application/pdf") {
+    throw new SafeHttpError("unsupported_media_type");
+  }
+  if (
+    singleHeader(request, "accept")?.toLowerCase() !== "application/json"
+    || singleHeader(request, "cache-control")?.toLowerCase() !== "no-store"
+  ) {
+    throw new SafeHttpError("invalid_headers");
+  }
+
+  const rawLength = singleHeader(request, "content-length");
+  if (rawLength === null || !/^[1-9]\d{0,15}$/.test(rawLength)) {
+    throw new SafeHttpError("invalid_headers");
+  }
+  const expectedSizeBytes = Number(rawLength);
+  if (!Number.isSafeInteger(expectedSizeBytes)) throw new SafeHttpError("invalid_headers");
+  if (expectedSizeBytes > configuration.maxBodyBytes) {
+    throw new SafeHttpError("body_too_large");
+  }
+
+  const expectedSha256 = singleHeader(request, "x-paperpilot-content-sha256");
+  const storageVersion = singleHeader(request, "x-paperpilot-storage-version");
+  const requestedPolicy = singleHeader(request, "x-paperpilot-validation-policy");
+  if (
+    expectedSha256 === null
+    || !SHA256_PATTERN.test(expectedSha256)
+    || storageVersion === null
+    || storageVersion.length > STORAGE_VERSION_MAX_CHARACTERS
+    || !SAFE_IDENTIFIER_PATTERN.test(storageVersion)
+    || requestedPolicy === null
+    || requestedPolicy.length > 128
+    || !SAFE_IDENTIFIER_PATTERN.test(requestedPolicy)
+  ) {
+    throw new SafeHttpError("invalid_headers");
+  }
+  if (requestedPolicy !== configuration.policyVersion) {
+    throw new SafeHttpError("policy_mismatch");
+  }
+  return { expectedSha256, expectedSizeBytes, storageVersion };
+}
+
+function securePathInside(parent: string, candidate: string): boolean {
+  const pathFromParent = relative(parent, candidate);
+  return pathFromParent !== ""
+    && pathFromParent !== ".."
+    && !pathFromParent.startsWith(`..${sep}`);
+}
+
+async function prepareTemporaryRoot(
+  root: string,
+  production: boolean | undefined,
+  unsafeWindowsDevelopment: boolean | undefined,
+): Promise<void> {
+  if (process.platform === "win32" && (production === true || unsafeWindowsDevelopment !== true)) {
+    throw new Error(
+      "Windows validation requires private DACL support that is not implemented.",
+    );
+  }
+  const created = await mkdir(root, { recursive: true, mode: 0o700 });
+  if (created !== undefined && process.platform !== "win32") await chmod(root, 0o700);
+  const info = await lstat(root);
+  if (!info.isDirectory() || info.isSymbolicLink()) {
+    throw new Error("The validator temporary root is not a private directory.");
+  }
+  const canonical = await realpath(root);
+  const same = process.platform === "win32"
+    ? canonical.toLowerCase() === root.toLowerCase()
+    : canonical === root;
+  if (!same) throw new Error("The validator temporary root must not be an alias.");
+  if (process.platform !== "win32" && (info.mode & 0o077) !== 0) {
+    throw new Error("The validator temporary root grants group or world access.");
+  }
+}
+
+async function createPrivateRequestFile(root: string): Promise<PrivateRequestFile> {
+  const directoryPath = await mkdtemp(join(root, "request-"));
+  const filePath = join(directoryPath, "input.pdf");
+  let handle: FileHandle | null = null;
+  try {
+    if (!securePathInside(root, directoryPath)) {
+      throw new Error("The private request directory escaped its root.");
+    }
+    if (process.platform !== "win32") await chmod(directoryPath, 0o700);
+    const noFollow = process.platform === "win32" ? 0 : fsConstants.O_NOFOLLOW;
+    handle = await open(
+      filePath,
+      fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY | noFollow,
+      0o600,
+    );
+    const info = await handle.stat();
+    if (!info.isFile() || info.nlink !== 1 || (process.platform !== "win32" && (info.mode & 0o077) !== 0)) {
+      throw new Error("The private request file was not secure.");
+    }
+    return { directoryPath, filePath, handle };
+  } catch (error) {
+    await handle?.close().catch(() => undefined);
+    await unlink(filePath).catch(() => undefined);
+    await rmdir(directoryPath).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function cleanupPrivateRequestFile(
+  root: string,
+  file: Omit<PrivateRequestFile, "handle">,
+): Promise<boolean> {
+  if (
+    !securePathInside(root, file.directoryPath)
+    || dirname(file.filePath) !== file.directoryPath
+    || !securePathInside(file.directoryPath, file.filePath)
+  ) {
+    return false;
+  }
+  try {
+    await unlink(file.filePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
+  }
+  try {
+    await rmdir(file.directoryPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
+  }
+  return true;
+}
+
+async function writeAll(handle: FileHandle, chunk: Buffer): Promise<void> {
+  let offset = 0;
+  while (offset < chunk.byteLength) {
+    const { bytesWritten } = await handle.write(
+      chunk,
+      offset,
+      chunk.byteLength - offset,
+      null,
+    );
+    if (bytesWritten < 1) throw new Error("The private request file could not be written.");
+    offset += bytesWritten;
+  }
+}
+
+async function hashPrivateFile(filePath: string, expectedSizeBytes: number): Promise<string> {
+  const noFollow = process.platform === "win32" ? 0 : fsConstants.O_NOFOLLOW;
+  const handle = await open(filePath, fsConstants.O_RDONLY | noFollow);
+  try {
+    const info = await handle.stat();
+    if (!info.isFile() || info.nlink !== 1 || info.size !== expectedSizeBytes) {
+      throw new RunnerFailure("tool");
+    }
+    const hash = createHash("sha256");
+    let position = 0;
+    while (position < expectedSizeBytes) {
+      const length = Math.min(256 * 1_024, expectedSizeBytes - position);
+      const buffer = Buffer.allocUnsafe(length);
+      const { bytesRead } = await handle.read(buffer, 0, length, position);
+      if (bytesRead !== length) throw new RunnerFailure("tool");
+      hash.update(buffer);
+      position += bytesRead;
+    }
+    return hash.digest("hex");
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
+}
+
+async function receiveRequestBody(input: {
+  request: IncomingMessage;
+  handle: FileHandle;
+  expectedSizeBytes: number;
+  idleTimeoutMs: number;
+  absoluteTimeoutMs: number;
+  signal: AbortSignal;
+}): Promise<string> {
+  if (input.signal.aborted) throw new SafeHttpError("body_incomplete");
+  return new Promise<string>((resolvePromise, rejectPromise) => {
+    const hash = createHash("sha256");
+    let receivedBytes = 0;
+    let ended = false;
+    let settled = false;
+    let pendingWrite = Promise.resolve();
+    let idleTimer: NodeJS.Timeout;
+
+    const cleanup = () => {
+      clearTimeout(idleTimer);
+      clearTimeout(absoluteTimer);
+      input.signal.removeEventListener("abort", onSignalAbort);
+      input.request.removeListener("data", onData);
+      input.request.removeListener("end", onEnd);
+      input.request.removeListener("aborted", onAborted);
+      input.request.removeListener("error", onError);
+      input.request.removeListener("close", onClose);
+    };
+    const fail = (error: SafeHttpError) => {
+      if (settled) return;
+      settled = true;
+      input.request.pause();
+      cleanup();
+      rejectPromise(error);
+    };
+    const startIdleTimer = () => {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => fail(new SafeHttpError("body_timeout")), input.idleTimeoutMs);
+      idleTimer.unref?.();
+    };
+    const onData = (rawChunk: Buffer | string) => {
+      if (settled) return;
+      input.request.pause();
+      clearTimeout(idleTimer);
+      if (!Buffer.isBuffer(rawChunk)) {
+        fail(new SafeHttpError("body_incomplete"));
+        return;
+      }
+      receivedBytes += rawChunk.byteLength;
+      if (receivedBytes > input.expectedSizeBytes) {
+        fail(new SafeHttpError("body_too_large"));
+        return;
+      }
+      hash.update(rawChunk);
+      pendingWrite = pendingWrite.then(() => writeAll(input.handle, rawChunk));
+      void pendingWrite.then(() => {
+        if (!settled && !ended) {
+          startIdleTimer();
+          input.request.resume();
+        }
+      }).catch(() => fail(new SafeHttpError("internal_error")));
+    };
+    const onEnd = () => {
+      ended = true;
+      clearTimeout(idleTimer);
+      void pendingWrite.then(async () => {
+        if (settled) return;
+        if (
+          receivedBytes !== input.expectedSizeBytes
+          || !input.request.complete
+        ) {
+          fail(new SafeHttpError("body_incomplete"));
+          return;
+        }
+        await input.handle.sync();
+        settled = true;
+        cleanup();
+        resolvePromise(hash.digest("hex"));
+      }).catch(() => fail(new SafeHttpError("internal_error")));
+    };
+    const onAborted = () => fail(new SafeHttpError("body_incomplete"));
+    const onError = () => fail(new SafeHttpError("body_incomplete"));
+    const onClose = () => {
+      if (!ended) fail(new SafeHttpError("body_incomplete"));
+    };
+    const onSignalAbort = () => fail(new SafeHttpError("body_incomplete"));
+    const absoluteTimer = setTimeout(
+      () => fail(new SafeHttpError("body_timeout")),
+      input.absoluteTimeoutMs,
+    );
+    absoluteTimer.unref?.();
+    input.signal.addEventListener("abort", onSignalAbort, { once: true });
+    input.request.on("data", onData);
+    input.request.once("end", onEnd);
+    input.request.once("aborted", onAborted);
+    input.request.once("error", onError);
+    input.request.once("close", onClose);
+    startIdleTimer();
+    input.request.resume();
+  });
+}
+
+function validateMalwareInspection(value: MalwareInspection): void {
+  const signatureDate = new Date(value.signaturePublishedAt);
+  if (
+    (value.verdict !== "clean" && value.verdict !== "infected")
+    || !SAFE_IDENTIFIER_PATTERN.test(value.engine)
+    || value.engine.length > 64
+    || !SAFE_IDENTIFIER_PATTERN.test(value.engineVersion)
+    || value.engineVersion.length > 128
+    || !SAFE_IDENTIFIER_PATTERN.test(value.signatureVersion)
+    || value.signatureVersion.length > 128
+    || !ISO_TIMESTAMP_PATTERN.test(value.signaturePublishedAt)
+    || !Number.isFinite(signatureDate.getTime())
+    || signatureDate.toISOString() !== value.signaturePublishedAt
+    || !Number.isSafeInteger(value.detectionCount)
+    || value.detectionCount < 0
+    || value.detectionCount > 128
+    || (value.verdict === "clean" && value.detectionCount !== 0)
+    || (value.verdict === "infected" && value.detectionCount < 1)
+  ) {
+    throw new RunnerFailure("protocol");
+  }
+}
+
+function validatePdfInspection(value: PdfInspection): void {
+  const validStructure = value.outcome === "valid" || value.outcome === "policy_violation";
+  if (
+    (
+      value.outcome !== "valid"
+      && value.outcome !== "invalid"
+      && value.outcome !== "policy_violation"
+      && value.outcome !== "resource_limit"
+    )
+    || !SAFE_IDENTIFIER_PATTERN.test(value.engine)
+    || value.engine.length > 64
+    || !SAFE_IDENTIFIER_PATTERN.test(value.engineVersion)
+    || value.engineVersion.length > 128
+    || (value.pdfVersion !== "unknown" && !PDF_VERSIONS.has(value.pdfVersion))
+    || (value.pageCount !== null && (!Number.isSafeInteger(value.pageCount) || value.pageCount < 1 || value.pageCount > 100_000))
+    || (value.objectCount !== null && (!Number.isSafeInteger(value.objectCount) || value.objectCount < 1 || value.objectCount > 10_000_000))
+    || (value.revisionCount !== null && (!Number.isSafeInteger(value.revisionCount) || value.revisionCount < 1 || value.revisionCount > 10_000))
+    || !Number.isSafeInteger(value.warningCount)
+    || value.warningCount < 0
+    || value.warningCount > 10_000
+    || (validStructure && (
+      value.pdfVersion === "unknown"
+      || value.pageCount === null
+      || value.objectCount === null
+      || value.revisionCount === null
+      || value.warningCount !== 0
+    ))
+  ) {
+    throw new RunnerFailure("protocol");
+  }
+}
+
+function abortable<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(new RunnerFailure("aborted"));
+  return new Promise<T>((resolvePromise, rejectPromise) => {
+    let aborted = false;
+    let cleanupGrace: NodeJS.Timeout | undefined;
+    const abort = () => {
+      if (aborted) return;
+      aborted = true;
+      // Give a signal-aware runner enough time to reap its subprocess tree
+      // before the request file is unlinked (important on Windows). A runner
+      // that violates the interface still cannot hold the HTTP request forever.
+      cleanupGrace = setTimeout(
+        () => rejectPromise(new RunnerFailure("aborted")),
+        RUNNER_ABORT_CLEANUP_GRACE_MS,
+      );
+      cleanupGrace.unref?.();
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    void operation.then(
+      (value) => {
+        if (aborted) rejectPromise(new RunnerFailure("aborted"));
+        else resolvePromise(value);
+      },
+      (error: unknown) => {
+        if (aborted) rejectPromise(new RunnerFailure("aborted"));
+        else rejectPromise(error);
+      },
+    ).finally(() => {
+      if (cleanupGrace !== undefined) clearTimeout(cleanupGrace);
+      signal.removeEventListener("abort", abort);
+    });
+  });
+}
+
+async function inspectWithTiming<T>(input: {
+  operation: () => Promise<T>;
+  validate: (value: T) => void;
+  clock: () => Date;
+  monotonicClock: () => number;
+  maximumDurationMs: number;
+  signal: AbortSignal;
+}): Promise<CompletedInspection<T>> {
+  const startedAt = input.monotonicClock();
+  const value = await abortable(input.operation(), input.signal);
+  input.validate(value);
+  return {
+    value,
+    completedAt: safeNow(input.clock),
+    durationMs: canonicalDuration(startedAt, input.monotonicClock, input.maximumDurationMs),
+  };
+}
+
+function chronologyIsValid(earlier: Date, later: Date): boolean {
+  return earlier.getTime() <= later.getTime();
+}
+
+async function validateFile(input: {
+  filePath: string;
+  expectedSha256: string;
+  expectedSizeBytes: number;
+  storageVersion: string;
+  configuration: ValidatorConfiguration;
+  dependencies: ValidatorServiceDependencies;
+  signal: AbortSignal;
+}): Promise<ExternalDocumentValidationResponse> {
+  const clock = input.dependencies.clock ?? (() => new Date());
+  const monotonicClock = input.dependencies.monotonicClock ?? (() => performance.now());
+  const totalStartedAt = monotonicClock();
+
+  // Deliberately sequential: the persisted contract requires malware scan time
+  // <= PDF check time, and an infected file still needs a structural verdict to
+  // select the only allowed combined rejection code.
+  const malware = await inspectWithTiming({
+    operation: () => input.dependencies.malwareRunner.inspect(input.filePath, input.signal),
+    validate: validateMalwareInspection,
+    clock,
+    monotonicClock,
+    maximumDurationMs: input.configuration.validationTimeoutMs,
+    signal: input.signal,
+  });
+  const signaturePublishedAt = new Date(malware.value.signaturePublishedAt);
+  if (!chronologyIsValid(signaturePublishedAt, malware.completedAt)) {
+    throw new RunnerFailure("protocol");
+  }
+
+  const pdf = await inspectWithTiming({
+    operation: () => input.dependencies.pdfRunner.inspect(input.filePath, input.signal),
+    validate: validatePdfInspection,
+    clock,
+    monotonicClock,
+    maximumDurationMs: input.configuration.validationTimeoutMs,
+    signal: input.signal,
+  });
+  if (!chronologyIsValid(malware.completedAt, pdf.completedAt)) {
+    throw new RunnerFailure("protocol");
+  }
+  const completedAt = safeNow(clock);
+  if (!chronologyIsValid(pdf.completedAt, completedAt)) {
+    throw new RunnerFailure("protocol");
+  }
+  const totalDurationMs = canonicalDuration(
+    totalStartedAt,
+    monotonicClock,
+    input.configuration.validationTimeoutMs,
+  );
+  if (totalDurationMs < malware.durationMs || totalDurationMs < pdf.durationMs) {
+    throw new RunnerFailure("protocol");
+  }
+
+  const pdfStructurallyValid = pdf.value.outcome === "valid"
+    || pdf.value.outcome === "policy_violation";
+  const exceedsPolicy = pdfStructurallyValid && (
+    (pdf.value.pageCount !== null && pdf.value.pageCount > input.configuration.maxPageCount)
+    || (pdf.value.objectCount !== null && pdf.value.objectCount > input.configuration.maxObjectCount)
+    || (pdf.value.revisionCount !== null && pdf.value.revisionCount > input.configuration.maxRevisionCount)
+  );
+  const pdfPolicyViolation = pdf.value.outcome === "policy_violation" || exceedsPolicy;
+  const infected = malware.value.verdict === "infected";
+
+  let verdict: "accepted" | "rejected";
+  let rejectionCode: ExternalDocumentValidationResponse["rejectionCode"];
+  if (!infected && pdfStructurallyValid && !pdfPolicyViolation) {
+    verdict = "accepted";
+    rejectionCode = null;
+  } else if (infected && !pdfStructurallyValid) {
+    verdict = "rejected";
+    rejectionCode = "malware_and_pdf_invalid";
+  } else if (infected) {
+    verdict = "rejected";
+    rejectionCode = "malware_detected";
+  } else if (pdfPolicyViolation) {
+    verdict = "rejected";
+    rejectionCode = "pdf_policy_violation";
+  } else {
+    verdict = "rejected";
+    rejectionCode = pdf.value.outcome === "resource_limit"
+      ? "pdf_resource_limit_exceeded"
+      : "pdf_invalid";
+  }
+
+  return {
+    schemaVersion: 1,
+    policyVersion: input.configuration.policyVersion,
+    storageVersion: input.storageVersion,
+    toolchainDigest: input.configuration.toolchainDigest,
+    verdict,
+    rejectionCode,
+    input: {
+      sha256: input.expectedSha256,
+      sizeBytes: String(input.expectedSizeBytes),
+    },
+    malware: {
+      verdict: malware.value.verdict,
+      engine: malware.value.engine,
+      engineVersion: malware.value.engineVersion,
+      signatureVersion: malware.value.signatureVersion,
+      signaturePublishedAt: malware.value.signaturePublishedAt,
+      scannedAt: malware.completedAt.toISOString(),
+      detectionCount: malware.value.detectionCount,
+      durationMs: malware.durationMs,
+    },
+    pdf: {
+      structuralVerdict: pdfStructurallyValid ? "valid" : "invalid",
+      engine: pdf.value.engine,
+      engineVersion: pdf.value.engineVersion,
+      pdfVersion: pdf.value.pdfVersion,
+      pageCount: pdf.value.pageCount,
+      objectCount: pdf.value.objectCount,
+      revisionCount: pdf.value.revisionCount,
+      warningCount: pdf.value.warningCount,
+      checkedAt: pdf.completedAt.toISOString(),
+      durationMs: pdf.durationMs,
+    },
+    completedAt: completedAt.toISOString(),
+    totalDurationMs,
+  };
+}
+
+function writeJsonResponse(
+  response: ServerResponse,
+  status: number,
+  body: string,
+  options: { close?: boolean; allow?: string } = {},
+): void {
+  const bytes = Buffer.from(body, "utf8");
+  response.statusCode = status;
+  response.setHeader("Content-Type", "application/json");
+  response.setHeader("Content-Length", String(bytes.byteLength));
+  response.setHeader("Cache-Control", "no-store");
+  response.setHeader("X-Content-Type-Options", "nosniff");
+  if (options.allow !== undefined) response.setHeader("Allow", options.allow);
+  if (options.close) {
+    response.shouldKeepAlive = false;
+    response.setHeader("Connection", "close");
+  }
+  response.end(bytes);
+}
+
+function writeSafeError(
+  request: IncomingMessage,
+  response: ServerResponse,
+  error: SafeHttpError,
+  close: boolean,
+  allow?: string,
+): void {
+  writeJsonResponse(response, error.status, safeErrorBody(error), {
+    close,
+    ...(allow === undefined ? {} : { allow }),
+  });
+  if (close && !request.complete) {
+    response.once("finish", () => request.destroy());
+  }
+}
+
+function endSocketWithSafeError(
+  socket: Duplex,
+  status: number,
+  statusText: string,
+  error: SafeHttpError,
+): void {
+  if (!socket.writable) return;
+  const body = safeErrorBody(error);
+  socket.end(
+    `HTTP/1.1 ${status} ${statusText}\r\nConnection: close\r\nContent-Type: application/json\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`,
+  );
+}
+
+function routeFor(url: string | undefined, validationRoute: string): "validate" | "livez" | "readyz" | "unknown" {
+  if (url === validationRoute) return "validate";
+  if (url === "/livez") return "livez";
+  if (url === "/readyz") return "readyz";
+  return "unknown";
+}
+
+export function createDocumentValidatorService(
+  configuration: ValidatorConfiguration,
+  dependencies: ValidatorServiceDependencies,
+): ValidatorService {
+  const logger: StructuredLogger = dependencies.logger ?? NULL_LOGGER;
+  let activeValidations = 0;
+  let listening = false;
+  let starting = false;
+  let permanentlyClosed = false;
+  let shuttingDown = false;
+  let tempRootPrepared = false;
+  let startOperation: Promise<{ address: string; port: number }> | null = null;
+  let closeOperation: Promise<void> | null = null;
+  let readiness: { checkedAt: number; ready: boolean } | null = null;
+  let readinessPromise: Promise<boolean> | null = null;
+  const activeControllers = new Set<AbortController>();
+
+  const checkReadiness = async (): Promise<boolean> => {
+    if (shuttingDown || !tempRootPrepared) return false;
+    const now = Date.now();
+    if (readiness !== null && now - readiness.checkedAt <= configuration.readinessCacheMs) {
+      return readiness.ready;
+    }
+    if (readinessPromise !== null) return readinessPromise;
+    readinessPromise = (async () => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), configuration.readinessTimeoutMs);
+      timeout.unref?.();
+      try {
+        await Promise.all([
+          abortable(dependencies.malwareRunner.ready(controller.signal), controller.signal),
+          abortable(dependencies.pdfRunner.ready(controller.signal), controller.signal),
+        ]);
+        readiness = { checkedAt: Date.now(), ready: true };
+        return true;
+      } catch {
+        readiness = { checkedAt: Date.now(), ready: false };
+        return false;
+      } finally {
+        clearTimeout(timeout);
+      }
+    })().finally(() => {
+      readinessPromise = null;
+    });
+    return readinessPromise;
+  };
+
+  const handler = async (request: IncomingMessage, response: ServerResponse) => {
+    const requestId = randomUUID();
+    const route = routeFor(request.url, configuration.route);
+    const startedAt = performance.now();
+    let responseStatus = 500;
+    let logCode = "internal_error";
+    try {
+      if (route === "unknown") {
+        throw new SafeHttpError("not_found");
+      }
+      if (request.method !== (route === "validate" ? "POST" : "GET")) {
+        const allow = route === "validate" ? "POST" : "GET";
+        const error = new SafeHttpError("method_not_allowed");
+        responseStatus = error.status;
+        logCode = error.code;
+        writeSafeError(request, response, error, true, allow);
+        return;
+      }
+      if (route !== "validate") validateHealthRequestHeaders(request);
+      if (route === "livez") {
+        responseStatus = 200;
+        logCode = "live";
+        writeJsonResponse(response, 200, '{"status":"live"}');
+        return;
+      }
+      if (route === "readyz") {
+        if (!authorized(singleHeader(request, "authorization"), configuration.bearerSecret)) {
+          throw new SafeHttpError("unauthorized");
+        }
+        if (shuttingDown || activeValidations >= configuration.maxConcurrentValidations) {
+          throw new SafeHttpError("not_ready");
+        }
+        const ready = await checkReadiness();
+        if (
+          !ready
+          || shuttingDown
+          || activeValidations >= configuration.maxConcurrentValidations
+        ) {
+          throw new SafeHttpError("not_ready");
+        }
+        responseStatus = 200;
+        logCode = "ready";
+        writeJsonResponse(response, 200, '{"status":"ready"}');
+        return;
+      }
+      if (shuttingDown) throw new SafeHttpError("validation_unavailable");
+      const headers = validateRequestHeaders(request, configuration);
+      if (activeValidations >= configuration.maxConcurrentValidations) {
+        throw new SafeHttpError("validator_busy");
+      }
+
+      activeValidations += 1;
+      const controller = new AbortController();
+      activeControllers.add(controller);
+      const onResponseClose = () => {
+        if (!response.writableEnded) controller.abort();
+      };
+      response.once("close", onResponseClose);
+      let temporary: PrivateRequestFile | null = null;
+      try {
+        temporary = await createPrivateRequestFile(configuration.tempRoot);
+        const actualSha256 = await receiveRequestBody({
+          request,
+          handle: temporary.handle,
+          expectedSizeBytes: headers.expectedSizeBytes,
+          idleTimeoutMs: configuration.bodyIdleTimeoutMs,
+          absoluteTimeoutMs: configuration.bodyAbsoluteTimeoutMs,
+          signal: controller.signal,
+        });
+        await temporary.handle.close();
+        if (actualSha256 !== headers.expectedSha256) {
+          throw new SafeHttpError("content_mismatch");
+        }
+        if (process.platform !== "win32") await chmod(temporary.filePath, 0o400);
+
+        let validationTimedOut = false;
+        const validationTimer = setTimeout(() => {
+          validationTimedOut = true;
+          controller.abort();
+        }, configuration.validationTimeoutMs);
+        validationTimer.unref?.();
+        let attestation: ExternalDocumentValidationResponse;
+        try {
+          attestation = await validateFile({
+            filePath: temporary.filePath,
+            expectedSha256: headers.expectedSha256,
+            expectedSizeBytes: headers.expectedSizeBytes,
+            storageVersion: headers.storageVersion,
+            configuration,
+            dependencies,
+            signal: controller.signal,
+          });
+          const finalSha256 = await hashPrivateFile(
+            temporary.filePath,
+            headers.expectedSizeBytes,
+          );
+          if (finalSha256 !== headers.expectedSha256) {
+            throw new RunnerFailure("tool");
+          }
+        } catch {
+          if (validationTimedOut) throw new SafeHttpError("validation_unavailable");
+          throw new SafeHttpError("validation_unavailable");
+        } finally {
+          clearTimeout(validationTimer);
+        }
+
+        const body = Buffer.from(JSON.stringify(attestation), "utf8");
+        if (body.byteLength > configuration.maxAttestationBytes) {
+          throw new SafeHttpError("internal_error");
+        }
+        // Delete hostile bytes before making the attestation visible. The
+        // finally block remains a crash/error fallback for every earlier path.
+        if (!await cleanupPrivateRequestFile(configuration.tempRoot, temporary)) {
+          throw new SafeHttpError("internal_error");
+        }
+        temporary = null;
+        responseStatus = 200;
+        logCode = attestation.verdict;
+        writeJsonResponse(response, 200, body.toString("utf8"));
+        logger.info("validation_completed", {
+          requestId,
+          route,
+          status: 200,
+          sizeBytes: headers.expectedSizeBytes,
+          malwareVerdict: attestation.malware.verdict,
+          pdfVerdict: attestation.pdf.structuralVerdict,
+          verdict: attestation.verdict,
+          durationMs: Math.max(0, Math.round(performance.now() - startedAt)),
+        });
+      } finally {
+        response.removeListener("close", onResponseClose);
+        controller.abort();
+        activeControllers.delete(controller);
+        activeValidations -= 1;
+        if (temporary !== null) {
+          await temporary.handle.close().catch(() => undefined);
+          const cleaned = await cleanupPrivateRequestFile(configuration.tempRoot, temporary);
+          if (!cleaned) {
+            logger.error("temporary_cleanup_failed", {
+              requestId,
+              route,
+              code: "temporary_cleanup_failed",
+            });
+          }
+        }
+      }
+    } catch (caught) {
+      const error = caught instanceof SafeHttpError
+        ? caught
+        : new SafeHttpError("internal_error");
+      responseStatus = error.status;
+      logCode = error.code;
+      if (!response.headersSent && !response.destroyed) {
+        // Errors never reuse the connection. Many failures occur before the
+        // body is admitted or consumed; closing prevents unread bytes from
+        // becoming ambiguous state for a subsequent request on this socket.
+        writeSafeError(request, response, error, true);
+      }
+      if (error.status < 500) {
+        logger.warn("request_rejected", {
+          requestId,
+          route,
+          method: request.method ?? "UNKNOWN",
+          status: error.status,
+          code: error.code,
+          durationMs: Math.max(0, Math.round(performance.now() - startedAt)),
+        });
+      }
+    } finally {
+      if (responseStatus >= 500) {
+        logger.error("request_failed", {
+          requestId,
+          route,
+          status: responseStatus,
+          code: logCode,
+          durationMs: Math.max(0, Math.round(performance.now() - startedAt)),
+        });
+      }
+    }
+  };
+
+  const server = createServer({
+    maxHeaderSize: configuration.maxHeaderBytes,
+    headersTimeout: Math.min(10_000, configuration.bodyAbsoluteTimeoutMs),
+    requestTimeout: configuration.bodyAbsoluteTimeoutMs + 2_000,
+    keepAliveTimeout: 5_000,
+    connectionsCheckingInterval: 1_000,
+  }, (request, response) => {
+    void handler(request, response);
+  });
+  server.maxHeadersCount = 64;
+  server.maxRequestsPerSocket = configuration.maxRequestsPerSocket;
+  server.maxConnections = configuration.maxConcurrentValidations * 8 + 16;
+  server.on("checkContinue", (request, response) => {
+    writeSafeError(request, response, new SafeHttpError("invalid_headers"), true);
+  });
+  server.on("checkExpectation", (request, response) => {
+    writeSafeError(request, response, new SafeHttpError("invalid_headers"), true);
+  });
+  server.on("clientError", (_error, socket) => {
+    endSocketWithSafeError(
+      socket,
+      400,
+      "Bad Request",
+      new SafeHttpError("invalid_headers"),
+    );
+  });
+  server.on("upgrade", (_request, socket) => {
+    endSocketWithSafeError(
+      socket,
+      400,
+      "Bad Request",
+      new SafeHttpError("invalid_headers"),
+    );
+  });
+  server.on("dropRequest", (_request, socket) => {
+    endSocketWithSafeError(
+      socket,
+      503,
+      "Service Unavailable",
+      new SafeHttpError("validator_busy"),
+    );
+  });
+
+  return {
+    server,
+    async listen() {
+      if (listening || starting || permanentlyClosed) {
+        throw new Error("The validator service cannot be started in its current lifecycle state.");
+      }
+      starting = true;
+      startOperation = (async () => {
+        try {
+          await prepareTemporaryRoot(
+            configuration.tempRoot,
+            configuration.production,
+            configuration.unsafeWindowsDevelopment,
+          );
+          await new Promise<void>((resolvePromise, rejectPromise) => {
+            const onError = (error: Error) => {
+              server.removeListener("listening", onListening);
+              rejectPromise(error);
+            };
+            const onListening = () => {
+              server.removeListener("error", onError);
+              resolvePromise();
+            };
+            server.once("error", onError);
+            server.once("listening", onListening);
+            server.listen(configuration.port, configuration.host);
+          });
+          if (permanentlyClosed) {
+            throw new Error("The validator service was closed while starting.");
+          }
+          const address = server.address();
+          if (address === null || typeof address === "string") {
+            throw new Error("The validator service did not bind a TCP address.");
+          }
+          tempRootPrepared = true;
+          listening = true;
+          logger.info("service_listening", { status: 200 });
+          return { address: address.address, port: address.port };
+        } catch (error) {
+          tempRootPrepared = false;
+          if (server.listening) {
+            await new Promise<void>((resolvePromise) => server.close(() => resolvePromise()));
+          }
+          throw error;
+        } finally {
+          starting = false;
+        }
+      })();
+      try {
+        return await startOperation;
+      } finally {
+        startOperation = null;
+      }
+    },
+    async close() {
+      if (closeOperation !== null) return closeOperation;
+      permanentlyClosed = true;
+      shuttingDown = true;
+      closeOperation = (async () => {
+        if (startOperation !== null) await startOperation.catch(() => undefined);
+        if (!listening && !server.listening) return;
+        server.closeIdleConnections?.();
+        await new Promise<void>((resolvePromise) => {
+          const force = setTimeout(() => {
+            for (const controller of activeControllers) controller.abort();
+            server.closeAllConnections?.();
+          }, configuration.gracefulShutdownMs);
+          force.unref?.();
+          server.close(() => {
+            clearTimeout(force);
+            resolvePromise();
+          });
+        });
+        listening = false;
+        tempRootPrepared = false;
+        logger.info("service_stopped", { status: 200 });
+      })();
+      return closeOperation;
+    },
+  };
+}

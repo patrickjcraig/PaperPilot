@@ -1,0 +1,13 @@
+# This Dockerfile is built from the repository root. Default-deny the context
+# so local .env files, quarantine objects, database files, and unrelated source
+# never become build inputs or image-cache material.
+**
+!services/
+!services/document-validator/
+!services/document-validator/package.json
+!services/document-validator/package-lock.json
+!services/document-validator/tsconfig.json
+!services/document-validator/src/
+!services/document-validator/src/**
+!services/document-validator/wrappers/
+!services/document-validator/wrappers/**

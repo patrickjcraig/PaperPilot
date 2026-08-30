@@ -1,0 +1,9 @@
+* text=auto
+
+# Migration checksums and PostgreSQL function-body authority hashes operate on
+# exact bytes. Keep every release input and reviewed authority contract stable
+# across Windows and Linux checkouts.
+prisma/migrations/**/migration.sql text eol=lf
+deploy/postgres/*.sql text eol=lf
+deploy/postgres/*.json text eol=lf
+scripts/postgres/*.mjs text eol=lf

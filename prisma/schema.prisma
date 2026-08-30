@@ -1,0 +1,2392 @@
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "esm"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// Better Auth core and organization-plugin models. Model and field names are
+// intentionally left unmapped so the Prisma adapter can resolve them directly.
+
+model User {
+  id            String   @id @default(cuid())
+  name          String
+  email         String   @unique
+  emailVerified Boolean  @default(false)
+  image         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  sessions                  Session[]
+  accounts                  Account[]
+  memberships               Member[]
+  invitationsSent           Invitation[]              @relation("InvitationInviter")
+  teamMemberships           TeamMember[]
+  workspacePapersAdded      WorkspacePaper[]          @relation("WorkspacePaperAddedBy")
+  projectsCreated           Project[]                 @relation("ProjectCreatedBy")
+  projectPapersAdded        ProjectPaper[]            @relation("ProjectPaperAddedBy")
+  importBatchesRequested    ImportBatch[]             @relation("ImportBatchRequestedBy")
+  inboxEntriesCreated       InboxEntry[]              @relation("InboxEntryCreatedBy")
+  provenanceRecordsCreated  ProvenanceRecord[]        @relation("ProvenanceActor")
+  evidenceNotesCreated      EvidenceNote[]            @relation("EvidenceNoteCreatedBy")
+  collectionsCreated        Collection[]              @relation("CollectionCreatedBy")
+  integrationsCreated       IntegrationConnection[]   @relation("IntegrationCreatedBy")
+  jobsCreated               Job[]                     @relation("JobCreatedBy")
+  auditEvents               AuditEvent[]              @relation("AuditActor")
+  assetsCreated             Asset[]                   @relation("AssetCreatedBy")
+  uploadSessionsCreated     UploadSession[]           @relation("UploadSessionCreatedBy")
+  documentIntakesCreated    DocumentIntake[]          @relation("DocumentIntakeCreatedBy")
+  ingestReceiptsRequested   DocumentIngestReceipt[]   @relation("DocumentIngestRequestedBy")
+  zoteroPoliciesConfigured  ZoteroAttachmentPolicy[]  @relation("ZoteroAttachmentPolicyConfiguredBy")
+  zoteroImportsRequested    ZoteroAttachmentImport[]  @relation("ZoteroAttachmentImportRequestedBy")
+  crawlerImportsRequested   CrawlerImport[]           @relation("CrawlerImportRequestedBy")
+  crawlerDeletionsRequested CrawlerImport[]           @relation("CrawlerImportDeletionRequestedBy")
+  webMcpApprovals           WebMcpProposalApproval[]  @relation("WebMcpProposalApprovalActor")
+  webMcpApprovalChallenges  WebMcpApprovalChallenge[] @relation("WebMcpApprovalChallengeActor")
+  retainedAuditPrincipals   RetainedAuditPrincipal[]  @relation("RetainedAuditPrincipalLiveUser")
+  idempotencyRecords        IdempotencyRecord[]       @relation("IdempotencyActor")
+}
+
+model Session {
+  id                   String   @id @default(cuid())
+  expiresAt            DateTime
+  token                String   @unique
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+  ipAddress            String?
+  userAgent            String?
+  userId               String
+  activeOrganizationId String?
+  activeTeamId         String?
+
+  user               User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  activeOrganization Organization? @relation("ActiveOrganizationSessions", fields: [activeOrganizationId], references: [id], onDelete: SetNull)
+  activeTeam         Team?         @relation("ActiveTeamSessions", fields: [activeTeamId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([activeOrganizationId])
+  @@index([activeTeamId])
+  @@index([expiresAt])
+}
+
+model Account {
+  id                    String    @id @default(cuid())
+  issuer                String
+  accountId             String
+  providerId            String
+  userId                String
+  accessToken           String?   @db.Text
+  refreshToken          String?   @db.Text
+  idToken               String?   @db.Text
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([issuer, accountId])
+  @@index([userId])
+  @@index([providerId])
+}
+
+model Verification {
+  id         String   @id @default(cuid())
+  identifier String
+  value      String   @db.Text
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([identifier])
+  @@index([expiresAt])
+}
+
+// Better Auth 1.7.2's database-backed rate limiter addresses this model as
+// `rateLimit`. `lastRequest` is an epoch-millisecond integer, not a DateTime.
+model RateLimit {
+  id          String @id @default(cuid())
+  key         String @unique
+  count       Int
+  lastRequest BigInt
+
+  @@index([lastRequest])
+}
+
+// Application request budgets are intentionally isolated from Better Auth's
+// table because Better Auth prunes rows according to its own (shorter) auth
+// windows. State is algorithm-specific and is mutated only while holding the
+// PostgreSQL advisory lock derived from `key`.
+model RateLimitBucket {
+  key       String   @id @db.VarChar(191)
+  policy    String   @db.VarChar(100)
+  state     Json
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([expiresAt])
+}
+
+model Organization {
+  id              String   @id @default(cuid())
+  name            String
+  slug            String   @unique
+  logo            String?
+  metadata        String?  @db.Text
+  revision        Int      @default(0)
+  kind            String   @default("PERSONAL")
+  personalOwnerId String?  @unique
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @default(now()) @updatedAt
+
+  activeSessions           Session[]                       @relation("ActiveOrganizationSessions")
+  members                  Member[]
+  invitations              Invitation[]
+  teams                    Team[]
+  roles                    OrganizationRole[]
+  workspacePapers          WorkspacePaper[]
+  projects                 Project[]
+  projectPapers            ProjectPaper[]
+  importBatches            ImportBatch[]
+  inboxEntries             InboxEntry[]
+  provenanceRecords        ProvenanceRecord[]
+  evidenceNotes            EvidenceNote[]
+  evidenceTextAnchors      EvidenceTextAnchor[]
+  projectEvidenceNotes     ProjectEvidenceNote[]
+  collections              Collection[]
+  collectionPapers         CollectionPaper[]
+  collectionEvidence       CollectionEvidenceNote[]
+  integrations             IntegrationConnection[]
+  zoteroLibraries          ZoteroLibrary[]
+  zoteroObjects            ZoteroObject[]
+  zoteroSyncRuns           ZoteroSyncRun[]
+  zoteroSyncStages         ZoteroSyncStage[]
+  jobs                     Job[]
+  jobAttempts              JobAttempt[]
+  auditEvents              AuditEvent[]
+  documents                Document[]
+  documentAssets           DocumentAsset[]
+  documentTextChunks       DocumentTextChunk[]
+  assets                   Asset[]
+  uploadSessions           UploadSession[]
+  uploadAttempts           UploadAttempt[]
+  documentIntakes          DocumentIntake[]
+  documentIngressAttempts  DocumentIngressAttempt[]
+  documentIngestReceipts   DocumentIngestReceipt[]
+  zoteroAttachments        ZoteroAttachment[]
+  zoteroAttachmentPolicies ZoteroAttachmentPolicy[]
+  zoteroAttachmentImports  ZoteroAttachmentImport[]
+  crawlerImports           CrawlerImport[]
+  validationAttestations   DocumentValidationAttestation[]
+  textExtractions          DocumentTextExtraction[]
+  webMcpApprovals          WebMcpProposalApproval[]
+  webMcpApprovalChallenges WebMcpApprovalChallenge[]
+  retainedAuditPrincipals  RetainedAuditPrincipal[]
+  idempotencyRecords       IdempotencyRecord[]
+}
+
+// Stable, tenant-scoped authority identity. It deliberately stores no human
+// profile data: account erasure severs liveUserId while retained authority rows
+// continue to reference the random principal ID.
+model RetainedAuditPrincipal {
+  id              String    @id @default(uuid()) @db.Uuid
+  organizationId  String
+  liveUserId      String?
+  createdAt       DateTime  @default(now())
+  pseudonymizedAt DateTime?
+
+  organization       Organization             @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  liveUser           User?                    @relation("RetainedAuditPrincipalLiveUser", fields: [liveUserId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  webMcpInboxEntries InboxEntry[]             @relation("InboxEntryRetainedCreator")
+  provenanceRecords  ProvenanceRecord[]       @relation("ProvenanceRetainedActor")
+  webMcpApprovals    WebMcpProposalApproval[] @relation("WebMcpApprovalRetainedActor")
+  auditEvents        AuditEvent[]             @relation("AuditRetainedActor")
+  crawlerImports     CrawlerImport[]          @relation("CrawlerImportRetainedRequester")
+  crawlerDeletions   CrawlerImport[]          @relation("CrawlerImportRetainedDeletionRequester")
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, liveUserId])
+  @@index([liveUserId])
+}
+
+// Durable replay protection for every externally visible workspace command.
+// The application stores only a hash of the normalized request payload.
+model IdempotencyRecord {
+  id             String    @id @default(cuid())
+  organizationId String
+  actorUserId    String?
+  key            String
+  command        String
+  requestHash    String
+  response       Json?
+  status         String    @default("IN_PROGRESS")
+  createdAt      DateTime  @default(now())
+  completedAt    DateTime?
+  expiresAt      DateTime
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  actor        User?        @relation("IdempotencyActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@unique([organizationId, key])
+  @@index([organizationId, command, createdAt])
+  @@index([actorUserId])
+  @@index([expiresAt])
+}
+
+model Member {
+  id             String   @id @default(cuid())
+  organizationId String
+  userId         String
+  role           String   @default("member")
+  createdAt      DateTime @default(now())
+
+  organization        Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user                User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  zoteroOAuthAttempts ZoteroOAuthAttempt[]
+
+  @@unique([organizationId, userId])
+  @@index([userId])
+  @@index([organizationId, role])
+}
+
+model Invitation {
+  id             String   @id @default(cuid())
+  organizationId String
+  email          String
+  role           String
+  teamId         String?
+  status         String   @default("pending")
+  expiresAt      DateTime
+  createdAt      DateTime @default(now())
+  inviterId      String
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  inviter      User         @relation("InvitationInviter", fields: [inviterId], references: [id], onDelete: Cascade)
+  team         Team?        @relation(fields: [organizationId, teamId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@index([organizationId])
+  @@index([organizationId, email, status])
+  @@index([email])
+  @@index([inviterId])
+  @@index([teamId])
+  @@index([status, expiresAt])
+}
+
+model Team {
+  id             String   @id @default(cuid())
+  name           String
+  memberCount    Int      @default(0)
+  organizationId String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @default(now()) @updatedAt
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  members        TeamMember[]
+  invitations    Invitation[]
+  activeSessions Session[]    @relation("ActiveTeamSessions")
+
+  @@unique([organizationId, name])
+  @@unique([organizationId, id])
+  @@index([organizationId])
+}
+
+model TeamMember {
+  id            String   @id @default(cuid())
+  teamId        String
+  userId        String
+  membershipKey String?  @unique
+  createdAt     DateTime @default(now())
+
+  team Team @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([teamId, userId])
+  @@index([teamId])
+  @@index([userId])
+}
+
+model OrganizationRole {
+  id             String   @id @default(cuid())
+  organizationId String
+  role           String
+  permission     String   @db.Text
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @default(now()) @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, role])
+  @@index([organizationId])
+  @@index([role])
+}
+
+enum PaperIdentifierType {
+  DOI
+  OPENALEX
+  PMID
+  PMCID
+  ARXIV
+  SEMANTIC_SCHOLAR
+  MAG
+  ISBN
+  ISSN
+  URL
+  OTHER
+}
+
+enum PaperSource {
+  OPENALEX
+  CROSSREF
+  PUBMED
+  ARXIV
+  SEMANTIC_SCHOLAR
+  ZOTERO
+  UPLOAD
+  CRAWLER
+  WEB_MCP
+  MANUAL
+  OTHER
+}
+
+enum WorkspacePaperStatus {
+  INBOX
+  SAVED
+  READING
+  READ
+  ARCHIVED
+}
+
+enum ProjectStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+enum ProjectType {
+  EVIDENCE_MAP
+  LITERATURE_REVIEW
+  SYSTEMATIC_REVIEW
+}
+
+enum ProjectVisibility {
+  PRIVATE
+  WORKSPACE
+}
+
+enum ImportSource {
+  FILE_UPLOAD
+  ZOTERO
+  OPENALEX
+  DOI_URL
+  CRAWLER
+  WEB_MCP
+  MANUAL
+  OTHER
+}
+
+enum ImportBatchStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  PARTIAL
+  FAILED
+  CANCELLED
+}
+
+enum InboxEntryStatus {
+  PENDING
+  MATCHED
+  IMPORTED
+  DUPLICATE
+  NEEDS_REVIEW
+  REJECTED
+  FAILED
+}
+
+enum WebMcpDuplicateDecision {
+  CREATE_NEW
+  USE_EXISTING
+}
+
+enum WebMcpVerificationAuthority {
+  OPENALEX
+  HUMAN_REVIEW
+  EXISTING_CANONICAL
+}
+
+enum ProvenanceKind {
+  DISCOVERY
+  IMPORT
+  METADATA
+  EXTRACTION
+  USER_ASSERTION
+  ZOTERO_SYNC
+  CRAWL
+  WEB_MCP
+  SYSTEM
+}
+
+enum EvidenceKind {
+  CLAIM
+  METHOD
+  RESULT
+  LIMITATION
+  QUOTE
+  QUESTION
+  NOTE
+}
+
+enum EvidenceStatus {
+  CAPTURED
+  NEEDS_VERIFICATION
+  VERIFIED
+  REJECTED
+  SUPERSEDED
+}
+
+enum EvidenceConfidence {
+  HIGH
+  MEDIUM
+  LOW
+  UNSPECIFIED
+}
+
+enum IntegrationProvider {
+  ZOTERO
+  OPENALEX
+  CROSSREF
+  PUBMED
+  ARXIV
+  SEMANTIC_SCHOLAR
+  WEB_CRAWLER
+  WEB_MCP
+  OBJECT_STORAGE
+  OTHER
+}
+
+enum IntegrationAuthType {
+  OAUTH1
+  OAUTH2
+  API_KEY
+  SERVICE_ACCOUNT
+  NONE
+}
+
+enum IntegrationStatus {
+  PENDING
+  CONNECTED
+  DEGRADED
+  REVOKED
+  DISCONNECTED
+}
+
+enum ZoteroOAuthAttemptStatus {
+  PENDING
+  CLAIMED
+  SUCCEEDED
+  FAILED
+  EXPIRED
+}
+
+enum ZoteroLibraryType {
+  USER
+  GROUP
+}
+
+enum ZoteroFileAccessStatus {
+  AVAILABLE
+  UNKNOWN
+  UNAVAILABLE
+}
+
+enum ZoteroAttachmentIngestMode {
+  DISABLED
+  MANUAL
+}
+
+enum ZoteroAttachmentEligibility {
+  DOWNLOADABLE
+  INELIGIBLE
+  MALFORMED
+}
+
+enum ZoteroAttachmentImportStatus {
+  QUEUED
+  DOWNLOADING
+  QUARANTINED
+  VALIDATING
+  EXTRACTING
+  READY
+  ATTENTION
+  FAILED
+  CANCELLED
+}
+
+// First-mode crawler admission is intentionally closed. Broader grants or
+// retention/robots modes require an explicit schema and policy migration.
+enum CrawlerRightsGrant {
+  INDEFINITE_RESEARCH_CUSTODY
+}
+
+enum CrawlerRobotsPolicy {
+  RESPECT_RFC9309
+}
+
+enum CrawlerRetentionPolicy {
+  INDEFINITE_UNTIL_USER_DELETION
+}
+
+enum CrawlerImportStatus {
+  QUEUED
+  FETCHING
+  QUARANTINED
+  VALIDATING
+  EXTRACTING
+  READY
+  ATTENTION
+  FAILED
+  CANCELLED
+}
+
+// Byte custody is deliberately orthogonal to ingestion success/failure. A
+// deletion request can therefore retire a READY paper without rewriting the
+// immutable evidence of how that import completed.
+enum CrawlerCustodyStatus {
+  RETAINED
+  DELETE_PENDING
+  DELETED
+}
+
+// Machine-derived text is retired independently from the original PDF bytes.
+// A supporting generation remains only when deleting it would destroy a
+// user-authored grounded evidence chain.
+enum CrawlerDerivedTextDisposition {
+  NONE
+  PURGED
+  RETAINED_FOR_USER_EVIDENCE
+}
+
+enum ZoteroObjectType {
+  ITEM
+  COLLECTION
+  SAVED_SEARCH
+  FULLTEXT
+  ATTACHMENT
+}
+
+enum SyncDirection {
+  PULL
+  PUSH
+  BIDIRECTIONAL
+}
+
+enum SyncRunStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  PARTIAL
+  FAILED
+  CANCELLED
+  BACKING_OFF
+}
+
+enum JobType {
+  IMPORT_RESOLVE
+  METADATA_REFRESH
+  DOCUMENT_DOWNLOAD
+  DOCUMENT_VALIDATE
+  VIRUS_SCAN
+  TEXT_EXTRACTION
+  ZOTERO_SYNC
+  CRAWL
+  WEB_MCP_IMPORT
+  OTHER
+}
+
+enum JobStatus {
+  QUEUED
+  RUNNING
+  RETRYING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+  DEAD_LETTER
+}
+
+// Every accepted byte source converges on the same immutable custody authority.
+// Source-specific reservations and download attempts remain separate transports.
+enum DocumentIngestSource {
+  BROWSER_UPLOAD
+  ZOTERO_ATTACHMENT
+  CRAWLER
+  WEB_MCP
+}
+
+enum DocumentIntakeStatus {
+  RESERVED
+  QUEUED
+  RECEIVING
+  QUARANTINED
+  VALIDATING
+  EXTRACTING
+  READY
+  ATTENTION
+  FAILED
+  CANCEL_REQUESTED
+  CANCELLED
+}
+
+enum DocumentIngressAttemptStatus {
+  RECEIVING
+  WRITTEN
+  ADOPTED
+  ABANDONED
+  FAILED
+}
+
+enum DocumentKind {
+  PAPER_PDF
+  SUPPLEMENT
+  HTML_SNAPSHOT
+  DATASET
+  NOTE
+  EXPORT
+  OTHER
+}
+
+enum DocumentStatus {
+  PENDING
+  PROCESSING
+  READY
+  FAILED
+  ARCHIVED
+}
+
+enum AssetStorageProvider {
+  LOCAL
+  S3
+  CLOUDFLARE_R2
+  GOOGLE_CLOUD_STORAGE
+  AZURE_BLOB
+  OTHER
+}
+
+enum AssetStatus {
+  UPLOADING
+  QUARANTINED
+  SCANNING
+  READY
+  REJECTED
+  DELETED
+}
+
+enum UploadSessionStatus {
+  ISSUED
+  RECEIVING
+  STORED
+  REJECTED
+  EXPIRED
+}
+
+enum UploadAttemptStatus {
+  RECEIVING
+  WRITTEN
+  COMMITTED
+  FAILED
+  ABANDONED
+}
+
+enum ValidationVerdict {
+  ACCEPTED
+  REJECTED
+}
+
+enum TextExtractionVerdict {
+  EXTRACTED
+  NO_TEXT
+}
+
+enum MalwareVerdict {
+  CLEAN
+  INFECTED
+}
+
+enum PdfStructuralVerdict {
+  VALID
+  INVALID
+}
+
+enum DocumentAssetRole {
+  ORIGINAL
+  NORMALIZED
+  THUMBNAIL
+  PREVIEW
+  EXTRACTED_TEXT
+  SUPPLEMENT
+}
+
+model Paper {
+  id              String       @id @default(cuid())
+  title           String       @db.Text
+  abstractText    String?      @db.Text
+  publicationYear Int?
+  publicationDate DateTime?    @db.Date
+  language        String?
+  workType        String?
+  venueName       String?
+  citationCount   Int?
+  isRetracted     Boolean      @default(false)
+  primarySource   PaperSource?
+  metadata        Json?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  identifiers               PaperIdentifier[]
+  authors                   PaperAuthor[]
+  workspacePapers           WorkspacePaper[]
+  provenanceRecords         ProvenanceRecord[]
+  zoteroObjects             ZoteroObject[]
+  documents                 Document[]
+  webMcpApprovals           WebMcpProposalApproval[]  @relation("WebMcpProposalApprovalCanonicalPaper")
+  webMcpSelections          WebMcpProposalApproval[]  @relation("WebMcpProposalApprovalSelectedPaper")
+  webMcpChallengeSelections WebMcpApprovalChallenge[] @relation("WebMcpApprovalChallengeSelectedPaper")
+
+  @@index([publicationYear])
+  @@index([primarySource])
+  @@index([isRetracted])
+}
+
+model PaperIdentifier {
+  id              String              @id @default(cuid())
+  paperId         String
+  type            PaperIdentifierType
+  value           String
+  normalizedValue String
+  source          PaperSource?
+  createdAt       DateTime            @default(now())
+
+  paper Paper @relation(fields: [paperId], references: [id], onDelete: Cascade)
+
+  @@unique([type, normalizedValue])
+  @@unique([paperId, type, normalizedValue])
+  @@index([paperId])
+}
+
+model PaperAuthor {
+  id              String  @id @default(cuid())
+  paperId         String
+  position        Int
+  displayName     String
+  givenName       String?
+  familyName      String?
+  orcid           String?
+  isCorresponding Boolean @default(false)
+
+  paper Paper @relation(fields: [paperId], references: [id], onDelete: Cascade)
+
+  @@unique([paperId, position])
+  @@index([paperId])
+  @@index([orcid])
+}
+
+model WorkspacePaper {
+  id             String               @id @default(cuid())
+  organizationId String
+  paperId        String
+  status         WorkspacePaperStatus @default(SAVED)
+  priority       Int                  @default(0)
+  isStarred      Boolean              @default(false)
+  addedById      String?
+  addedAt        DateTime             @default(now())
+  lastOpenedAt   DateTime?
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  paper        Paper        @relation(fields: [paperId], references: [id], onDelete: Restrict)
+  addedBy      User?        @relation("WorkspacePaperAddedBy", fields: [addedById], references: [id], onDelete: SetNull)
+
+  projectPapers       ProjectPaper[]
+  inboxEntries        InboxEntry[]
+  provenanceRecords   ProvenanceRecord[]
+  evidenceNotes       EvidenceNote[]
+  evidenceTextAnchors EvidenceTextAnchor[]
+  collectionPapers    CollectionPaper[]
+  zoteroObjects       ZoteroObject[]
+  documents           Document[]
+  webMcpApprovals     WebMcpProposalApproval[]
+
+  @@unique([organizationId, paperId])
+  @@unique([organizationId, id])
+  @@index([organizationId, status])
+  @@index([paperId])
+  @@index([addedById])
+}
+
+model Project {
+  id               String            @id @default(cuid())
+  organizationId   String
+  name             String
+  slug             String
+  description      String?           @db.Text
+  researchQuestion String?           @db.Text
+  type             ProjectType       @default(LITERATURE_REVIEW)
+  visibility       ProjectVisibility @default(PRIVATE)
+  status           ProjectStatus     @default(ACTIVE)
+  createdById      String?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  archivedAt       DateTime?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdBy    User?        @relation("ProjectCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  papers                   ProjectPaper[]
+  inboxEntries             InboxEntry[]
+  evidenceNotes            EvidenceNote[]
+  evidenceMemberships      ProjectEvidenceNote[]
+  collections              Collection[]
+  webMcpApprovals          WebMcpProposalApproval[]
+  webMcpApprovalChallenges WebMcpApprovalChallenge[]
+
+  @@unique([organizationId, slug])
+  @@unique([organizationId, id])
+  @@index([organizationId, status])
+  @@index([createdById])
+}
+
+model ProjectPaper {
+  id               String   @id @default(cuid())
+  organizationId   String
+  projectId        String
+  workspacePaperId String
+  addedById        String?
+  position         Int?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  project        Project        @relation(fields: [organizationId, projectId], references: [organizationId, id], onDelete: Cascade, onUpdate: NoAction)
+  workspacePaper WorkspacePaper @relation(fields: [organizationId, workspacePaperId], references: [organizationId, id], onDelete: Cascade, onUpdate: NoAction)
+  addedBy        User?          @relation("ProjectPaperAddedBy", fields: [addedById], references: [id], onDelete: SetNull)
+
+  @@unique([projectId, workspacePaperId])
+  @@unique([organizationId, projectId, workspacePaperId])
+  @@index([organizationId, projectId])
+  @@index([organizationId, workspacePaperId])
+  @@index([addedById])
+}
+
+model ImportBatch {
+  id                      String            @id @default(cuid())
+  organizationId          String
+  source                  ImportSource
+  status                  ImportBatchStatus @default(QUEUED)
+  label                   String?
+  integrationConnectionId String?
+  requestedById           String?
+  externalRequestId       String?
+  totalCount              Int               @default(0)
+  processedCount          Int               @default(0)
+  successCount            Int               @default(0)
+  failureCount            Int               @default(0)
+  startedAt               DateTime?
+  completedAt             DateTime?
+  createdAt               DateTime          @default(now())
+  updatedAt               DateTime          @updatedAt
+
+  organization    Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  integration     IntegrationConnection?  @relation(fields: [organizationId, integrationConnectionId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  requestedBy     User?                   @relation("ImportBatchRequestedBy", fields: [requestedById], references: [id], onDelete: SetNull)
+  entries         InboxEntry[]
+  ingestReceipts  DocumentIngestReceipt[]
+  documentIntakes DocumentIntake[]
+  crawlerImport   CrawlerImport?
+
+  @@unique([organizationId, externalRequestId])
+  @@unique([organizationId, id])
+  @@index([organizationId, status, createdAt])
+  @@index([integrationConnectionId])
+  @@index([requestedById])
+}
+
+model InboxEntry {
+  id                   String           @id @default(cuid())
+  organizationId       String
+  importBatchId        String?
+  projectId            String?
+  workspacePaperId     String?
+  documentId           String?
+  source               ImportSource
+  sourceKey            String?
+  dedupeKey            String?
+  status               InboxEntryStatus @default(PENDING)
+  proposedTitle        String?          @db.Text
+  proposedYear         Int?
+  sourceUri            String?          @db.Text
+  payload              Json?
+  failureCode          String?
+  failureMessage       String?          @db.Text
+  createdById          String?
+  createdByPrincipalId String?          @db.Uuid
+  resolvedAt           DateTime?
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
+
+  organization             Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  importBatch              ImportBatch?              @relation(fields: [organizationId, importBatchId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  project                  Project?                  @relation(fields: [organizationId, projectId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  workspacePaper           WorkspacePaper?           @relation(fields: [organizationId, workspacePaperId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  document                 Document?                 @relation(fields: [organizationId, documentId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  createdBy                User?                     @relation("InboxEntryCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  createdByPrincipal       RetainedAuditPrincipal?   @relation("InboxEntryRetainedCreator", fields: [organizationId, createdByPrincipalId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction, map: "InboxEntry_retained_creator_fkey")
+  provenanceRecords        ProvenanceRecord[]
+  uploadSession            UploadSession?
+  ingestReceipt            DocumentIngestReceipt?
+  documentIntake           DocumentIntake?
+  crawlerImport            CrawlerImport?
+  webMcpApproval           WebMcpProposalApproval?
+  webMcpApprovalChallenges WebMcpApprovalChallenge[]
+
+  @@unique([organizationId, source, sourceKey])
+  @@unique([organizationId, source, dedupeKey])
+  @@unique([organizationId, id])
+  @@index([organizationId, status, createdAt])
+  @@index([importBatchId])
+  @@index([projectId])
+  @@index([workspacePaperId])
+  @@index([documentId])
+  @@index([createdById])
+  @@index([createdByPrincipalId])
+}
+
+// A short-lived, one-use review capability. Provider I/O is complete before
+// this row is inserted; final consent can therefore bind exactly the closed
+// evidence shown to one actor and one complete approval intent.
+model WebMcpApprovalChallenge {
+  id                           String                      @id @db.VarChar(43)
+  schemaVersion                Int
+  organizationId               String
+  actorUserId                  String
+  inboxEntryId                 String
+  proposalDigest               String                      @db.Char(64)
+  destinationProjectId         String
+  decision                     WebMcpDuplicateDecision
+  selectedCanonicalPaperId     String?
+  expectedOrganizationRevision Int
+  verificationAuthority        WebMcpVerificationAuthority
+  verificationAuthorityVersion String                      @db.VarChar(100)
+  verificationEvidenceDigest   String                      @db.Char(64)
+  verifiedSnapshot             Json
+  createdAt                    DateTime                    @default(now())
+  expiresAt                    DateTime
+  consumedAt                   DateTime?
+
+  organization           Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  actor                  User                    @relation("WebMcpApprovalChallengeActor", fields: [actorUserId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  inboxEntry             InboxEntry              @relation(fields: [organizationId, inboxEntryId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  destinationProject     Project                 @relation(fields: [organizationId, destinationProjectId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction, map: "WebMcpApprovalChallenge_organizationId_destinationProjectId_fke")
+  selectedCanonicalPaper Paper?                  @relation("WebMcpApprovalChallengeSelectedPaper", fields: [selectedCanonicalPaperId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  approval               WebMcpProposalApproval?
+
+  @@unique([organizationId, id])
+  @@index([organizationId, actorUserId, expiresAt], map: "WebMcpApprovalChallenge_organizationId_actorUserId_expiresAt_id")
+  @@index([organizationId, inboxEntryId, expiresAt], map: "WebMcpApprovalChallenge_organizationId_inboxEntryId_expiresAt_i")
+  @@index([destinationProjectId])
+  @@index([selectedCanonicalPaperId])
+  @@index([verificationEvidenceDigest])
+}
+
+// The exact human authority that promotes a metadata-only WebMCP proposal.
+// Rows are immutable for their retained lifetime and database-guarded; a
+// changed judgment requires a separately designed correction record. Explicit
+// tenant-erasure transactions may delete the retained authority graph.
+model WebMcpProposalApproval {
+  id                           String                      @id @default(cuid())
+  organizationId               String
+  inboxEntryId                 String
+  destinationProjectId         String
+  approvedById                 String
+  approvedByPrincipalId        String?                     @db.Uuid
+  approvalCommandSchemaVersion Int
+  challengeId                  String?                     @db.VarChar(43)
+  proposalDigest               String                      @db.Char(64)
+  decision                     WebMcpDuplicateDecision
+  selectedCanonicalPaperId     String?
+  canonicalPaperId             String
+  workspacePaperId             String
+  verificationAuthority        WebMcpVerificationAuthority
+  verificationAuthorityVersion String                      @db.VarChar(100)
+  verificationEvidenceDigest   String                      @db.Char(64)
+  verifiedSnapshot             Json
+  clientOperationId            String                      @db.VarChar(200)
+  approvedAt                   DateTime                    @default(now())
+
+  organization           Organization             @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  inboxEntry             InboxEntry               @relation(fields: [organizationId, inboxEntryId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  destinationProject     Project                  @relation(fields: [organizationId, destinationProjectId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  approvedBy             User                     @relation("WebMcpProposalApprovalActor", fields: [approvedById], references: [id], onDelete: Restrict)
+  approvedByPrincipal    RetainedAuditPrincipal?  @relation("WebMcpApprovalRetainedActor", fields: [organizationId, approvedByPrincipalId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction, map: "WebMcpApproval_retained_actor_fkey")
+  challenge              WebMcpApprovalChallenge? @relation(fields: [organizationId, challengeId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction, map: "WebMcpApproval_challenge_fkey")
+  canonicalPaper         Paper                    @relation("WebMcpProposalApprovalCanonicalPaper", fields: [canonicalPaperId], references: [id], onDelete: Restrict)
+  selectedCanonicalPaper Paper?                   @relation("WebMcpProposalApprovalSelectedPaper", fields: [selectedCanonicalPaperId], references: [id], onDelete: Restrict)
+  workspacePaper         WorkspacePaper           @relation(fields: [organizationId, workspacePaperId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@unique([organizationId, inboxEntryId])
+  @@unique([organizationId, clientOperationId])
+  @@unique([organizationId, id])
+  @@unique([organizationId, challengeId])
+  @@index([organizationId, approvedAt])
+  @@index([destinationProjectId])
+  @@index([approvedById])
+  @@index([approvedByPrincipalId])
+  @@index([canonicalPaperId])
+  @@index([selectedCanonicalPaperId])
+  @@index([workspacePaperId])
+  @@index([proposalDigest])
+}
+
+// Application writers append corrections through supersedesId; there is no
+// updatedAt field. Database triggers additionally make WebMCP staging and
+// approval-bound IMPORT/METADATA authority lifetime-immutable. Other kinds
+// still depend on restricted application-writer privileges for append-only use.
+model ProvenanceRecord {
+  id                      String         @id @default(cuid())
+  organizationId          String
+  kind                    ProvenanceKind
+  paperId                 String?
+  workspacePaperId        String?
+  inboxEntryId            String?
+  evidenceNoteId          String?
+  documentId              String?
+  zoteroObjectId          String?
+  integrationConnectionId String?
+  actorUserId             String?
+  actorPrincipalId        String?        @db.Uuid
+  supersedesId            String?
+  sourceProvider          String?
+  sourceRecordId          String?
+  sourceUri               String?        @db.Text
+  retrievedAt             DateTime?
+  payloadDigest           String?
+  payload                 Json?
+  createdAt               DateTime       @default(now())
+
+  organization   Organization            @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  paper          Paper?                  @relation(fields: [paperId], references: [id], onDelete: SetNull)
+  workspacePaper WorkspacePaper?         @relation(fields: [organizationId, workspacePaperId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  inboxEntry     InboxEntry?             @relation(fields: [organizationId, inboxEntryId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  evidenceNote   EvidenceNote?           @relation(fields: [organizationId, evidenceNoteId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  document       Document?               @relation(fields: [organizationId, documentId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  zoteroObject   ZoteroObject?           @relation(fields: [organizationId, zoteroObjectId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  integration    IntegrationConnection?  @relation(fields: [organizationId, integrationConnectionId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  actor          User?                   @relation("ProvenanceActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+  actorPrincipal RetainedAuditPrincipal? @relation("ProvenanceRetainedActor", fields: [organizationId, actorPrincipalId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction, map: "ProvenanceRecord_retained_actor_fkey")
+  supersedes     ProvenanceRecord?       @relation("ProvenanceCorrections", fields: [organizationId, supersedesId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  corrections    ProvenanceRecord[]      @relation("ProvenanceCorrections")
+
+  @@unique([organizationId, id])
+  @@index([organizationId, createdAt])
+  @@index([paperId])
+  @@index([workspacePaperId])
+  @@index([inboxEntryId])
+  @@index([evidenceNoteId])
+  @@index([documentId])
+  @@index([zoteroObjectId])
+  @@index([integrationConnectionId])
+  @@index([actorUserId])
+  @@index([actorPrincipalId])
+  @@index([supersedesId])
+  @@index([sourceProvider, sourceRecordId])
+  @@index([payloadDigest])
+}
+
+model EvidenceNote {
+  id                 String             @id @default(cuid())
+  organizationId     String
+  workspacePaperId   String
+  projectId          String?
+  documentId         String?
+  documentChunkId    String?
+  createdById        String?
+  supersedesId       String?
+  kind               EvidenceKind
+  status             EvidenceStatus     @default(CAPTURED)
+  confidence         EvidenceConfidence @default(UNSPECIFIED)
+  title              String?
+  claim              String?            @db.Text
+  evidence           String?            @db.Text
+  interpretation     String?            @db.Text
+  openQuestion       String?            @db.Text
+  linkedHighlightIds Json?
+  tags               Json?
+  quote              String?            @db.Text
+  text               String             @db.Text
+  pageStart          Int?
+  pageEnd            Int?
+  sectionId          String?
+  sectionTitle       String?
+  paragraphId        String?
+  figureId           String?
+  figureLabel        String?
+  verifiedAt         DateTime?
+  groundingVersion   Int?               @db.SmallInt
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  organization          Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  workspacePaper        WorkspacePaper           @relation(fields: [organizationId, workspacePaperId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  project               Project?                 @relation(fields: [organizationId, projectId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  document              Document?                @relation(fields: [organizationId, documentId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  documentChunk         DocumentTextChunk?       @relation(fields: [organizationId, documentChunkId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  createdBy             User?                    @relation("EvidenceNoteCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  supersedes            EvidenceNote?            @relation("EvidenceNoteRevisions", fields: [organizationId, supersedesId], references: [organizationId, id], onDelete: NoAction, onUpdate: NoAction, map: "EvidenceNote_organizationId_supersedesId_fkey")
+  revisions             EvidenceNote[]           @relation("EvidenceNoteRevisions")
+  provenanceRecords     ProvenanceRecord[]
+  projectMemberships    ProjectEvidenceNote[]
+  collectionMemberships CollectionEvidenceNote[]
+  textAnchor            EvidenceTextAnchor?
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, workspacePaperId, id])
+  @@unique([organizationId, supersedesId], map: "EvidenceNote_one_revision_per_note_key")
+  @@index([organizationId, workspacePaperId])
+  @@index([organizationId, projectId])
+  @@index([documentId])
+  @@index([documentChunkId])
+  @@index([createdById])
+  @@index([supersedesId])
+  @@index([status])
+}
+
+// Immutable proof that a grounded evidence excerpt was derived by the server
+// from one contiguous range in one database-admitted extraction manifest.
+// Current/superseded state is projected by comparing extractionId with the
+// document's current authority; the historical anchor itself never changes.
+model EvidenceTextAnchor {
+  id               String   @id @default(cuid())
+  organizationId   String
+  evidenceNoteId   String
+  workspacePaperId String
+  documentId       String
+  extractionId     String
+  schemaVersion    Int      @db.SmallInt
+  manifestSha256   String   @db.Char(64)
+  startChunkId     String
+  endChunkId       String
+  startSequence    Int
+  endSequence      Int
+  startByteOffset  Int
+  endByteOffset    Int
+  startContentHash String
+  endContentHash   String
+  quoteText        String   @db.Text
+  quoteSha256      String   @db.Char(64)
+  pageStart        Int
+  pageEnd          Int
+  paragraphStartId String   @db.VarChar(200)
+  paragraphEndId   String   @db.VarChar(200)
+  createdAt        DateTime @default(now())
+
+  organization      Organization                  @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "EvidenceTextAnchor_organizationId_fkey")
+  evidenceNote      EvidenceNote                  @relation(fields: [organizationId, workspacePaperId, evidenceNoteId], references: [organizationId, workspacePaperId, id], onDelete: Cascade, onUpdate: NoAction, map: "EvidenceTextAnchor_note_fkey")
+  workspacePaper    WorkspacePaper                @relation(fields: [organizationId, workspacePaperId], references: [organizationId, id], onDelete: NoAction, onUpdate: NoAction, map: "EvidenceTextAnchor_workspace_paper_fkey")
+  document          Document                      @relation(fields: [organizationId, workspacePaperId, documentId], references: [organizationId, workspacePaperId, id], onDelete: NoAction, onUpdate: NoAction, map: "EvidenceTextAnchor_document_fkey")
+  manifestAdmission DocumentTextManifestAdmission @relation(fields: [organizationId, documentId, extractionId, schemaVersion, manifestSha256], references: [organizationId, documentId, extractionId, schemaVersion, manifestSha256], onDelete: NoAction, onUpdate: NoAction, map: "EvidenceTextAnchor_manifest_admission_fkey")
+  startChunk        DocumentTextChunk             @relation("EvidenceTextAnchorStartChunk", fields: [organizationId, documentId, extractionId, startChunkId, startSequence, startContentHash], references: [organizationId, documentId, extractionId, id, sequence, contentHash], onDelete: NoAction, onUpdate: NoAction, map: "EvidenceTextAnchor_start_chunk_fkey")
+  endChunk          DocumentTextChunk             @relation("EvidenceTextAnchorEndChunk", fields: [organizationId, documentId, extractionId, endChunkId, endSequence, endContentHash], references: [organizationId, documentId, extractionId, id, sequence, contentHash], onDelete: NoAction, onUpdate: NoAction, map: "EvidenceTextAnchor_end_chunk_fkey")
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, workspacePaperId, evidenceNoteId], map: "EvidenceTextAnchor_note_binding_key")
+  @@index([organizationId, workspacePaperId, createdAt(sort: Desc)], map: "EvidenceTextAnchor_workspace_created_idx")
+  @@index([organizationId, documentId, extractionId])
+  @@index([organizationId, startChunkId])
+  @@index([organizationId, endChunkId])
+}
+
+// A structured note may support more than one visible project that already
+// contains its paper. The tenant key is repeated on both foreign keys so a
+// malformed or compromised caller cannot create a cross-workspace edge.
+model ProjectEvidenceNote {
+  id             String   @id @default(cuid())
+  organizationId String
+  projectId      String
+  evidenceNoteId String
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  project      Project      @relation(fields: [organizationId, projectId], references: [organizationId, id], onDelete: Cascade, onUpdate: NoAction)
+  evidenceNote EvidenceNote @relation(fields: [organizationId, evidenceNoteId], references: [organizationId, id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([projectId, evidenceNoteId])
+  @@unique([organizationId, projectId, evidenceNoteId])
+  @@index([organizationId, projectId])
+  @@index([organizationId, evidenceNoteId])
+}
+
+model Collection {
+  id             String   @id @default(cuid())
+  organizationId String
+  projectId      String?
+  parentId       String?
+  name           String
+  description    String?  @db.Text
+  color          String?
+  position       Int      @default(0)
+  createdById    String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization        Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  project             Project?                 @relation(fields: [organizationId, projectId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  parent              Collection?              @relation("CollectionTree", fields: [organizationId, parentId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  children            Collection[]             @relation("CollectionTree")
+  createdBy           User?                    @relation("CollectionCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  paperMemberships    CollectionPaper[]
+  evidenceMemberships CollectionEvidenceNote[]
+  zoteroObjects       ZoteroObject[]
+
+  @@unique([organizationId, projectId, parentId, name])
+  @@unique([organizationId, id])
+  @@index([organizationId, projectId])
+  @@index([parentId])
+  @@index([createdById])
+}
+
+model CollectionPaper {
+  id               String   @id @default(cuid())
+  organizationId   String
+  collectionId     String
+  workspacePaperId String
+  position         Int?
+  createdAt        DateTime @default(now())
+
+  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  collection     Collection     @relation(fields: [organizationId, collectionId], references: [organizationId, id], onDelete: Cascade, onUpdate: NoAction)
+  workspacePaper WorkspacePaper @relation(fields: [organizationId, workspacePaperId], references: [organizationId, id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([collectionId, workspacePaperId])
+  @@index([organizationId, collectionId])
+  @@index([organizationId, workspacePaperId])
+}
+
+model CollectionEvidenceNote {
+  id             String   @id @default(cuid())
+  organizationId String
+  collectionId   String
+  evidenceNoteId String
+  position       Int?
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  collection   Collection   @relation(fields: [organizationId, collectionId], references: [organizationId, id], onDelete: Cascade, onUpdate: NoAction)
+  evidenceNote EvidenceNote @relation(fields: [organizationId, evidenceNoteId], references: [organizationId, id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([collectionId, evidenceNoteId])
+  @@index([organizationId, collectionId])
+  @@index([organizationId, evidenceNoteId])
+}
+
+model IntegrationConnection {
+  id                          String              @id @default(cuid())
+  organizationId              String
+  provider                    IntegrationProvider
+  authType                    IntegrationAuthType
+  status                      IntegrationStatus   @default(PENDING)
+  displayName                 String?
+  externalAccountId           String?
+  scopes                      Json?
+  configuration               Json?
+  credentialCiphertext        Bytes?
+  credentialFingerprint       String?
+  credentialKeyVersion        String?
+  credentialExpiresAt         DateTime?
+  lastVerifiedAt              DateTime?
+  providerBackoffUntil        DateTime?
+  credentialGeneration        Int                 @default(0)
+  zoteroSelectionRevision     Int                 @default(0)
+  zoteroLibrariesConfiguredAt DateTime?
+  lastErrorCode               String?
+  lastErrorMessage            String?             @db.Text
+  createdById                 String?
+  createdAt                   DateTime            @default(now())
+  updatedAt                   DateTime            @updatedAt
+  revokedAt                   DateTime?
+
+  organization      Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdBy         User?                    @relation("IntegrationCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  importBatches     ImportBatch[]
+  provenanceRecords ProvenanceRecord[]
+  zoteroLibraries   ZoteroLibrary[]
+  jobs              Job[]
+  oauthAttempts     ZoteroOAuthAttempt[]
+  ingestReceipts    DocumentIngestReceipt[]
+  attachmentPolicy  ZoteroAttachmentPolicy?
+  attachmentImports ZoteroAttachmentImport[]
+
+  @@unique([organizationId, provider, externalAccountId])
+  // PostgreSQL truncates the original generated identifier to 63 bytes; map
+  // it explicitly so Prisma introspection and migration diff agree exactly.
+  @@unique([organizationId, provider, credentialFingerprint], map: "IntegrationConnection_organizationId_provider_credentialFingerp")
+  @@unique([organizationId, id])
+  @@index([organizationId, provider, status])
+  @@index([createdById])
+}
+
+// Temporary OAuth credentials are one-time, tenant-bound envelopes. State,
+// nonce, and request-token values are retained only as keyed hashes; the
+// temporary secret ciphertext is erased atomically when an attempt is claimed.
+model ZoteroOAuthAttempt {
+  id                           String                   @id @default(cuid())
+  organizationId               String
+  userId                       String
+  status                       ZoteroOAuthAttemptStatus @default(PENDING)
+  stateTokenHash               String                   @unique @db.Char(64)
+  stateNonceHash               String                   @db.Char(64)
+  requestTokenHash             String                   @db.Char(64)
+  requestTokenSecretCiphertext Bytes?
+  requestTokenSecretKeyVersion String?
+  callbackUrlHash              String                   @db.Char(64)
+  requestedScopes              Json
+  expiresAt                    DateTime
+  claimedAt                    DateTime?
+  completedAt                  DateTime?
+  failureCode                  String?
+  integrationConnectionId      String?
+  createdAt                    DateTime                 @default(now())
+  updatedAt                    DateTime                 @updatedAt
+
+  membership Member                 @relation(fields: [organizationId, userId], references: [organizationId, userId], onDelete: Cascade, onUpdate: NoAction)
+  connection IntegrationConnection? @relation(fields: [organizationId, integrationConnectionId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, stateNonceHash])
+  @@unique([organizationId, requestTokenHash])
+  @@index([organizationId, userId, status])
+  @@index([status, expiresAt])
+  @@index([integrationConnectionId])
+}
+
+model ZoteroLibrary {
+  id                      String                 @id @default(cuid())
+  organizationId          String
+  integrationConnectionId String
+  libraryType             ZoteroLibraryType
+  zoteroLibraryId         String
+  name                    String?
+  isReadable              Boolean                @default(false)
+  isWritable              Boolean                @default(false)
+  fileAccessStatus        ZoteroFileAccessStatus @default(UNKNOWN)
+  accessLostAt            DateTime?
+  discoveredAt            DateTime               @default(now())
+  lastDiscoveredAt        DateTime               @default(now())
+  lastSyncedVersion       String?
+  lastItemVersion         String?
+  lastCollectionVersion   String?
+  lastDeletionVersion     String?
+  lastFulltextVersion     String?
+  lastSyncedAt            DateTime?
+  syncEnabled             Boolean                @default(false)
+  createdAt               DateTime               @default(now())
+  updatedAt               DateTime               @updatedAt
+
+  organization      Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  integration       IntegrationConnection    @relation(fields: [organizationId, integrationConnectionId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  objects           ZoteroObject[]
+  syncRuns          ZoteroSyncRun[]
+  syncStages        ZoteroSyncStage[]
+  jobs              Job[]
+  ingestReceipts    DocumentIngestReceipt[]
+  attachments       ZoteroAttachment[]
+  attachmentImports ZoteroAttachmentImport[]
+
+  @@unique([integrationConnectionId, libraryType, zoteroLibraryId])
+  @@unique([organizationId, id])
+  @@unique([organizationId, integrationConnectionId, id], map: "ZoteroLibrary_connection_binding_key")
+  @@index([organizationId, syncEnabled])
+  @@index([integrationConnectionId])
+}
+
+model ZoteroObject {
+  id               String           @id @default(cuid())
+  organizationId   String
+  zoteroLibraryId  String
+  objectType       ZoteroObjectType
+  zoteroKey        String
+  parentKey        String?
+  version          String
+  paperId          String?
+  workspacePaperId String?
+  collectionId     String?
+  documentId       String?
+  isDeleted        Boolean          @default(false)
+  contentHash      String?
+  data             Json?
+  zoteroModifiedAt DateTime?
+  lastSyncedAt     DateTime         @default(now())
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  organization      Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  library           ZoteroLibrary           @relation(fields: [organizationId, zoteroLibraryId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  paper             Paper?                  @relation(fields: [paperId], references: [id], onDelete: SetNull)
+  workspacePaper    WorkspacePaper?         @relation(fields: [organizationId, workspacePaperId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  collection        Collection?             @relation(fields: [organizationId, collectionId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  document          Document?               @relation(fields: [organizationId, documentId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  provenanceRecords ProvenanceRecord[]
+  ingestReceipts    DocumentIngestReceipt[]
+  attachment        ZoteroAttachment?
+
+  @@unique([zoteroLibraryId, objectType, zoteroKey])
+  @@unique([organizationId, id])
+  @@unique([organizationId, zoteroLibraryId, id], map: "ZoteroObject_library_binding_key")
+  @@index([organizationId, objectType, isDeleted])
+  @@index([zoteroLibraryId, version])
+  @@index([paperId])
+  @@index([workspacePaperId])
+  @@index([collectionId])
+  @@index([documentId])
+  @@index([parentKey])
+}
+
+// Attachment ingestion is opt-in. Absence of this row is equivalent to
+// DISABLED; changing the policy increments revision so queued work can prove
+// which authorization decision it was created under.
+model ZoteroAttachmentPolicy {
+  id                      String                     @id @default(cuid())
+  organizationId          String
+  integrationConnectionId String                     @unique
+  mode                    ZoteroAttachmentIngestMode @default(DISABLED)
+  revision                Int                        @default(0)
+  configuredById          String?
+  configuredAt            DateTime?
+  createdAt               DateTime                   @default(now())
+  updatedAt               DateTime                   @updatedAt
+
+  organization Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  integration  IntegrationConnection @relation(fields: [organizationId, integrationConnectionId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  configuredBy User?                 @relation("ZoteroAttachmentPolicyConfiguredBy", fields: [configuredById], references: [id], onDelete: SetNull)
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, integrationConnectionId], map: "ZoteroAttachmentPolicy_connection_binding_key")
+  @@index([organizationId, mode])
+  @@index([configuredById])
+}
+
+// A sanitized, metadata-only projection of a Zotero ITEM attachment. Provider
+// paths and signed URLs are never stored here. Tombstoned provider objects are
+// retained so completed imports keep an auditable source identity.
+model ZoteroAttachment {
+  zoteroObjectId  String                      @id
+  organizationId  String
+  zoteroLibraryId String
+  parentKey       String?                     @db.VarChar(64)
+  linkMode        String?                     @db.VarChar(32)
+  contentType     String?                     @db.VarChar(255)
+  fileName        String?                     @db.VarChar(255)
+  providerMd5     String?                     @db.Char(32)
+  providerMtime   String?                     @db.VarChar(32)
+  sourceVersion   String                      @db.VarChar(128)
+  metadataHash    String                      @db.Char(64)
+  eligibility     ZoteroAttachmentEligibility
+  reasonCode      String?                     @db.VarChar(100)
+  isDeleted       Boolean                     @default(false)
+  createdAt       DateTime                    @default(now())
+  updatedAt       DateTime                    @updatedAt
+
+  organization Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  library      ZoteroLibrary            @relation(fields: [organizationId, zoteroLibraryId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  object       ZoteroObject             @relation(fields: [organizationId, zoteroLibraryId, zoteroObjectId], references: [organizationId, zoteroLibraryId, id], onDelete: Restrict, onUpdate: NoAction)
+  imports      ZoteroAttachmentImport[]
+
+  @@unique([organizationId, zoteroLibraryId, zoteroObjectId], map: "ZoteroAttachment_library_object_binding_key")
+  @@index([organizationId, eligibility, isDeleted])
+  @@index([organizationId, zoteroLibraryId, parentKey])
+  @@index([organizationId, providerMd5])
+}
+
+// One explicit user command to copy one immutable Zotero attachment version
+// into PaperPilot custody. Secrets and signed provider URLs never enter this
+// record or a job payload; workers resolve credentials by generation.
+model ZoteroAttachmentImport {
+  id                      String                       @id @default(cuid())
+  organizationId          String
+  integrationConnectionId String
+  zoteroLibraryId         String
+  zoteroObjectId          String
+  intakeId                String                       @unique
+  documentId              String
+  assetId                 String
+  requestedById           String?
+  clientOperationId       String
+  requestHash             String                       @db.Char(64)
+  policyRevision          Int
+  credentialGeneration    Int
+  sourceVersion           String                       @db.VarChar(128)
+  sourceMetadataHash      String                       @db.Char(64)
+  providerMd5             String                       @db.Char(32)
+  status                  ZoteroAttachmentImportStatus @default(QUEUED)
+  downloadJobId           String?                      @unique
+  failureCode             String?                      @db.VarChar(100)
+  retryAt                 DateTime?
+  startedAt               DateTime?
+  quarantinedAt           DateTime?
+  completedAt             DateTime?
+  cancelledAt             DateTime?
+  createdAt               DateTime                     @default(now())
+  updatedAt               DateTime                     @updatedAt
+
+  organization  Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  integration   IntegrationConnection  @relation(fields: [organizationId, integrationConnectionId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction, map: "ZoteroAttachmentImport_connection_fkey")
+  library       ZoteroLibrary          @relation(fields: [organizationId, integrationConnectionId, zoteroLibraryId], references: [organizationId, integrationConnectionId, id], onDelete: Restrict, onUpdate: NoAction, map: "ZoteroAttachmentImport_library_connection_fkey")
+  attachment    ZoteroAttachment       @relation(fields: [organizationId, zoteroLibraryId, zoteroObjectId], references: [organizationId, zoteroLibraryId, zoteroObjectId], onDelete: Restrict, onUpdate: NoAction)
+  intake        DocumentIntake         @relation(fields: [organizationId, documentId, assetId, intakeId], references: [organizationId, documentId, assetId, id], onDelete: Restrict, onUpdate: NoAction, map: "ZoteroAttachmentImport_intake_target_fkey")
+  requestedBy   User?                  @relation("ZoteroAttachmentImportRequestedBy", fields: [requestedById], references: [id], onDelete: SetNull)
+  downloadJob   Job?                   @relation(fields: [organizationId, integrationConnectionId, zoteroLibraryId, documentId, assetId, intakeId, downloadJobId], references: [organizationId, integrationConnectionId, zoteroLibraryId, documentId, assetId, intakeId, id], onDelete: Restrict, onUpdate: NoAction, map: "ZoteroAttachmentImport_download_job_target_fkey")
+  ingestReceipt DocumentIngestReceipt?
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, clientOperationId], map: "ZoteroAttachmentImport_idempotency_key")
+  @@unique([organizationId, documentId, assetId, intakeId], map: "ZoteroAttachmentImport_intake_binding_key")
+  @@unique([organizationId, integrationConnectionId, zoteroLibraryId, documentId, assetId, intakeId, downloadJobId], map: "ZoteroAttachmentImport_download_job_binding_key")
+  @@unique([organizationId, integrationConnectionId, zoteroLibraryId, zoteroObjectId, documentId, assetId, intakeId, id], map: "ZoteroAttachmentImport_target_binding_key")
+  // PostgreSQL additionally enforces one non-failed/non-cancelled import for
+  // this exact source generation with a partial unique index. Prisma cannot
+  // represent that predicate, so keep the lookup index visible here.
+  @@index([organizationId, zoteroObjectId, sourceVersion, providerMd5], map: "ZoteroAttachmentImport_source_generation_idx")
+  @@index([organizationId, status, createdAt])
+  @@index([organizationId, zoteroLibraryId, zoteroObjectId])
+  @@index([organizationId, integrationConnectionId, credentialGeneration])
+  @@index([requestedById])
+  @@index([retryAt])
+}
+
+// One explicit user command to bring one canonical, query-free HTTPS source
+// into governed PaperPilot custody. The job payload is never authority: this
+// row freezes the exact URL, grant, policy/rate versions, byte ceiling, network
+// bounds, requester, target graph, and crawl job that every retry must honor.
+model CrawlerImport {
+  id                                 String                         @id @default(cuid())
+  organizationId                     String
+  importBatchId                      String                         @unique
+  intakeId                           String                         @unique
+  documentId                         String
+  assetId                            String
+  inboxEntryId                       String                         @unique
+  requestedById                      String?
+  requestedByPrincipalId             String                         @db.Uuid
+  clientOperationId                  String
+  requestHash                        String                         @db.Char(64)
+  // Redacted to NULL when user deletion is accepted. The domain-separated
+  // fingerprint remains as minimal collision/audit evidence.
+  canonicalSourceUrl                 String?                        @db.Text
+  // Remote-URL authority only. Document/Inbox source identities use this
+  // command's attempt-specific `crawler-import:<id>` key instead.
+  sourceUrlFingerprint               String                         @db.Char(64)
+  displayFileName                    String                         @db.VarChar(255)
+  rightsGrant                        CrawlerRightsGrant
+  rightsAttestationVersion           String                         @db.VarChar(100)
+  rightsAttestedAt                   DateTime                       @db.Timestamptz(3)
+  robotsPolicy                       CrawlerRobotsPolicy
+  robotsPolicyVersion                String                         @db.VarChar(100)
+  retentionPolicy                    CrawlerRetentionPolicy
+  retentionPolicyVersion             String                         @db.VarChar(100)
+  acquisitionMode                    String                         @db.VarChar(100)
+  policyVersion                      String                         @db.VarChar(128)
+  robotsUserAgent                    String                         @db.VarChar(64)
+  maxRedirects                       Int
+  maxDnsAddresses                    Int
+  dnsLookupTimeoutMs                 Int
+  maxResponseHeaderBytes             Int
+  responseHeaderTimeoutMs            Int
+  responseIdleTimeoutMs              Int
+  absoluteDeadlineMs                 Int
+  ratePolicyVersion                  String                         @db.VarChar(100)
+  originRequestsPerMinute            Int
+  originBurst                        Int
+  maximumSizeBytes                   BigInt
+  policyRevision                     Int
+  status                             CrawlerImportStatus            @default(QUEUED)
+  crawlJobId                         String                         @unique
+  failureCode                        String?                        @db.VarChar(100)
+  retryAt                            DateTime?                      @db.Timestamptz(3)
+  startedAt                          DateTime?                      @db.Timestamptz(3)
+  quarantinedAt                      DateTime?                      @db.Timestamptz(3)
+  completedAt                        DateTime?                      @db.Timestamptz(3)
+  cancelledAt                        DateTime?                      @db.Timestamptz(3)
+  custodyStatus                      CrawlerCustodyStatus           @default(RETAINED)
+  deletionRequestedById              String?
+  deletionRequestedByPrincipalId     String?                        @db.Uuid
+  deletionClientOperationId          String?                        @db.VarChar(200)
+  deletionRequestHash                String?                        @db.Char(64)
+  deletionRequestedAt                DateTime?                      @db.Timestamptz(3)
+  deletionAfter                      DateTime?                      @db.Timestamptz(3)
+  deletionLeaseId                    String?                        @db.VarChar(200)
+  deletionLeaseExpiresAt             DateTime?                      @db.Timestamptz(3)
+  deletionAttemptCount               Int                            @default(0)
+  deletionFailureCode                String?                        @db.VarChar(100)
+  deletionProofDigest                String?                        @db.Char(64)
+  // Immutable canonical local-root authority selected at first crawler claim.
+  // Legacy pre-authority rows remain NULL and can never receive a new proof.
+  storageAuthorityGeneration         String?                        @db.Char(64)
+  deletionStorageAuthorityGeneration String?                        @db.Char(64)
+  deletionTombstoneDigest            String?                        @db.Char(64)
+  derivedTextDisposition             CrawlerDerivedTextDisposition?
+  derivedTextDisposedAt              DateTime?                      @db.Timestamptz(3)
+  derivedTextPurgedChunkCount        Int?
+  derivedTextRetainedChunkCount      Int?
+  deletedAt                          DateTime?                      @db.Timestamptz(3)
+  createdAt                          DateTime                       @default(now()) @db.Timestamptz(3)
+  updatedAt                          DateTime                       @updatedAt @db.Timestamptz(3)
+
+  organization                 Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  importBatch                  ImportBatch             @relation(fields: [organizationId, importBatchId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction, map: "CrawlerImport_import_batch_fkey")
+  intake                       DocumentIntake          @relation(fields: [organizationId, documentId, assetId, intakeId], references: [organizationId, documentId, assetId, id], onDelete: Restrict, onUpdate: NoAction, map: "CrawlerImport_intake_target_fkey")
+  inboxEntry                   InboxEntry              @relation(fields: [organizationId, inboxEntryId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  requestedBy                  User?                   @relation("CrawlerImportRequestedBy", fields: [requestedById], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  requestedByPrincipal         RetainedAuditPrincipal  @relation("CrawlerImportRetainedRequester", fields: [organizationId, requestedByPrincipalId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction, map: "CrawlerImport_retained_requester_fkey")
+  deletionRequestedBy          User?                   @relation("CrawlerImportDeletionRequestedBy", fields: [deletionRequestedById], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  deletionRequestedByPrincipal RetainedAuditPrincipal? @relation("CrawlerImportRetainedDeletionRequester", fields: [organizationId, deletionRequestedByPrincipalId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction, map: "CrawlerImport_retained_deletion_requester_fkey")
+  crawlJob                     Job                     @relation(fields: [organizationId, documentId, assetId, intakeId, crawlJobId], references: [organizationId, documentId, assetId, intakeId, id], onDelete: Restrict, onUpdate: NoAction, map: "CrawlerImport_crawl_job_target_fkey")
+  ingestReceipt                DocumentIngestReceipt?
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, clientOperationId], map: "CrawlerImport_idempotency_key")
+  @@unique([organizationId, deletionClientOperationId], map: "CrawlerImport_deletion_idempotency_key")
+  @@unique([organizationId, importBatchId], map: "CrawlerImport_import_batch_binding_key")
+  @@unique([organizationId, documentId, assetId, intakeId], map: "CrawlerImport_intake_binding_key")
+  @@unique([organizationId, inboxEntryId], map: "CrawlerImport_inbox_binding_key")
+  @@unique([organizationId, documentId, assetId, intakeId, crawlJobId], map: "CrawlerImport_crawl_job_binding_key")
+  @@unique([organizationId, documentId, assetId, intakeId, importBatchId, id], map: "CrawlerImport_target_binding_key")
+  // PostgreSQL enforces the live source-fingerprint uniqueness predicate; the
+  // non-unique lookup index remains visible to Prisma for command admission.
+  @@index([organizationId, sourceUrlFingerprint], map: "CrawlerImport_source_fingerprint_idx")
+  @@index([organizationId, status, createdAt])
+  @@index([requestedById])
+  @@index([requestedByPrincipalId])
+  @@index([retryAt])
+  @@index([custodyStatus, deletionAfter])
+  @@index([deletionRequestedById])
+  @@index([deletionRequestedByPrincipalId])
+}
+
+model ZoteroSyncRun {
+  id              String        @id @default(cuid())
+  organizationId  String
+  zoteroLibraryId String
+  direction       SyncDirection @default(PULL)
+  status          SyncRunStatus @default(QUEUED)
+  fromVersion     String?
+  toVersion       String?
+  requestId       String?
+  objectsRead     Int           @default(0)
+  objectsWritten  Int           @default(0)
+  objectsDeleted  Int           @default(0)
+  conflicts       Int           @default(0)
+  backoffUntil    DateTime?
+  errorCode       String?
+  errorMessage    String?       @db.Text
+  startedAt       DateTime?
+  completedAt     DateTime?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  library      ZoteroLibrary     @relation(fields: [organizationId, zoteroLibraryId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  stages       ZoteroSyncStage[]
+
+  @@unique([zoteroLibraryId, requestId])
+  @@unique([organizationId, id])
+  @@index([organizationId, status, createdAt])
+  @@index([zoteroLibraryId, startedAt])
+  @@index([backoffUntil])
+}
+
+// A sync pass writes only to this run-owned staging area while the provider
+// library can still be changing. Rows become authoritative ZoteroObjects only
+// after every provider response agrees on one Last-Modified-Version and the
+// worker still owns its fenced lease.
+model ZoteroSyncStage {
+  id              String           @id @default(cuid())
+  organizationId  String
+  zoteroSyncRunId String
+  zoteroLibraryId String
+  objectType      ZoteroObjectType
+  zoteroKey       String
+  parentKey       String?
+  version         String
+  isDeleted       Boolean          @default(false)
+  contentHash     String?
+  data            Json?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  run          ZoteroSyncRun @relation(fields: [organizationId, zoteroSyncRunId], references: [organizationId, id], onDelete: Cascade, onUpdate: NoAction)
+  library      ZoteroLibrary @relation(fields: [organizationId, zoteroLibraryId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@unique([zoteroSyncRunId, objectType, zoteroKey])
+  @@unique([organizationId, id])
+  @@index([organizationId, zoteroLibraryId])
+  @@index([zoteroSyncRunId, isDeleted])
+}
+
+model Job {
+  id                      String    @id @default(cuid())
+  organizationId          String
+  type                    JobType
+  status                  JobStatus @default(QUEUED)
+  dedupeKey               String?
+  priority                Int       @default(0)
+  payload                 Json?
+  result                  Json?
+  attempts                Int       @default(0)
+  maxAttempts             Int       @default(5)
+  runAfter                DateTime  @default(now())
+  lockedAt                DateTime?
+  lockedBy                String?
+  leaseId                 String?
+  leaseExpiresAt          DateTime?
+  completedAt             DateTime?
+  lastErrorCode           String?
+  lastErrorMessage        String?   @db.Text
+  integrationConnectionId String?
+  zoteroLibraryId         String?
+  documentId              String?
+  assetId                 String?
+  intakeId                String?
+  ingestReceiptId         String?
+  createdById             String?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  organization           Organization                    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  integration            IntegrationConnection?          @relation(fields: [organizationId, integrationConnectionId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  zoteroLibrary          ZoteroLibrary?                  @relation(fields: [organizationId, zoteroLibraryId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  document               Document?                       @relation(fields: [organizationId, documentId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  asset                  Asset?                          @relation(fields: [organizationId, assetId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  intake                 DocumentIntake?                 @relation(fields: [organizationId, documentId, assetId, intakeId], references: [organizationId, documentId, assetId, id], onDelete: Restrict, onUpdate: NoAction)
+  ingestReceipt          DocumentIngestReceipt?          @relation(fields: [organizationId, documentId, assetId, ingestReceiptId], references: [organizationId, documentId, assetId, id], onDelete: Restrict, onUpdate: NoAction)
+  createdBy              User?                           @relation("JobCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  jobAttempts            JobAttempt[]
+  validationAttestations DocumentValidationAttestation[]
+  textExtractions        DocumentTextExtraction[]
+  zoteroAttachmentImport ZoteroAttachmentImport?
+  crawlerImport          CrawlerImport?
+  ingressAttempts        DocumentIngressAttempt[]
+
+  @@unique([organizationId, type, dedupeKey])
+  @@unique([organizationId, id])
+  @@unique([organizationId, documentId, assetId, id])
+  @@unique([organizationId, documentId, assetId, intakeId, id], map: "Job_intake_target_binding_key")
+  @@unique([organizationId, integrationConnectionId, zoteroLibraryId, documentId, assetId, intakeId, id], map: "Job_zotero_download_target_binding_key")
+  @@index([status, runAfter, priority])
+  @@index([status, leaseExpiresAt])
+  @@index([organizationId, status])
+  @@index([integrationConnectionId])
+  @@index([zoteroLibraryId])
+  @@index([documentId])
+  @@index([assetId])
+  @@index([intakeId])
+  @@index([ingestReceiptId])
+  @@index([createdById])
+}
+
+model JobAttempt {
+  id             String    @id @default(cuid())
+  organizationId String
+  jobId          String
+  attemptNumber  Int
+  status         JobStatus
+  workerId       String?
+  leaseId        String?
+  errorCode      String?
+  errorMessage   String?   @db.Text
+  result         Json?
+  startedAt      DateTime  @default(now())
+  completedAt    DateTime?
+  createdAt      DateTime  @default(now())
+
+  organization          Organization                   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  job                   Job                            @relation(fields: [organizationId, jobId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  validationAttestation DocumentValidationAttestation?
+  textExtraction        DocumentTextExtraction?
+  ingressAttempt        DocumentIngressAttempt?
+
+  @@unique([jobId, attemptNumber])
+  @@unique([jobId, leaseId])
+  @@unique([organizationId, id])
+  @@unique([organizationId, jobId, id])
+  @@index([organizationId, status])
+  @@index([workerId])
+}
+
+// Append-only security and collaboration history. IP addresses are represented
+// only by a keyed hash so the audit log does not retain raw network identifiers.
+model AuditEvent {
+  id               String   @id @default(cuid())
+  organizationId   String
+  actorUserId      String?
+  actorPrincipalId String?  @db.Uuid
+  action           String
+  entityType       String
+  entityId         String?
+  requestId        String?
+  ipAddressHash    String?
+  userAgent        String?
+  metadata         Json?
+  createdAt        DateTime @default(now())
+
+  organization   Organization            @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  actor          User?                   @relation("AuditActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+  actorPrincipal RetainedAuditPrincipal? @relation("AuditRetainedActor", fields: [organizationId, actorPrincipalId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction, map: "AuditEvent_retained_actor_fkey")
+
+  @@index([organizationId, createdAt])
+  @@index([organizationId, action, createdAt])
+  @@index([entityType, entityId])
+  @@index([actorUserId])
+  @@index([actorPrincipalId])
+  @@index([requestId])
+}
+
+model Document {
+  id                      String         @id @default(cuid())
+  organizationId          String
+  paperId                 String?
+  workspacePaperId        String?
+  kind                    DocumentKind
+  status                  DocumentStatus @default(PENDING)
+  title                   String?
+  sourceUri               String?        @db.Text
+  sourceFingerprint       String?
+  mimeType                String?
+  language                String?
+  pageCount               Int?
+  contentHash             String?
+  validatedAt             DateTime?
+  validationPolicyVersion String?
+  failureCode             String?
+  metadata                Json?
+  createdAt               DateTime       @default(now())
+  updatedAt               DateTime       @updatedAt
+  archivedAt              DateTime?
+
+  organization           Organization                    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  paper                  Paper?                          @relation(fields: [paperId], references: [id], onDelete: SetNull)
+  workspacePaper         WorkspacePaper?                 @relation(fields: [organizationId, workspacePaperId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  assets                 DocumentAsset[]
+  textChunks             DocumentTextChunk[]
+  evidenceNotes          EvidenceNote[]
+  provenanceRecords      ProvenanceRecord[]
+  zoteroObjects          ZoteroObject[]
+  jobs                   Job[]
+  inboxEntries           InboxEntry[]
+  uploadSession          UploadSession?
+  ingestReceipt          DocumentIngestReceipt?
+  documentIntake         DocumentIntake?
+  ingressAttempts        DocumentIngressAttempt[]
+  validationAttestations DocumentValidationAttestation[]
+  textExtractions        DocumentTextExtraction[]
+  evidenceTextAnchors    EvidenceTextAnchor[]
+
+  @@unique([organizationId, sourceFingerprint])
+  @@unique([organizationId, id])
+  @@unique([organizationId, workspacePaperId, id], map: "Document_workspace_paper_binding_key")
+  @@index([organizationId, status])
+  @@index([paperId])
+  @@index([workspacePaperId])
+  @@index([contentHash])
+}
+
+model Asset {
+  id                      String               @id @default(cuid())
+  organizationId          String
+  storageProvider         AssetStorageProvider
+  bucket                  String?
+  objectKey               String
+  physicalLocator         String?              @unique
+  status                  AssetStatus          @default(UPLOADING)
+  originalFileName        String?
+  mimeType                String?
+  sizeBytes               BigInt?
+  sha256                  String?
+  etag                    String?
+  createdById             String?
+  scannedAt               DateTime?
+  validatedAt             DateTime?
+  validationPolicyVersion String?
+  rejectedReason          String?              @db.Text
+  rejectionCode           String?
+  metadata                Json?
+  createdAt               DateTime             @default(now())
+  updatedAt               DateTime             @updatedAt
+  deletedAt               DateTime?
+
+  organization           Organization                    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdBy              User?                           @relation("AssetCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  documents              DocumentAsset[]
+  jobs                   Job[]
+  uploadSessions         UploadSession[]
+  uploadAttempts         UploadAttempt[]
+  ingestReceipt          DocumentIngestReceipt?
+  documentIntake         DocumentIntake?
+  ingressAttempts        DocumentIngressAttempt[]
+  validationAttestations DocumentValidationAttestation[]
+  textExtractions        DocumentTextExtraction[]
+
+  @@unique([organizationId, storageProvider, bucket, objectKey])
+  @@unique([organizationId, id])
+  @@index([organizationId, status])
+  @@index([organizationId, sha256])
+  @@index([createdById])
+}
+
+// Source-neutral reservation and lifecycle authority. Every transport reserves
+// tenant quota here before bytes are accepted, while transport-specific state
+// remains in UploadSession, ZoteroAttachmentImport, or later crawler/WebMCP rows.
+model DocumentIntake {
+  id                String               @id @default(cuid())
+  organizationId    String
+  source            DocumentIngestSource
+  status            DocumentIntakeStatus @default(RESERVED)
+  documentId        String
+  assetId           String
+  inboxEntryId      String?
+  importBatchId     String?
+  createdById       String?
+  reservedBytes     BigInt
+  committedBytes    BigInt?
+  policyRevision    Int                  @default(0)
+  failureCode       String?              @db.VarChar(100)
+  cancelRequestedAt DateTime?
+  cancelledAt       DateTime?
+  completedAt       DateTime?
+  quotaReleasedAt   DateTime?
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+
+  organization           Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  document               Document                 @relation(fields: [organizationId, documentId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  asset                  Asset                    @relation(fields: [organizationId, assetId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  inboxEntry             InboxEntry?              @relation(fields: [organizationId, inboxEntryId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  importBatch            ImportBatch?             @relation(fields: [organizationId, importBatchId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  createdBy              User?                    @relation("DocumentIntakeCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  uploadSession          UploadSession?
+  zoteroAttachmentImport ZoteroAttachmentImport?
+  crawlerImport          CrawlerImport?
+  receipt                DocumentIngestReceipt?
+  attempts               DocumentIngressAttempt[]
+  jobs                   Job[]
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, documentId])
+  @@unique([organizationId, assetId])
+  @@unique([organizationId, inboxEntryId])
+  @@unique([organizationId, documentId, assetId, id], map: "DocumentIntake_target_binding_key")
+  @@index([organizationId, status, createdAt])
+  @@index([organizationId, createdById, status])
+}
+
+// Durable source-neutral receive attempt. Provider workers can reconcile or
+// clean an exact immutable quarantine object after a crash without trusting a
+// mutable job payload or signed provider URL.
+model DocumentIngressAttempt {
+  id                         String                       @id
+  organizationId             String
+  intakeId                   String
+  documentId                 String
+  assetId                    String
+  jobId                      String
+  jobAttemptId               String                       @unique
+  attemptNumber              Int
+  storageKey                 String                       @unique
+  storageVersion             String                       @db.VarChar(128)
+  storageAuthorityGeneration String?                      @db.Char(64)
+  status                     DocumentIngressAttemptStatus @default(RECEIVING)
+  maximumSizeBytes           BigInt
+  expectedSizeBytes          BigInt?
+  receivedSizeBytes          BigInt?
+  providerMd5                String?                      @db.Char(32)
+  computedMd5                String?                      @db.Char(32)
+  sha256                     String?                      @db.Char(64)
+  leaseId                    String                       @db.VarChar(200)
+  leaseExpiresAt             DateTime
+  storedAt                   DateTime?
+  completedAt                DateTime?
+  failureCode                String?                      @db.VarChar(100)
+  cleanupCompletedAt         DateTime?
+  cleanupAttemptCount        Int                          @default(0)
+  cleanupAfter               DateTime?
+  cleanupFailureCode         String?                      @db.VarChar(100)
+  createdAt                  DateTime                     @default(now())
+  updatedAt                  DateTime                     @updatedAt
+
+  organization  Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  intake        DocumentIntake         @relation(fields: [organizationId, documentId, assetId, intakeId], references: [organizationId, documentId, assetId, id], onDelete: Restrict, onUpdate: NoAction, map: "DocumentIngressAttempt_intake_target_fkey")
+  document      Document               @relation(fields: [organizationId, documentId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  asset         Asset                  @relation(fields: [organizationId, assetId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  job           Job                    @relation(fields: [organizationId, documentId, assetId, intakeId, jobId], references: [organizationId, documentId, assetId, intakeId, id], onDelete: Restrict, onUpdate: NoAction, map: "DocumentIngressAttempt_job_intake_target_fkey")
+  jobAttempt    JobAttempt             @relation(fields: [organizationId, jobId, jobAttemptId], references: [organizationId, jobId, id], onDelete: Restrict, onUpdate: NoAction)
+  ingestReceipt DocumentIngestReceipt?
+
+  @@unique([organizationId, id])
+  @@unique([intakeId, attemptNumber])
+  @@unique([organizationId, jobId, jobAttemptId], map: "DocumentIngressAttempt_job_attempt_binding_key")
+  @@unique([organizationId, intakeId, id])
+  @@unique([organizationId, documentId, assetId, intakeId, id], map: "DocumentIngressAttempt_target_binding_key")
+  @@index([status, leaseExpiresAt])
+  @@index([status, cleanupAfter])
+  @@index([organizationId, intakeId])
+  @@index([organizationId, assetId])
+  @@index([organizationId, jobId])
+}
+
+// A browser upload is a durable, single-writer reservation. The display name
+// is never used as a path; physical storage is referenced only through Asset.
+// A successful first-stage upload remains quarantined until an isolated worker
+// performs malware scanning and document validation in a later lifecycle step.
+model UploadSession {
+  id                String              @id @default(cuid())
+  organizationId    String
+  createdById       String?
+  intakeId          String
+  assetId           String
+  documentId        String
+  inboxEntryId      String
+  clientOperationId String
+  requestHash       String              @db.Char(64)
+  status            UploadSessionStatus @default(ISSUED)
+  originalFileName  String
+  declaredMimeType  String
+  expectedSizeBytes BigInt
+  receivedSizeBytes BigInt?
+  sha256            String?             @db.Char(64)
+  expiresAt         DateTime
+  claimedAt         DateTime?
+  claimExpiresAt    DateTime?
+  claimId           String?
+  storedAt          DateTime?
+  rejectedAt        DateTime?
+  failureCode       String?
+  attemptCount      Int                 @default(0)
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+
+  organization  Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdBy     User?                  @relation("UploadSessionCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  intake        DocumentIntake         @relation(fields: [organizationId, documentId, assetId, intakeId], references: [organizationId, documentId, assetId, id], onDelete: Restrict, onUpdate: NoAction)
+  asset         Asset                  @relation(fields: [organizationId, assetId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  document      Document               @relation(fields: [organizationId, documentId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  inboxEntry    InboxEntry             @relation(fields: [organizationId, inboxEntryId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  attempts      UploadAttempt[]
+  ingestReceipt DocumentIngestReceipt?
+
+  @@unique([organizationId, clientOperationId])
+  @@unique([organizationId, intakeId])
+  @@unique([organizationId, documentId, assetId, intakeId], map: "UploadSession_intake_binding_key")
+  @@unique([organizationId, id])
+  @@unique([organizationId, id, assetId], map: "UploadSession_asset_binding_key")
+  @@unique([organizationId, documentId])
+  @@unique([organizationId, inboxEntryId])
+  @@unique([organizationId, assetId])
+  @@index([organizationId, status, expiresAt])
+  @@index([organizationId, createdById, status])
+  @@index([assetId])
+}
+
+// Every receive lease has a durable, immutable object identity before bytes
+// leave the request process. This lets reconciliation clean or adopt a crashed
+// attempt without relying on an overwritten UploadSession.claimId.
+model UploadAttempt {
+  id                  String              @id
+  organizationId      String
+  uploadSessionId     String
+  assetId             String
+  attemptNumber       Int
+  storageKey          String              @unique
+  status              UploadAttemptStatus @default(RECEIVING)
+  expectedSizeBytes   BigInt
+  receivedSizeBytes   BigInt?
+  sha256              String?             @db.Char(64)
+  leaseExpiresAt      DateTime
+  storedAt            DateTime?
+  completedAt         DateTime?
+  failureCode         String?
+  cleanupCompletedAt  DateTime?
+  cleanupAttemptCount Int                 @default(0)
+  cleanupAfter        DateTime?
+  cleanupFailureCode  String?
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+
+  organization  Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  uploadSession UploadSession          @relation(fields: [organizationId, uploadSessionId, assetId], references: [organizationId, id, assetId], onDelete: Restrict, onUpdate: NoAction, map: "UploadAttempt_session_asset_fkey")
+  asset         Asset                  @relation(fields: [organizationId, assetId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  ingestReceipt DocumentIngestReceipt?
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, uploadSessionId, assetId, id], map: "UploadAttempt_transport_binding_key")
+  @@unique([uploadSessionId, attemptNumber])
+  @@index([status, leaseExpiresAt])
+  @@index([status, cleanupAfter])
+  @@index([organizationId, uploadSessionId])
+  @@index([organizationId, assetId])
+}
+
+// Immutable proof that one exact byte stream was durably committed to private
+// quarantine. Browser upload, Zotero, crawler, and WebMCP transports must create
+// this same authority before validation can claim their Document/Asset pair.
+model DocumentIngestReceipt {
+  id                         String               @id @default(cuid())
+  organizationId             String
+  source                     DocumentIngestSource
+  sourceFingerprint          String               @db.VarChar(512)
+  intakeId                   String
+  assetId                    String
+  documentId                 String
+  inboxEntryId               String?
+  importBatchId              String?
+  uploadSessionId            String?
+  uploadAttemptId            String?
+  ingressAttemptId           String?
+  integrationConnectionId    String?
+  zoteroLibraryId            String?
+  zoteroObjectId             String?
+  zoteroAttachmentImportId   String?
+  crawlerImportId            String?
+  requestedById              String?
+  sourceVersion              String?              @db.VarChar(128)
+  sourceEtag                 String?              @db.VarChar(255)
+  sourceChecksumAlgorithm    String?              @db.VarChar(32)
+  sourceChecksum             String?              @db.VarChar(128)
+  declaredMimeType           String               @db.VarChar(255)
+  receivedSizeBytes          BigInt
+  sha256                     String               @db.Char(64)
+  storageVersion             String               @db.VarChar(128)
+  storageAuthorityGeneration String?              @db.Char(64)
+  storedAt                   DateTime
+  metadata                   Json?
+  legacyTransportAttestation Boolean              @default(false)
+  createdAt                  DateTime             @default(now())
+
+  organization           Organization                    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  intake                 DocumentIntake                  @relation(fields: [organizationId, documentId, assetId, intakeId], references: [organizationId, documentId, assetId, id], onDelete: Restrict, onUpdate: NoAction, map: "DocumentIngestReceipt_intake_target_fkey")
+  asset                  Asset                           @relation(fields: [organizationId, assetId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  document               Document                        @relation(fields: [organizationId, documentId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  inboxEntry             InboxEntry?                     @relation(fields: [organizationId, inboxEntryId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  importBatch            ImportBatch?                    @relation(fields: [organizationId, importBatchId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  uploadSession          UploadSession?                  @relation(fields: [organizationId, uploadSessionId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  uploadAttempt          UploadAttempt?                  @relation(fields: [organizationId, uploadSessionId, assetId, uploadAttemptId], references: [organizationId, uploadSessionId, assetId, id], onDelete: Restrict, onUpdate: NoAction, map: "DocumentIngestReceipt_upload_attempt_fkey")
+  ingressAttempt         DocumentIngressAttempt?         @relation(fields: [organizationId, documentId, assetId, intakeId, ingressAttemptId], references: [organizationId, documentId, assetId, intakeId, id], onDelete: Restrict, onUpdate: NoAction, map: "DocumentIngestReceipt_ingress_attempt_fkey")
+  integration            IntegrationConnection?          @relation(fields: [organizationId, integrationConnectionId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  zoteroLibrary          ZoteroLibrary?                  @relation(fields: [organizationId, integrationConnectionId, zoteroLibraryId], references: [organizationId, integrationConnectionId, id], onDelete: Restrict, onUpdate: NoAction, map: "DocumentIngestReceipt_zotero_library_connection_fkey")
+  zoteroObject           ZoteroObject?                   @relation(fields: [organizationId, zoteroLibraryId, zoteroObjectId], references: [organizationId, zoteroLibraryId, id], onDelete: Restrict, onUpdate: NoAction, map: "DocumentIngestReceipt_zotero_object_library_fkey")
+  zoteroAttachmentImport ZoteroAttachmentImport?         @relation(fields: [organizationId, integrationConnectionId, zoteroLibraryId, zoteroObjectId, documentId, assetId, intakeId, zoteroAttachmentImportId], references: [organizationId, integrationConnectionId, zoteroLibraryId, zoteroObjectId, documentId, assetId, intakeId, id], onDelete: Restrict, onUpdate: NoAction, map: "DocumentIngestReceipt_zotero_import_target_fkey")
+  crawlerImport          CrawlerImport?                  @relation(fields: [organizationId, documentId, assetId, intakeId, importBatchId, crawlerImportId], references: [organizationId, documentId, assetId, intakeId, importBatchId, id], onDelete: Restrict, onUpdate: NoAction, map: "DocumentIngestReceipt_crawler_import_target_fkey")
+  requestedBy            User?                           @relation("DocumentIngestRequestedBy", fields: [requestedById], references: [id], onDelete: SetNull)
+  jobs                   Job[]
+  validationAttestations DocumentValidationAttestation[]
+
+  @@unique([organizationId, source, sourceFingerprint])
+  @@unique([organizationId, id])
+  @@unique([organizationId, intakeId])
+  @@unique([organizationId, documentId, assetId, intakeId], map: "DocumentIngestReceipt_intake_binding_key")
+  @@unique([organizationId, assetId])
+  @@unique([organizationId, documentId])
+  @@unique([organizationId, documentId, assetId, id], map: "DocumentIngestReceipt_target_binding_key")
+  @@unique([organizationId, inboxEntryId])
+  @@unique([organizationId, uploadSessionId])
+  @@unique([organizationId, uploadSessionId, assetId, uploadAttemptId], map: "DocumentIngestReceipt_upload_attempt_binding_key")
+  @@unique([organizationId, ingressAttemptId])
+  @@unique([organizationId, documentId, assetId, intakeId, ingressAttemptId], map: "DocumentIngestReceipt_ingress_attempt_binding_key")
+  @@unique([organizationId, integrationConnectionId, zoteroLibraryId, zoteroObjectId, documentId, assetId, intakeId, zoteroAttachmentImportId], map: "DocumentIngestReceipt_zotero_import_binding_key")
+  @@unique([organizationId, crawlerImportId])
+  @@unique([organizationId, documentId, assetId, intakeId, importBatchId, crawlerImportId], map: "DocumentIngestReceipt_crawler_import_binding_key")
+  @@index([organizationId, source, storedAt])
+  @@index([integrationConnectionId])
+  @@index([zoteroLibraryId])
+  @@index([zoteroObjectId])
+  @@index([requestedById])
+}
+
+// Immutable, bounded evidence returned by the isolated validation service.
+// Raw parser/scanner output and filesystem paths never belong in this table.
+model DocumentValidationAttestation {
+  id                   String               @id @default(cuid())
+  organizationId       String
+  jobId                String
+  jobAttemptId         String               @unique
+  assetId              String
+  documentId           String
+  ingestReceiptId      String
+  inputSha256          String               @db.Char(64)
+  inputSizeBytes       BigInt
+  storageVersion       String
+  policyVersion        String
+  toolchainDigest      String               @db.Char(64)
+  verdict              ValidationVerdict
+  rejectionCode        String?
+  malwareVerdict       MalwareVerdict
+  malwareEngine        String
+  malwareEngineVersion String
+  signatureVersion     String
+  signaturePublishedAt DateTime
+  scannedAt            DateTime
+  pdfStructuralVerdict PdfStructuralVerdict
+  pdfEngine            String
+  pdfEngineVersion     String
+  pdfVersion           String
+  pageCount            Int?
+  objectCount          Int?
+  revisionCount        Int?
+  checkedAt            DateTime
+  result               Json?
+  createdAt            DateTime             @default(now())
+
+  organization    Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  job             Job                      @relation(fields: [organizationId, jobId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  jobAttempt      JobAttempt               @relation(fields: [organizationId, jobAttemptId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  asset           Asset                    @relation(fields: [organizationId, assetId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  document        Document                 @relation(fields: [organizationId, documentId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  ingestReceipt   DocumentIngestReceipt    @relation(fields: [organizationId, documentId, assetId, ingestReceiptId], references: [organizationId, documentId, assetId, id], onDelete: Restrict, onUpdate: NoAction, map: "DocumentValidationAttestation_ingest_target_fkey")
+  textExtractions DocumentTextExtraction[]
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, jobAttemptId])
+  @@unique([organizationId, documentId, assetId, id])
+  @@unique([assetId, inputSha256, storageVersion, policyVersion, toolchainDigest], map: "DocumentValidationAttestation_asset_identity_key")
+  @@index([organizationId, verdict, createdAt], map: "DocumentValidationAttestation_organizationId_verdict_createdAt_")
+  @@index([jobId])
+  @@index([assetId])
+  @@index([documentId])
+  @@index([ingestReceiptId])
+}
+
+model DocumentAsset {
+  id             String            @id @default(cuid())
+  organizationId String
+  documentId     String
+  assetId        String
+  role           DocumentAssetRole @default(ORIGINAL)
+  createdAt      DateTime          @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  document     Document     @relation(fields: [organizationId, documentId], references: [organizationId, id], onDelete: Cascade, onUpdate: NoAction)
+  asset        Asset        @relation(fields: [organizationId, assetId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@unique([documentId, assetId, role])
+  @@index([organizationId, documentId])
+  @@index([organizationId, assetId])
+}
+
+// Immutable, bounded provenance for one successful text-extraction attempt.
+// Reader eligibility is derived from this record and its validation/input
+// bindings; mutable Document or Asset metadata is never authoritative.
+model DocumentTextExtraction {
+  id                      String                @id @default(cuid())
+  organizationId          String
+  jobId                   String
+  jobAttemptId            String                @unique
+  validationAttestationId String
+  assetId                 String
+  documentId              String
+  inputSha256             String                @db.Char(64)
+  inputSizeBytes          BigInt
+  storageVersion          String                @db.VarChar(128)
+  extractionPolicyVersion String                @db.VarChar(128)
+  toolchainDigest         String                @db.Char(64)
+  verdict                 TextExtractionVerdict
+  engine                  String                @db.VarChar(64)
+  engineVersion           String                @db.VarChar(128)
+  pageCount               Int
+  chunkCount              Int
+  textBytes               Int
+  extractedAt             DateTime
+  completedAt             DateTime
+  durationMs              Int
+  totalDurationMs         Int
+  checkedAt               DateTime
+  result                  Json?
+  createdAt               DateTime              @default(now())
+
+  organization          Organization                   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  job                   Job                            @relation(fields: [organizationId, documentId, assetId, jobId], references: [organizationId, documentId, assetId, id], onDelete: Cascade, onUpdate: NoAction)
+  jobAttempt            JobAttempt                     @relation(fields: [organizationId, jobId, jobAttemptId], references: [organizationId, jobId, id], onDelete: Cascade, onUpdate: NoAction)
+  validationAttestation DocumentValidationAttestation  @relation(fields: [organizationId, documentId, assetId, validationAttestationId], references: [organizationId, documentId, assetId, id], onDelete: Cascade, onUpdate: NoAction)
+  asset                 Asset                          @relation(fields: [organizationId, assetId], references: [organizationId, id], onDelete: Cascade, onUpdate: NoAction)
+  document              Document                       @relation(fields: [organizationId, documentId], references: [organizationId, id], onDelete: Cascade, onUpdate: NoAction)
+  chunks                DocumentTextChunk[]
+  manifestAdmission     DocumentTextManifestAdmission?
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, documentId, id])
+  @@unique([organizationId, jobAttemptId])
+  @@unique([organizationId, jobId, jobAttemptId])
+  @@unique([organizationId, documentId, assetId, inputSha256, storageVersion, extractionPolicyVersion, toolchainDigest], map: "DocumentTextExtraction_generation_key")
+  @@index([organizationId, documentId, extractionPolicyVersion, createdAt(sort: Desc)], map: "DocumentTextExtraction_current_generation_idx")
+  @@index([organizationId, assetId, createdAt])
+  @@index([jobId])
+  @@index([validationAttestationId])
+}
+
+// Database-admitted proof that a complete immutable extraction manifest passed
+// every ordered, canonical-text, locator, and content-hash invariant. Reader
+// trusts this compact seal before issuing bounded chunk-range queries.
+model DocumentTextManifestAdmission {
+  extractionId   String                @id
+  organizationId String
+  documentId     String
+  schemaVersion  Int                   @db.SmallInt
+  verdict        TextExtractionVerdict
+  pageCount      Int
+  chunkCount     Int
+  textBytes      Int
+  manifestSha256 String                @db.Char(64)
+  admittedAt     DateTime              @default(now())
+
+  extraction          DocumentTextExtraction @relation(fields: [organizationId, documentId, extractionId], references: [organizationId, documentId, id], onDelete: Cascade, onUpdate: NoAction, map: "DocumentTextManifestAdmission_extraction_fkey")
+  evidenceTextAnchors EvidenceTextAnchor[]
+
+  @@unique([organizationId, documentId, extractionId], map: "DocumentTextManifestAdmission_binding_key")
+  @@unique([organizationId, documentId, extractionId, schemaVersion, manifestSha256], map: "DocumentTextManifestAdmission_digest_binding_key")
+  @@index([organizationId, documentId], map: "DocumentTextManifestAdmission_document_idx")
+}
+
+model DocumentTextChunk {
+  id             String   @id @default(cuid())
+  organizationId String
+  documentId     String
+  extractionId   String?
+  sequence       Int
+  pageStart      Int?
+  pageEnd        Int?
+  sectionId      String?
+  sectionTitle   String?
+  paragraphId    String?
+  charStart      Int?
+  charEnd        Int?
+  text           String   @db.Text
+  contentHash    String
+  locator        Json?
+  createdAt      DateTime @default(now())
+
+  organization            Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  document                Document                @relation(fields: [organizationId, documentId], references: [organizationId, id], onDelete: Restrict, onUpdate: NoAction)
+  extraction              DocumentTextExtraction? @relation(fields: [organizationId, documentId, extractionId], references: [organizationId, documentId, id], onDelete: Cascade, onUpdate: NoAction)
+  evidenceNotes           EvidenceNote[]
+  evidenceAnchorsStarting EvidenceTextAnchor[]    @relation("EvidenceTextAnchorStartChunk")
+  evidenceAnchorsEnding   EvidenceTextAnchor[]    @relation("EvidenceTextAnchorEndChunk")
+
+  @@unique([extractionId, sequence])
+  @@unique([organizationId, id])
+  @@unique([organizationId, documentId, id])
+  @@unique([organizationId, documentId, extractionId, id, sequence, contentHash], map: "DocumentTextChunk_evidence_anchor_binding_key")
+  @@index([organizationId, documentId])
+  @@index([organizationId, extractionId, sequence])
+  @@index([contentHash])
+}

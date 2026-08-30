@@ -1,0 +1,13 @@
+# This Dockerfile is built from the repository root. Default-deny the context
+# so local .env files, document objects, databases, and unrelated source never
+# become build inputs or image-cache material.
+**
+!services/
+!services/document-extractor/
+!services/document-extractor/package.json
+!services/document-extractor/package-lock.json
+!services/document-extractor/tsconfig.json
+!services/document-extractor/src/
+!services/document-extractor/src/**
+!services/document-extractor/wrappers/
+!services/document-extractor/wrappers/**

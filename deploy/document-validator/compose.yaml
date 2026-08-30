@@ -1,0 +1,90 @@
+name: paperpilot-document-validator
+
+services:
+  clamav:
+    image: "${PAPERPILOT_CLAMAV_IMAGE:-clamav/clamav:1.5.4_base-debian13-slim@sha256:bbefacdc028635d83f4e6c81abf94db4f1d859b6f6009d90c94ae3d22625b235}"
+    user: "clamav"
+    entrypoint: ["/init-unprivileged"]
+    environment:
+      CLAMAV_NO_CLAMD: "false"
+      CLAMAV_NO_FRESHCLAMD: "false"
+    expose:
+      - "3310"
+    volumes:
+      - clamav_signatures:/var/lib/clamav
+    networks:
+      - scan
+      - signature_updates
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 4g
+    cpus: 2.0
+    stop_grace_period: 30s
+    restart: unless-stopped
+
+  validator:
+    image: "${PAPERPILOT_VALIDATOR_IMAGE:-paperpilot/document-validator:local}"
+    build:
+      context: ../..
+      dockerfile: services/document-validator/Dockerfile
+      args:
+        NODE_IMAGE: "${PAPERPILOT_VALIDATOR_NODE_IMAGE:-node:24.20.0-trixie-slim@sha256:50c3b2f6988dfc307b86e5301d69611af31f4789bdf232863b07d3b02fe55ae0}"
+    depends_on:
+      clamav:
+        condition: service_healthy
+        restart: true
+    environment:
+      PAPERPILOT_VALIDATOR_BEARER_SECRET: "${PAPERPILOT_VALIDATOR_BEARER_SECRET:?Set a unique 32+ character bearer secret}"
+      PAPERPILOT_VALIDATOR_POLICY_VERSION: "${PAPERPILOT_VALIDATOR_POLICY_VERSION:-paperpilot-document-validation-v1}"
+      PAPERPILOT_VALIDATOR_TOOLCHAIN_DIGEST: "${PAPERPILOT_VALIDATOR_TOOLCHAIN_DIGEST:?Set the release provenance SHA-256}"
+      PAPERPILOT_VALIDATOR_HOST: "0.0.0.0"
+      PAPERPILOT_VALIDATOR_PORT: "4010"
+      PAPERPILOT_VALIDATOR_ROUTE: "/v1/validate-pdf"
+      PAPERPILOT_VALIDATOR_TEMP_ROOT: "/private/ephemeral/paperpilot-validator"
+      PAPERPILOT_VALIDATOR_MAX_BODY_BYTES: "26214400"
+      PAPERPILOT_VALIDATOR_BODY_IDLE_TIMEOUT_MS: "3000"
+      PAPERPILOT_VALIDATOR_BODY_ABSOLUTE_TIMEOUT_MS: "5000"
+      PAPERPILOT_VALIDATOR_VALIDATION_TIMEOUT_MS: "20000"
+      PAPERPILOT_VALIDATOR_MAX_CONCURRENT: "2"
+      PAPERPILOT_VALIDATOR_SIGNATURE_READINESS_MAX_AGE_MS: "82800000"
+      PAPERPILOT_VALIDATOR_SIGNATURE_FUTURE_CLOCK_SKEW_MS: "300000"
+      PAPERPILOT_VALIDATOR_CLAM_COMMAND: "clamdscan"
+      PAPERPILOT_VALIDATOR_CLAM_ARGS_JSON: '["--config-file=/etc/clamav/clamd.remote.conf","--no-summary","--stream"]'
+      PAPERPILOT_VALIDATOR_CLAM_VERSION_ARGS_JSON: '["--config-file=/etc/clamav/clamd.remote.conf","--version"]'
+      PAPERPILOT_VALIDATOR_CLAM_TIMEOUT_MS: "8000"
+      PAPERPILOT_VALIDATOR_QPDF_COMMAND: "qpdf"
+      PAPERPILOT_VALIDATOR_QPDF_COMMAND_TIMEOUT_MS: "5000"
+      PAPERPILOT_VALIDATOR_QPDF_MAX_METADATA_BYTES: "8388608"
+    volumes:
+      - ../../container/clamd.remote.conf:/etc/clamav/clamd.remote.conf:ro
+    tmpfs:
+      - /private/ephemeral/paperpilot-validator:rw,noexec,nosuid,nodev,size=64m,mode=0700,uid=1000,gid=1000
+    ports:
+      - "${PAPERPILOT_VALIDATOR_BIND_ADDRESS:-127.0.0.1}:${PAPERPILOT_VALIDATOR_PUBLISHED_PORT:-4010}:4010"
+    networks:
+      - scan
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 512m
+    cpus: 1.0
+    ulimits:
+      nofile:
+        soft: 256
+        hard: 256
+    stop_grace_period: 15s
+    restart: unless-stopped
+
+networks:
+  scan:
+    internal: true
+  signature_updates: {}
+
+volumes:
+  clamav_signatures: {}

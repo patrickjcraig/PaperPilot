@@ -1,0 +1,51 @@
+{
+	admin off
+	servers {
+		protocols h1 h2 h3
+	}
+}
+
+# This is the only listener published by Compose. Caddy obtains and renews the
+# public certificate, redirects HTTP to HTTPS, and forwards public traffic only
+# to the Next.js web service.
+{$PAPERPILOT_PUBLIC_ORIGIN} {
+	header {
+		-Server
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+	}
+
+	log {
+		output stdout
+		format json
+	}
+
+	reverse_proxy http://web:3000 {
+		transport http {
+			dial_timeout 5s
+			response_header_timeout 90s
+		}
+	}
+}
+
+# These listeners are reachable only on internal Compose networks. They give
+# production workers exact HTTPS origins while preserving the existing
+# validator and extractor HTTP-only service processes.
+https://validator.paperpilot.internal:8443 {
+	tls internal
+	reverse_proxy http://validator:4010
+}
+
+https://extractor.paperpilot.internal:8443 {
+	tls internal
+	reverse_proxy http://extractor:4020
+}
+
+# Caddy proactively issues this internal leaf certificate. The one-shot
+# internal-tls-export service copies it into a database-only volume; this HTTP
+# listener is not published and never proxies PostgreSQL traffic.
+https://postgres.paperpilot.internal:8445 {
+	tls internal
+	respond 404
+}

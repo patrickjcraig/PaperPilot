@@ -1,0 +1,694 @@
+name: paperpilot-app
+
+x-paperpilot-build: &paperpilot-build
+  context: ../..
+  dockerfile: Dockerfile
+  args:
+    NODE_IMAGE: "${PAPERPILOT_APP_NODE_IMAGE:-node:24.20.0-trixie-slim@sha256:50c3b2f6988dfc307b86e5301d69611af31f4789bdf232863b07d3b02fe55ae0}"
+    CA_CERTIFICATES_DEBIAN_VERSION: "${PAPERPILOT_APP_CA_CERTIFICATES_DEBIAN_VERSION:-20250419}"
+    TINI_DEBIAN_VERSION: "${PAPERPILOT_APP_TINI_DEBIAN_VERSION:-0.19.0-3+b7}"
+
+x-runtime-database: &runtime-database
+  DATABASE_URL: "postgresql://paperpilot_runtime:${PAPERPILOT_RUNTIME_DATABASE_PASSWORD:?Set a base64url runtime database password}@postgres.paperpilot.internal:5432/${PAPERPILOT_POSTGRES_DB:-paperpilot}?sslmode=verify-full"
+  DATABASE_POOL_MAX: "${PAPERPILOT_DATABASE_POOL_MAX:-10}"
+  NODE_EXTRA_CA_CERTS: "/etc/paperpilot/trust/internal-root.crt"
+  PAPERPILOT_ALLOW_LOCAL_PRISMA_DEV: "0"
+
+x-private-storage: &private-storage
+  PAPERPILOT_UPLOAD_QUARANTINE_ROOT: "/private/paperpilot/quarantine"
+  PAPERPILOT_UPLOAD_MAX_BYTES: "${PAPERPILOT_UPLOAD_MAX_BYTES:-26214400}"
+  PAPERPILOT_UPLOAD_SESSION_TTL_SECONDS: "${PAPERPILOT_UPLOAD_SESSION_TTL_SECONDS:-900}"
+  PAPERPILOT_UPLOAD_LEASE_TTL_SECONDS: "${PAPERPILOT_UPLOAD_LEASE_TTL_SECONDS:-600}"
+  PAPERPILOT_UPLOAD_STREAM_IDLE_TIMEOUT_SECONDS: "${PAPERPILOT_UPLOAD_STREAM_IDLE_TIMEOUT_SECONDS:-30}"
+  PAPERPILOT_UPLOAD_STREAM_ABSOLUTE_TIMEOUT_SECONDS: "${PAPERPILOT_UPLOAD_STREAM_ABSOLUTE_TIMEOUT_SECONDS:-300}"
+  PAPERPILOT_UPLOAD_MAX_CONCURRENT_PER_USER: "${PAPERPILOT_UPLOAD_MAX_CONCURRENT_PER_USER:-2}"
+  PAPERPILOT_UPLOAD_MAX_CONCURRENT_PER_WORKSPACE: "${PAPERPILOT_UPLOAD_MAX_CONCURRENT_PER_WORKSPACE:-10}"
+  PAPERPILOT_UPLOAD_MAX_RETAINED_BYTES_PER_WORKSPACE: "${PAPERPILOT_UPLOAD_MAX_RETAINED_BYTES_PER_WORKSPACE:-262144000}"
+
+x-app-hardening: &app-hardening
+  read_only: true
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
+
+x-bounded-logs: &bounded-logs
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+
+services:
+  caddy:
+    image: "${PAPERPILOT_CADDY_IMAGE:?Set an approved immutable Caddy image reference}"
+    environment:
+      PAPERPILOT_PUBLIC_ORIGIN: "${PAPERPILOT_PUBLIC_ORIGIN:?Set the exact public HTTPS origin}"
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      edge: {}
+      app:
+        ipv4_address: "${PAPERPILOT_CADDY_APP_ADDRESS:-172.30.241.2}"
+      validation:
+        aliases:
+          - validator.paperpilot.internal
+      extraction:
+        aliases:
+          - extractor.paperpilot.internal
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m,mode=1777
+    healthcheck:
+      test: ["CMD", "caddy", "validate", "--config", "/etc/caddy/Caddyfile"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    logging: *bounded-logs
+
+  # Caddy's private issuer supplies one CA for service HTTPS and a leaf
+  # certificate for PostgreSQL. This one-shot copies only the public CA into
+  # application trust and the database leaf/key into a database-only volume;
+  # workers never receive the CA private key.
+  internal-tls-export:
+    image: "${PAPERPILOT_CADDY_IMAGE:?Set an approved immutable Caddy image reference}"
+    depends_on:
+      caddy:
+        condition: service_started
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        counter=0
+        while [ "$$counter" -lt 60 ]; do
+          ca=/caddy-data/caddy/pki/authorities/local/root.crt
+          cert=$$(find /caddy-data/caddy/certificates/local -type f -name 'postgres.paperpilot.internal.crt' -print -quit 2>/dev/null || true)
+          key=$$(find /caddy-data/caddy/certificates/local -type f -name 'postgres.paperpilot.internal.key' -print -quit 2>/dev/null || true)
+          if [ -s "$$ca" ] && [ -n "$$cert" ] && [ -s "$$cert" ] && [ -n "$$key" ] && [ -s "$$key" ]; then
+            break
+          fi
+          counter=$$((counter + 1))
+          sleep 1
+        done
+        test -s "$$ca"
+        test -n "$$cert"
+        test -s "$$cert"
+        test -n "$$key"
+        test -s "$$key"
+        mkdir -p /trust /postgres-tls
+        cp "$$ca" /trust/internal-root.crt
+        cp "$$ca" /postgres-tls/internal-root.crt
+        cp "$$cert" /postgres-tls/server.crt
+        cp "$$key" /postgres-tls/server.key
+        chmod 0444 /trust/internal-root.crt /postgres-tls/internal-root.crt
+        chmod 0644 /postgres-tls/server.crt
+        chmod 0600 /postgres-tls/server.key
+        chown "${PAPERPILOT_POSTGRES_UID:-999}:${PAPERPILOT_POSTGRES_GID:-999}" /postgres-tls/server.crt /postgres-tls/server.key /postgres-tls/internal-root.crt
+    volumes:
+      - caddy_data:/caddy-data:ro
+      - internal_ca:/trust
+      - postgres_tls:/postgres-tls
+    network_mode: none
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=8m,mode=1777
+    restart: "no"
+    logging: *bounded-logs
+
+  postgres:
+    image: "${PAPERPILOT_POSTGRES_IMAGE:?Set an approved immutable PostgreSQL 16+ image reference}"
+    depends_on:
+      internal-tls-export:
+        condition: service_completed_successfully
+    environment:
+      POSTGRES_DB: "${PAPERPILOT_POSTGRES_DB:-paperpilot}"
+      POSTGRES_USER: "${PAPERPILOT_POSTGRES_ADMIN_USER:-paperpilot_admin}"
+      POSTGRES_PASSWORD: "${PAPERPILOT_POSTGRES_ADMIN_PASSWORD:?Set the dedicated-cluster administrator password}"
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256 --auth-local=peer"
+      PGDATA: "/var/lib/postgresql/data/pgdata"
+    command:
+      - postgres
+      - -c
+      - ssl=on
+      - -c
+      - ssl_cert_file=/run/paperpilot-postgres-tls/server.crt
+      - -c
+      - ssl_key_file=/run/paperpilot-postgres-tls/server.key
+      - -c
+      - ssl_ca_file=/run/paperpilot-postgres-tls/internal-root.crt
+      - -c
+      - password_encryption=scram-sha-256
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - postgres_tls:/run/paperpilot-postgres-tls:ro
+    networks:
+      database:
+        aliases:
+          - postgres.paperpilot.internal
+    shm_size: 256m
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready --host=127.0.0.1 --port=5432 --username=\"$$POSTGRES_USER\" --dbname=\"$$POSTGRES_DB\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+    logging: *bounded-logs
+
+  storage-init:
+    image: "${PAPERPILOT_APP_IMAGE:-paperpilot/app:local}"
+    build: *paperpilot-build
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        install -d -m 0700 -o 1000 -g 1000 /private/paperpilot /private/paperpilot/quarantine
+        install -d -m 0700 -o 1000 -g 1000 /next-cache
+    volumes:
+      - private_data:/private/paperpilot
+      - next_cache:/next-cache
+    network_mode: none
+    healthcheck:
+      disable: true
+    restart: "no"
+    logging: *bounded-logs
+
+  web:
+    image: "${PAPERPILOT_APP_IMAGE:-paperpilot/app:local}"
+    build: *paperpilot-build
+    depends_on:
+      postgres:
+        condition: service_healthy
+      storage-init:
+        condition: service_completed_successfully
+      internal-tls-export:
+        condition: service_completed_successfully
+    environment:
+      <<:
+        - *runtime-database
+        - *private-storage
+      NODE_ENV: production
+      NEXT_TELEMETRY_DISABLED: "1"
+      BETTER_AUTH_URL: "${PAPERPILOT_PUBLIC_ORIGIN:?Set the exact public HTTPS origin}"
+      BETTER_AUTH_SECRET: "${PAPERPILOT_BETTER_AUTH_SECRET:?Set an independent 32+ character auth secret}"
+      PAPERPILOT_EMAIL_WEBHOOK_URL: "${PAPERPILOT_EMAIL_WEBHOOK_URL:-}"
+      PAPERPILOT_EMAIL_WEBHOOK_SECRET: "${PAPERPILOT_EMAIL_WEBHOOK_SECRET:-}"
+      PAPERPILOT_EMAIL_FROM: "${PAPERPILOT_EMAIL_FROM:-}"
+      PAPERPILOT_ALLOW_INSECURE_ORIGIN: "0"
+      PAPERPILOT_RELEASE_ID: "${PAPERPILOT_RELEASE_ID:?Set the immutable release identifier}"
+      PAPERPILOT_RATE_LIMIT_SECRET: "${PAPERPILOT_RATE_LIMIT_SECRET:?Set an independent rate-limit secret}"
+      PAPERPILOT_IP_ADDRESS_HEADERS: "x-forwarded-for"
+      PAPERPILOT_TRUSTED_PROXIES: "${PAPERPILOT_CADDY_TRUSTED_PROXY_CIDR:-172.30.241.2/32}"
+      PAPERPILOT_IPV6_RATE_LIMIT_SUBNET: "${PAPERPILOT_IPV6_RATE_LIMIT_SUBNET:-64}"
+      PAPERPILOT_READER_CURSOR_SECRET: "${PAPERPILOT_READER_CURSOR_SECRET:?Set an independent Reader cursor secret}"
+      PAPERPILOT_READER_PDFJS: "${PAPERPILOT_READER_PDFJS:-0}"
+      PAPERPILOT_MENTOR_NATIVE_WEBMCP: "${PAPERPILOT_MENTOR_NATIVE_WEBMCP:-0}"
+      PAPERPILOT_MENTOR_VISUAL_SOURCES: "${PAPERPILOT_MENTOR_VISUAL_SOURCES:-0}"
+      PAPERPILOT_MENTOR_CONNECT_IDEAS: "${PAPERPILOT_MENTOR_CONNECT_IDEAS:-0}"
+      PAPERPILOT_MENTOR_FOLLOWUPS: "${PAPERPILOT_MENTOR_FOLLOWUPS:-0}"
+      PAPERPILOT_MENTOR_LOCAL_REVIEW: "${PAPERPILOT_MENTOR_LOCAL_REVIEW:-0}"
+      PAPERPILOT_WEBMCP_INLINE_IMAGE_RESULT: "${PAPERPILOT_WEBMCP_INLINE_IMAGE_RESULT:-0}"
+    volumes:
+      - private_data:/private/paperpilot
+      - next_cache:/srv/paperpilot/.next/cache
+      - internal_ca:/etc/paperpilot/trust:ro
+    networks:
+      - app
+      - database
+      - web_egress
+    <<: *app-hardening
+    pids_limit: 256
+    mem_limit: 2g
+    cpus: 2.0
+    stop_grace_period: 30s
+    restart: unless-stopped
+    logging: *bounded-logs
+
+  clamav:
+    image: "${PAPERPILOT_CLAMAV_IMAGE:-clamav/clamav:1.5.4_base-debian13-slim@sha256:bbefacdc028635d83f4e6c81abf94db4f1d859b6f6009d90c94ae3d22625b235}"
+    user: clamav
+    entrypoint: ["/init-unprivileged"]
+    environment:
+      CLAMAV_NO_CLAMD: "false"
+      CLAMAV_NO_FRESHCLAMD: "false"
+    expose:
+      - "3310"
+    volumes:
+      - clamav_signatures:/var/lib/clamav
+    networks:
+      - scan
+      - signature_updates
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 4g
+    cpus: 2.0
+    healthcheck:
+      # This is an actual daemon round-trip. A version command would remain
+      # green while clamd was unavailable or still loading signatures.
+      test: ["CMD", "clamdscan", "--ping", "1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 6m
+    stop_grace_period: 30s
+    restart: unless-stopped
+    logging: *bounded-logs
+
+  validator:
+    image: "${PAPERPILOT_VALIDATOR_IMAGE:-paperpilot/document-validator:local}"
+    build:
+      context: ../..
+      dockerfile: services/document-validator/Dockerfile
+      args:
+        NODE_IMAGE: "${PAPERPILOT_VALIDATOR_NODE_IMAGE:-node:24.20.0-trixie-slim@sha256:50c3b2f6988dfc307b86e5301d69611af31f4789bdf232863b07d3b02fe55ae0}"
+    depends_on:
+      clamav:
+        condition: service_healthy
+        restart: true
+    environment:
+      PAPERPILOT_VALIDATOR_BEARER_SECRET: "${PAPERPILOT_VALIDATION_BEARER_SECRET:?Set an independent validator bearer secret}"
+      PAPERPILOT_VALIDATOR_POLICY_VERSION: "${PAPERPILOT_VALIDATION_POLICY_VERSION:-paperpilot-document-validation-v1}"
+      PAPERPILOT_VALIDATOR_TOOLCHAIN_DIGEST: "${PAPERPILOT_VALIDATOR_TOOLCHAIN_DIGEST:?Set the validator release-provenance SHA-256}"
+      PAPERPILOT_VALIDATOR_HOST: "0.0.0.0"
+      PAPERPILOT_VALIDATOR_PORT: "4010"
+      PAPERPILOT_VALIDATOR_ROUTE: "/v1/validate-pdf"
+      PAPERPILOT_VALIDATOR_TEMP_ROOT: "/private/ephemeral/paperpilot-validator"
+      PAPERPILOT_VALIDATOR_MAX_BODY_BYTES: "${PAPERPILOT_UPLOAD_MAX_BYTES:-26214400}"
+      PAPERPILOT_VALIDATOR_BODY_IDLE_TIMEOUT_MS: "3000"
+      PAPERPILOT_VALIDATOR_BODY_ABSOLUTE_TIMEOUT_MS: "5000"
+      PAPERPILOT_VALIDATOR_VALIDATION_TIMEOUT_MS: "20000"
+      PAPERPILOT_VALIDATOR_MAX_CONCURRENT: "2"
+      PAPERPILOT_VALIDATOR_SIGNATURE_READINESS_MAX_AGE_MS: "82800000"
+      PAPERPILOT_VALIDATOR_SIGNATURE_FUTURE_CLOCK_SKEW_MS: "300000"
+      PAPERPILOT_VALIDATOR_CLAM_COMMAND: clamdscan
+      PAPERPILOT_VALIDATOR_CLAM_ARGS_JSON: '["--config-file=/etc/clamav/clamd.remote.conf","--no-summary","--stream"]'
+      PAPERPILOT_VALIDATOR_CLAM_VERSION_ARGS_JSON: '["--config-file=/etc/clamav/clamd.remote.conf","--version"]'
+      PAPERPILOT_VALIDATOR_CLAM_TIMEOUT_MS: "8000"
+      PAPERPILOT_VALIDATOR_QPDF_COMMAND: qpdf
+      PAPERPILOT_VALIDATOR_QPDF_COMMAND_TIMEOUT_MS: "5000"
+      PAPERPILOT_VALIDATOR_QPDF_MAX_METADATA_BYTES: "8388608"
+    volumes:
+      - ../../container/clamd.remote.conf:/etc/clamav/clamd.remote.conf:ro
+    tmpfs:
+      - /private/ephemeral/paperpilot-validator:rw,noexec,nosuid,nodev,size=64m,mode=0700,uid=1000,gid=1000
+    networks:
+      - scan
+      - validation
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 512m
+    cpus: 1.0
+    ulimits:
+      nofile:
+        soft: 256
+        hard: 256
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:4010/readyz',{headers:{Authorization:'Bearer '+process.env.PAPERPILOT_VALIDATOR_BEARER_SECRET},signal:AbortSignal.timeout(2500)}).then(r=>{if(r.status!==200)process.exit(1)}).catch(()=>process.exit(1))"
+      interval: 10s
+      timeout: 4s
+      retries: 6
+      start_period: 90s
+    stop_grace_period: 15s
+    restart: unless-stopped
+    logging: *bounded-logs
+
+  validation-worker:
+    image: "${PAPERPILOT_APP_IMAGE:-paperpilot/app:local}"
+    build: *paperpilot-build
+    # Do not call the package script: it intentionally loads a developer .env,
+    # while production receives its environment only from Compose.
+    command:
+      - ./node_modules/.bin/tsx
+      - --conditions=react-server
+      - src/workers/document-validation-worker.ts
+    depends_on:
+      postgres:
+        condition: service_healthy
+      validator:
+        condition: service_healthy
+        restart: true
+      storage-init:
+        condition: service_completed_successfully
+      internal-tls-export:
+        condition: service_completed_successfully
+    environment:
+      <<:
+        - *runtime-database
+        - *private-storage
+      NODE_ENV: production
+      PAPERPILOT_VALIDATION_WORKER_ID: "${PAPERPILOT_VALIDATION_WORKER_ID:-paperpilot-validation-1}"
+      PAPERPILOT_VALIDATION_SERVICE_ENDPOINT: "https://validator.paperpilot.internal:8443/v1/validate-pdf"
+      PAPERPILOT_VALIDATION_SERVICE_READINESS_ENDPOINT: "https://validator.paperpilot.internal:8443/readyz"
+      PAPERPILOT_VALIDATION_SERVICE_BEARER_SECRET: "${PAPERPILOT_VALIDATION_BEARER_SECRET:?Set an independent validator bearer secret}"
+      PAPERPILOT_VALIDATION_POLICY_VERSION: "${PAPERPILOT_VALIDATION_POLICY_VERSION:-paperpilot-document-validation-v1}"
+      PAPERPILOT_VALIDATION_TIMEOUT_SECONDS: "30"
+      PAPERPILOT_VALIDATION_MAX_RESPONSE_BYTES: "16384"
+      PAPERPILOT_VALIDATION_SIGNATURE_MAX_AGE_SECONDS: "86400"
+      PAPERPILOT_VALIDATION_FUTURE_CLOCK_SKEW_SECONDS: "300"
+      PAPERPILOT_EXTRACTION_EXPECTED_TOOLCHAIN_DIGEST: "${PAPERPILOT_EXTRACTOR_TOOLCHAIN_DIGEST:?Set the extractor release-provenance SHA-256}"
+    volumes:
+      - private_data:/private/paperpilot
+      - internal_ca:/etc/paperpilot/trust:ro
+    networks:
+      - database
+      - validation
+    <<: *app-hardening
+    healthcheck:
+      disable: true
+    labels:
+      io.paperpilot.role: worker
+      io.paperpilot.worker.kind: validation
+      io.paperpilot.worker.supervisor: docker-compose
+    pids_limit: 128
+    mem_limit: 1g
+    cpus: 1.0
+    stop_grace_period: 30s
+    restart: unless-stopped
+    logging: *bounded-logs
+
+  extractor:
+    image: "${PAPERPILOT_EXTRACTOR_IMAGE:-paperpilot/document-extractor:local}"
+    build:
+      context: ../..
+      dockerfile: services/document-extractor/Dockerfile
+      args:
+        NODE_IMAGE: "${PAPERPILOT_EXTRACTOR_NODE_IMAGE:-node:24.20.0-trixie-slim@sha256:50c3b2f6988dfc307b86e5301d69611af31f4789bdf232863b07d3b02fe55ae0}"
+        CA_CERTIFICATES_DEBIAN_VERSION: "${PAPERPILOT_EXTRACTOR_CA_CERTIFICATES_DEBIAN_VERSION:-20250419}"
+        POPPLER_DEBIAN_VERSION: "${PAPERPILOT_EXTRACTOR_POPPLER_DEBIAN_VERSION:-25.03.0-5+deb13u4}"
+        TINI_DEBIAN_VERSION: "${PAPERPILOT_EXTRACTOR_TINI_DEBIAN_VERSION:-0.19.0-3+b7}"
+    environment:
+      PAPERPILOT_EXTRACTOR_BEARER_SECRET: "${PAPERPILOT_EXTRACTION_BEARER_SECRET:?Set an independent extractor bearer secret}"
+      PAPERPILOT_EXTRACTOR_POLICY_VERSION: "${PAPERPILOT_EXTRACTION_POLICY_VERSION:-paperpilot-text-extraction-v1}"
+      PAPERPILOT_EXTRACTOR_TOOLCHAIN_DIGEST: "${PAPERPILOT_EXTRACTOR_TOOLCHAIN_DIGEST:?Set the extractor release-provenance SHA-256}"
+      PAPERPILOT_EXTRACTOR_HOST: "0.0.0.0"
+      PAPERPILOT_EXTRACTOR_PORT: "4020"
+      PAPERPILOT_EXTRACTOR_ROUTE: "/v1/extract-pdf"
+      PAPERPILOT_EXTRACTOR_TEMP_ROOT: "/private/ephemeral/paperpilot-extractor"
+      PAPERPILOT_EXTRACTOR_MAX_BODY_BYTES: "${PAPERPILOT_UPLOAD_MAX_BYTES:-26214400}"
+      PAPERPILOT_EXTRACTOR_MAX_PAGES: "${PAPERPILOT_EXTRACTOR_MAX_PAGES:-2000}"
+      PAPERPILOT_EXTRACTOR_MAX_TEXT_BYTES: "4194304"
+      PAPERPILOT_EXTRACTOR_MAX_CHUNKS: "4096"
+      PAPERPILOT_EXTRACTOR_MAX_CHUNK_BYTES: "8192"
+      PAPERPILOT_EXTRACTOR_MAX_RESPONSE_BYTES: "8388608"
+      PAPERPILOT_EXTRACTOR_BODY_IDLE_TIMEOUT_MS: "3000"
+      PAPERPILOT_EXTRACTOR_BODY_ABSOLUTE_TIMEOUT_MS: "5000"
+      PAPERPILOT_EXTRACTOR_EXTRACTION_TIMEOUT_MS: "45000"
+      PAPERPILOT_EXTRACTOR_READINESS_TIMEOUT_MS: "3000"
+      PAPERPILOT_EXTRACTOR_MAX_CONCURRENT: "1"
+      PAPERPILOT_EXTRACTOR_SINGLE_USE: "1"
+      PAPERPILOT_EXTRACTOR_PDFTOTEXT_COMMAND: pdftotext
+      PAPERPILOT_EXTRACTOR_PDFINFO_COMMAND: pdfinfo
+      PAPERPILOT_EXTRACTOR_POPPLER_COMMAND_TIMEOUT_MS: "15000"
+      PAPERPILOT_EXTRACTOR_POPPLER_MAX_RAW_TEXT_BYTES: "8388608"
+    tmpfs:
+      - /private/ephemeral/paperpilot-extractor:rw,noexec,nosuid,nodev,size=64m,mode=0700,uid=1000,gid=1000
+    networks:
+      - extraction
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 1g
+    cpus: 2.0
+    ulimits:
+      nofile:
+        soft: 256
+        hard: 256
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:4020/readyz',{headers:{Authorization:'Bearer '+process.env.PAPERPILOT_EXTRACTOR_BEARER_SECRET},signal:AbortSignal.timeout(2500)}).then(r=>{if(r.status!==200)process.exit(1)}).catch(()=>process.exit(1))"
+      interval: 10s
+      timeout: 4s
+      retries: 5
+      start_period: 20s
+    stop_grace_period: 15s
+    restart: always
+    logging: *bounded-logs
+
+  extraction-worker:
+    image: "${PAPERPILOT_APP_IMAGE:-paperpilot/app:local}"
+    build: *paperpilot-build
+    # Do not call the package script: it intentionally loads a developer .env,
+    # while production receives its environment only from Compose.
+    command:
+      - ./node_modules/.bin/tsx
+      - --conditions=react-server
+      - src/workers/document-extraction-worker.ts
+    depends_on:
+      postgres:
+        condition: service_healthy
+      extractor:
+        condition: service_healthy
+        restart: true
+      storage-init:
+        condition: service_completed_successfully
+      internal-tls-export:
+        condition: service_completed_successfully
+    environment:
+      <<:
+        - *runtime-database
+        - *private-storage
+      NODE_ENV: production
+      PAPERPILOT_EXTRACTION_WORKER_ID: "${PAPERPILOT_EXTRACTION_WORKER_ID:-paperpilot-extraction-1}"
+      PAPERPILOT_EXTRACTION_SERVICE_ENDPOINT: "https://extractor.paperpilot.internal:8443/v1/extract-pdf"
+      PAPERPILOT_EXTRACTION_SERVICE_READINESS_ENDPOINT: "https://extractor.paperpilot.internal:8443/readyz"
+      PAPERPILOT_EXTRACTION_SERVICE_BEARER_SECRET: "${PAPERPILOT_EXTRACTION_BEARER_SECRET:?Set an independent extractor bearer secret}"
+      PAPERPILOT_EXTRACTION_POLICY_VERSION: "${PAPERPILOT_EXTRACTION_POLICY_VERSION:-paperpilot-text-extraction-v1}"
+      PAPERPILOT_EXTRACTION_EXPECTED_TOOLCHAIN_DIGEST: "${PAPERPILOT_EXTRACTOR_TOOLCHAIN_DIGEST:?Set the extractor release-provenance SHA-256}"
+      PAPERPILOT_EXTRACTION_TIMEOUT_SECONDS: "75"
+      PAPERPILOT_EXTRACTION_MAX_RESPONSE_BYTES: "8388608"
+      PAPERPILOT_EXTRACTION_RESULT_MAX_AGE_SECONDS: "900"
+      PAPERPILOT_EXTRACTION_FUTURE_CLOCK_SKEW_SECONDS: "300"
+    volumes:
+      - private_data:/private/paperpilot
+      - internal_ca:/etc/paperpilot/trust:ro
+    networks:
+      - database
+      - extraction
+    <<: *app-hardening
+    healthcheck:
+      disable: true
+    labels:
+      io.paperpilot.role: worker
+      io.paperpilot.worker.kind: extraction
+      io.paperpilot.worker.supervisor: docker-compose
+    pids_limit: 128
+    mem_limit: 1g
+    cpus: 1.0
+    stop_grace_period: 30s
+    restart: unless-stopped
+    logging: *bounded-logs
+
+  # Operations are explicit, short-lived profile services. Their privileged
+  # URLs never enter web or worker environments.
+  db-bootstrap:
+    profiles: ["operations"]
+    image: "${PAPERPILOT_APP_IMAGE:-paperpilot/app:local}"
+    build: *paperpilot-build
+    depends_on:
+      postgres:
+        condition: service_healthy
+      internal-tls-export:
+        condition: service_completed_successfully
+    environment:
+      NODE_ENV: production
+      NODE_EXTRA_CA_CERTS: /etc/paperpilot/trust/internal-root.crt
+      PAPERPILOT_ADMIN_DATABASE_URL: "postgresql://${PAPERPILOT_POSTGRES_ADMIN_USER:-paperpilot_admin}:${PAPERPILOT_POSTGRES_ADMIN_PASSWORD:?Set the dedicated-cluster administrator password}@postgres.paperpilot.internal:5432/${PAPERPILOT_POSTGRES_DB:-paperpilot}?sslmode=verify-full"
+    command: ["npm", "run", "db:roles:bootstrap"]
+    volumes:
+      - internal_ca:/etc/paperpilot/trust:ro
+    networks:
+      - database
+    <<: *app-hardening
+    healthcheck:
+      disable: true
+    restart: "no"
+    logging: *bounded-logs
+
+  db-role-provision:
+    profiles: ["operations"]
+    image: "${PAPERPILOT_POSTGRES_IMAGE:?Set an approved immutable PostgreSQL 16+ image reference}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      internal-tls-export:
+        condition: service_completed_successfully
+    environment:
+      PGHOST: postgres.paperpilot.internal
+      PGPORT: "5432"
+      PGDATABASE: "${PAPERPILOT_POSTGRES_DB:-paperpilot}"
+      PGUSER: "${PAPERPILOT_POSTGRES_ADMIN_USER:-paperpilot_admin}"
+      PGPASSWORD: "${PAPERPILOT_POSTGRES_ADMIN_PASSWORD:?Set the dedicated-cluster administrator password}"
+      PGSSLMODE: verify-full
+      PGSSLROOTCERT: /etc/paperpilot/trust/internal-root.crt
+      PAPERPILOT_RUNTIME_DATABASE_PASSWORD: "${PAPERPILOT_RUNTIME_DATABASE_PASSWORD:?Set a base64url runtime database password}"
+      PAPERPILOT_DEPLOY_DATABASE_PASSWORD: "${PAPERPILOT_DEPLOY_DATABASE_PASSWORD:?Set a base64url short-lived deploy password}"
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        if ! psql --tuples-only --no-align --command="SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'paperpilot_deploy'" | grep -qx 1; then
+          psql --set=ON_ERROR_STOP=1 --command="CREATE ROLE paperpilot_deploy LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS"
+        fi
+        psql --set=ON_ERROR_STOP=1 \
+          --set=runtime_password="$$PAPERPILOT_RUNTIME_DATABASE_PASSWORD" \
+          --set=deploy_password="$$PAPERPILOT_DEPLOY_DATABASE_PASSWORD" \
+          --set=database_name="$$PGDATABASE" <<'SQL'
+        ALTER ROLE paperpilot_runtime LOGIN PASSWORD :'runtime_password';
+        ALTER ROLE paperpilot_deploy LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD :'deploy_password';
+        GRANT CONNECT ON DATABASE :"database_name" TO paperpilot_deploy;
+        GRANT paperpilot_migration_owner TO paperpilot_deploy WITH INHERIT FALSE, SET TRUE, ADMIN FALSE;
+        SQL
+    volumes:
+      - internal_ca:/etc/paperpilot/trust:ro
+    networks:
+      - database
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
+    restart: "no"
+    logging: *bounded-logs
+
+  db-release:
+    profiles: ["operations"]
+    image: "${PAPERPILOT_APP_IMAGE:-paperpilot/app:local}"
+    build: *paperpilot-build
+    depends_on:
+      postgres:
+        condition: service_healthy
+      internal-tls-export:
+        condition: service_completed_successfully
+    environment:
+      NODE_ENV: production
+      NODE_EXTRA_CA_CERTS: /etc/paperpilot/trust/internal-root.crt
+      PAPERPILOT_DEPLOY_DATABASE_URL: "postgresql://paperpilot_deploy:${PAPERPILOT_DEPLOY_DATABASE_PASSWORD:?Set a base64url short-lived deploy password}@postgres.paperpilot.internal:5432/${PAPERPILOT_POSTGRES_DB:-paperpilot}?sslmode=verify-full"
+      PAPERPILOT_MIGRATION_AUDIT_DATABASE_URL: "postgresql://paperpilot_deploy:${PAPERPILOT_DEPLOY_DATABASE_PASSWORD:?Set a base64url short-lived deploy password}@postgres.paperpilot.internal:5432/${PAPERPILOT_POSTGRES_DB:-paperpilot}?sslmode=verify-full"
+    entrypoint: ["/usr/bin/tini", "--", "/bin/sh", "-ec"]
+    command:
+      - npm run db:deploy && npm run db:migrations:verify && npm run db:roles:reconcile
+    volumes:
+      - internal_ca:/etc/paperpilot/trust:ro
+    networks:
+      - database
+    <<: *app-hardening
+    healthcheck:
+      disable: true
+    restart: "no"
+    logging: *bounded-logs
+
+  db-retire-deployer:
+    profiles: ["operations"]
+    image: "${PAPERPILOT_APP_IMAGE:-paperpilot/app:local}"
+    build: *paperpilot-build
+    depends_on:
+      postgres:
+        condition: service_healthy
+      internal-tls-export:
+        condition: service_completed_successfully
+    environment:
+      NODE_ENV: production
+      NODE_EXTRA_CA_CERTS: /etc/paperpilot/trust/internal-root.crt
+      PAPERPILOT_ADMIN_DATABASE_URL: "postgresql://${PAPERPILOT_POSTGRES_ADMIN_USER:-paperpilot_admin}:${PAPERPILOT_POSTGRES_ADMIN_PASSWORD:?Set the dedicated-cluster administrator password}@postgres.paperpilot.internal:5432/${PAPERPILOT_POSTGRES_DB:-paperpilot}?sslmode=verify-full"
+      PAPERPILOT_DEPLOY_LOGIN_ROLE: paperpilot_deploy
+    command: ["npm", "run", "db:roles:retire-deployer"]
+    volumes:
+      - internal_ca:/etc/paperpilot/trust:ro
+    networks:
+      - database
+    <<: *app-hardening
+    healthcheck:
+      disable: true
+    restart: "no"
+    logging: *bounded-logs
+
+  db-verify:
+    profiles: ["operations"]
+    image: "${PAPERPILOT_APP_IMAGE:-paperpilot/app:local}"
+    build: *paperpilot-build
+    depends_on:
+      postgres:
+        condition: service_healthy
+      internal-tls-export:
+        condition: service_completed_successfully
+    environment:
+      NODE_ENV: production
+      NODE_EXTRA_CA_CERTS: /etc/paperpilot/trust/internal-root.crt
+      PAPERPILOT_ROLE_AUDIT_DATABASE_URL: "postgresql://paperpilot_runtime:${PAPERPILOT_RUNTIME_DATABASE_PASSWORD:?Set a base64url runtime database password}@postgres.paperpilot.internal:5432/${PAPERPILOT_POSTGRES_DB:-paperpilot}?sslmode=verify-full"
+    entrypoint: ["/usr/bin/tini", "--", "/bin/sh", "-ec"]
+    command:
+      - npm run db:roles:verify && npm run db:roles:smoke
+    volumes:
+      - internal_ca:/etc/paperpilot/trust:ro
+    networks:
+      - database
+    <<: *app-hardening
+    healthcheck:
+      disable: true
+    restart: "no"
+    logging: *bounded-logs
+
+networks:
+  edge: {}
+  app:
+    internal: true
+    ipam:
+      config:
+        - subnet: "${PAPERPILOT_APP_NETWORK_CIDR:-172.30.241.0/24}"
+  database:
+    internal: true
+  validation:
+    internal: true
+  extraction:
+    internal: true
+  scan:
+    internal: true
+  # Only web may need controlled HTTPS egress for the configured transactional
+  # email webhook. Workers remain restricted to their internal networks.
+  web_egress: {}
+  signature_updates: {}
+
+volumes:
+  caddy_data: {}
+  caddy_config: {}
+  internal_ca: {}
+  postgres_tls: {}
+  postgres_data: {}
+  private_data: {}
+  next_cache: {}
+  clamav_signatures: {}

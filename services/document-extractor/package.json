@@ -1,0 +1,20 @@
+{
+  "name": "@paperpilot/document-extractor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prestart": "npm run build",
+    "start": "node dist/src/main.js",
+    "test": "npm run build && node --test --test-concurrency=1 dist/test/*.test.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.10",
+    "typescript": "^5.7.3"
+  }
+}

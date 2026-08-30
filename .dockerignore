@@ -1,0 +1,62 @@
+# PaperPilot image builds all use the repository root as their context. Keep
+# that context deny-by-default so local credentials, retained documents, Git
+# history, dependencies, and prior build output never reach BuildKit.
+**
+
+# Root application build inputs.
+!.dockerignore
+!Dockerfile
+!package.json
+!package-lock.json
+!prisma.config.ts
+!next.config.ts
+!next-env.d.ts
+!tsconfig.json
+
+# Application, migration, runtime-operation, and deployment inputs copied by
+# the root image or required by its production scripts.
+!src/
+!src/**
+!prisma/
+!prisma/**
+!scripts/
+!scripts/**
+!deploy/
+!deploy/postgres/
+!deploy/postgres/**
+
+# Validator/extractor build inputs and the shared scanner configuration.
+!services/
+!services/**
+!container/
+!container/**
+
+# Re-close common secret and local-state names even if one is created later
+# beneath an allowed source directory.
+**/.env
+**/.env.*
+**/.git
+**/.git/**
+**/.paperpilot-data
+**/.paperpilot-data/**
+**/node_modules
+**/node_modules/**
+**/.next
+**/.next/**
+src/generated/prisma
+src/generated/prisma/**
+**/dist
+**/dist/**
+**/out
+**/out/**
+**/coverage
+**/coverage/**
+**/playwright-report
+**/playwright-report/**
+**/test-results
+**/test-results/**
+**/*.log
+**/*.key
+**/*.pem
+**/*.p12
+**/*.pfx

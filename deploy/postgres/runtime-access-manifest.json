@@ -1,0 +1,128 @@
+{
+  "schemaVersion": 5,
+  "authoritySnapshotVersion": 3,
+  "databaseSchema": "public",
+  "migrationOwnerRole": "paperpilot_migration_owner",
+  "runtimeRole": "paperpilot_runtime",
+  "requiredTablePrivileges": [
+    "SELECT",
+    "INSERT",
+    "UPDATE",
+    "DELETE"
+  ],
+  "forbiddenTablePrivileges": [
+    "TRUNCATE",
+    "REFERENCES",
+    "TRIGGER"
+  ],
+  "tablePrivilegeOverrides": [
+    {
+      "table": "RetainedAuditPrincipal",
+      "tablePrivileges": [
+        "SELECT"
+      ],
+      "columnPrivileges": [
+        {
+          "privilege": "INSERT",
+          "columns": [
+            "createdAt",
+            "id",
+            "liveUserId",
+            "organizationId"
+          ]
+        },
+        {
+          "privilege": "UPDATE",
+          "columns": [
+            "id"
+          ]
+        }
+      ]
+    }
+  ],
+  "requiredFunctionExecute": [
+    "WebMcpApproval_provenance_row_allowed(text,text,text)",
+    "WebMcpInbox_integrity_lock(text,text)",
+    "WebMcpPaper_integrity_lock(text)",
+    "assert_document_text_extraction_aggregate(text,text)",
+    "compute_document_text_manifest_v1(text,text,text)",
+    "document_text_manifest_field_v1(text)"
+  ],
+  "forbiddenSystemFunctionExecute": [
+    "lo_creat(integer)",
+    "lo_create(oid)",
+    "lo_from_bytea(oid,bytea)",
+    "lo_import(text)",
+    "lo_import(text,oid)"
+  ],
+  "applicationFunctionAuthority": {
+    "count": 82,
+    "sha256": "b0571fc6cb77702ea006f574630aa476a87a2f7116811af1f25d508b7407051f"
+  },
+  "applicationTriggerAuthority": {
+    "count": 166,
+    "sha256": "9f5c167b3251ae7d529db318148c007032758ad5510644637fdf612d2c151889"
+  },
+  "applicationSchemaAuthority": {
+    "count": 57,
+    "sha256": "1a87b5feda3d0d0b77d9562dd80fbbc29e78f1d060c5ce529e227097daec5af2"
+  },
+  "applicationTables": [
+    "Account",
+    "Asset",
+    "AuditEvent",
+    "Collection",
+    "CollectionEvidenceNote",
+    "CollectionPaper",
+    "CrawlerImport",
+    "Document",
+    "DocumentAsset",
+    "DocumentIngestReceipt",
+    "DocumentIngressAttempt",
+    "DocumentIntake",
+    "DocumentTextChunk",
+    "DocumentTextExtraction",
+    "DocumentTextManifestAdmission",
+    "DocumentValidationAttestation",
+    "EvidenceNote",
+    "EvidenceTextAnchor",
+    "IdempotencyRecord",
+    "ImportBatch",
+    "InboxEntry",
+    "IntegrationConnection",
+    "Invitation",
+    "Job",
+    "JobAttempt",
+    "Member",
+    "Organization",
+    "OrganizationRole",
+    "Paper",
+    "PaperAuthor",
+    "PaperIdentifier",
+    "Project",
+    "ProjectEvidenceNote",
+    "ProjectPaper",
+    "ProvenanceRecord",
+    "RateLimit",
+    "RateLimitBucket",
+    "RetainedAuditPrincipal",
+    "Session",
+    "Team",
+    "TeamMember",
+    "UploadAttempt",
+    "UploadSession",
+    "User",
+    "Verification",
+    "WebMcpApprovalChallenge",
+    "WebMcpProposalApproval",
+    "WorkspacePaper",
+    "ZoteroAttachment",
+    "ZoteroAttachmentImport",
+    "ZoteroAttachmentPolicy",
+    "ZoteroLibrary",
+    "ZoteroOAuthAttempt",
+    "ZoteroObject",
+    "ZoteroSyncRun",
+    "ZoteroSyncStage"
+  ]
+}

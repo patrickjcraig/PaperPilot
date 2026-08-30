@@ -1,0 +1,69 @@
+# The WebMCP Challenge change disclosure
+
+PaperPilot is an existing application. This log separates the pre-existing service from new work created for The WebMCP Challenge. The eligible build window begins 2026-08-25 19:00 UTC according to the event materials.
+
+This file is a disclosure aid, not proof by itself. Filesystem timestamps are not reliable evidence of authorship or timing. Each submitted entry must ultimately cite a dated commit in a PaperPilot-local public Git repository.
+
+## Pre-existing baseline
+
+Before the WebMCP-focused challenge work, PaperPilot already included:
+
+- a deterministic browser-local research demo and an authenticated PostgreSQL-backed service;
+- literature discovery, projects, imports, collections, Reader, and PDF-grounded evidence workflows;
+- metadata-oriented WebMCP proposal/review code that is separate from passage-level browser evidence;
+- Zotero synchronization, governed single-PDF crawling, uploads, and collaboration foundations.
+
+These capabilities may provide context for the demo, but they must not be represented as new WebMCP Challenge work.
+
+## New challenge work
+
+### 2026-08-29 — Scope reset to an accessible scientific-literacy WebMCP Reader
+
+- Reprioritized the hackathon around a reader uploading a previously unseen admitted scientific PDF, selecting exact text or visual material, asking a browser research mentor for help through WebMCP, and inspecting a source → WebMCP → mentor → human evidence trail.
+- Made text, equations, whole figures, figure regions, and bounded same-paper selected-evidence synthesis first-class requirements without paper-specific behavior.
+- Required immutable staged mentor responses, a separate optional **My takeaway**, explicit save/discard authority, keyboard and screen-reader paths, and truthful local-review labeling.
+- Deferred new crawler, Zotero, networking, collaboration, and scale expansion until the WebMCP loop is demonstrably complete.
+- Added the canonical guided Scope and 30-story PRD; retained the earlier webpage-provenance scope only as a superseded architecture reference.
+- Public commit: **pending PaperPilot-local repository initialization**.
+
+### 2026-08-29 — Strict capture contract and browser adapter
+
+- Added a closed, versioned WebMCP passage-capture envelope with bounded text, canonical public HTTPS source identity, exact locators, domain-separated SHA-256 digests, and explicit authority labels.
+- Added capability-detected browser registration for `paperpilot.describe_capture_contract` and `paperpilot.stage_web_evidence`.
+- Added adversarial contract and adapter tests.
+- Important limitation: this earlier webpage-evidence adapter is not the canonical scientific-mentor Reader integration, is not mounted by the application UI, and cannot satisfy the final PDF read/stage judge proof.
+- Public commit: **pending PaperPilot-local repository initialization**.
+
+### 2026-08-29 — Devpost compliance controls
+
+- Added a machine-readable event requirements manifest, automated readiness audit, judge guide, this dated disclosure, and a release-freeze checklist.
+- Recorded the project as an existing application and made missing license, public repository, live URL, tested-client, demo-video, and final-submission evidence fail explicitly.
+- Public commit: **pending PaperPilot-local repository initialization**.
+
+### 2026-08-29 — Compliance gates aligned to the approved PDF mentor
+
+- Removed the deterministic webpage source from the judged-product requirements.
+- Made the guided Scope and PRD required repository artifacts.
+- Added fail-closed declarations and manual verification gates for the paper-agnostic admission contract, all five selection kinds, bounded source-read and structured mentor-stage callbacks, observable WebMCP activity, primary-flow accessibility, and truthful fallback labeling.
+- Rewrote the judge guide and README challenge section around replaceable real PDFs and the accessible text/figure mentor flow.
+- Verification performed: JSON/syntax/lint/readiness audit recorded during the PRD handoff.
+- Public commit: **pending PaperPilot-local repository initialization**.
+
+## Entry template
+
+Copy this block for each material addition:
+
+```text
+### YYYY-MM-DD — Capability name
+
+- User-visible outcome:
+- Actual WebMCP behavior:
+- Provenance or safety boundary:
+- Verification performed:
+- Public commit:
+- Live deployment commit (if applicable):
+```
+
+## Final disclosure check
+
+Before submission, replace every `pending PaperPilot-local repository initialization` marker with a public commit link or SHA. Confirm that the Devpost description and video make the same baseline/new-work distinction as this document.

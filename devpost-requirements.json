@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "event": {
+    "name": "The WebMCP Challenge",
+    "slug": "webmcp",
+    "url": "https://webmcp.devpost.com/",
+    "rulesUrl": "https://webmcp.devpost.com/rules",
+    "submissionDeadline": "2026-09-03T20:00:00.000Z",
+    "judgingEndsAt": "2026-09-22T00:00:00.000Z"
+  },
+  "project": {
+    "name": "PaperPilot",
+    "appStatus": "Existing",
+    "newWorkDisclosure": "docs/HACKATHON-CHANGELOG.md",
+    "licensePath": "LICENSE",
+    "licenseSpdxId": ""
+  },
+  "publicArtifacts": {
+    "liveUrl": "",
+    "repositoryUrl": "",
+    "demoVideoUrl": ""
+  },
+  "judgeExperience": {
+    "instructionsPath": "docs/DEVPOST-JUDGE-GUIDE.md",
+    "productScopePath": "docs/hackathon-build/scope.md",
+    "productRequirementsPath": "docs/hackathon-build/prd.md",
+    "paperPilotToolIntegrationPath": "src/components/live-paper-pilot-app.tsx",
+    "requiresPaperAgnosticPdfFlow": true,
+    "prohibitsPaperSpecificDemoLogic": true,
+    "requiredSelectionKinds": [
+      "exact-text",
+      "page-region",
+      "whole-figure",
+      "figure-region",
+      "same-paper-synthesis"
+    ],
+    "requiredWebMcpCapabilities": [
+      "read-bounded-active-pdf-selection",
+      "stage-structured-mentor-explanation"
+    ],
+    "testedClients": []
+  },
+  "manualVerifications": {
+    "repositoryPublicIncognitoVerified": false,
+    "licenseVisibleOnRepositoryHome": false,
+    "liveUrlAnonymousOrCredentialsVerified": false,
+    "liveUrlWebMcpVerified": false,
+    "paperAgnosticPdfFlowVerified": false,
+    "requiredSelectionKindsVerified": false,
+    "observableWebMcpActivityVerified": false,
+    "accessibilityPrimaryFlowVerified": false,
+    "truthfulFallbackVerified": false,
+    "demoVideoUnderThreeMinutes": false,
+    "demoVideoHasExplanatoryAudio": false,
+    "submissionNotDraft": false,
+    "postDeadlineFreezePrepared": false
+  },
+  "submissionAnswers": {
+    "aiTools": [
+      "OpenAI Codex"
+    ],
+    "webMcpClients": [],
+    "learningLevel": "",
+    "careerValue": ""
+  },
+  "privateSubmissionFields": [
+    "submitter type",
+    "country or countries of residence",
+    "judge-only credentials or testing secrets"
+  ]
+}
