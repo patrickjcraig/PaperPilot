@@ -42,7 +42,7 @@
   },
   "manualVerifications": {
     "repositoryPublicIncognitoVerified": true,
-    "licenseVisibleOnRepositoryHome": false,
+    "licenseVisibleOnRepositoryHome": true,
     "liveUrlAnonymousOrCredentialsVerified": false,
     "liveUrlWebMcpVerified": false,
     "paperAgnosticPdfFlowVerified": false,
