@@ -13,6 +13,19 @@ import type {
   WebMcpInboxEntry,
   WorkspaceInboxEntry,
 } from "../types";
+import type {
+  CreateDirectPdfTransferCommandV1,
+  DirectPdfTransferOptions,
+  DirectPdfTransferPlanV1,
+  FinalizeDirectPdfTransferCommandV1,
+} from "./direct-pdf-transfer";
+
+export type {
+  CreateDirectPdfTransferCommandV1,
+  DirectPdfTransferOptions,
+  DirectPdfTransferPlanV1,
+  FinalizeDirectPdfTransferCommandV1,
+} from "./direct-pdf-transfer";
 
 /**
  * UI-facing read model for the current workspace.
@@ -303,6 +316,8 @@ export type ApproveWebMcpProposalResponse = WorkspaceCommandResult<
 export interface CreateUploadSessionCommand extends WorkspaceCommandEnvelope {
   fileName: string;
   sizeBytes: number;
+  /** Browser-computed claim; trusted admission requires Sandbox reproduction. */
+  sha256: string;
   declaredMimeType: "application/pdf";
 }
 
@@ -639,6 +654,21 @@ export interface UploadWorkspaceClient extends WorkspaceClient {
   createUploadSession(
     command: CreateUploadSessionCommand,
   ): Promise<WorkspaceCommandResult<CreateUploadSessionResult>>;
+  createDirectPdfTransfer(
+    uploadId: string,
+    command: CreateDirectPdfTransferCommandV1,
+  ): Promise<DirectPdfTransferPlanV1>;
+  uploadPdfDirectly(
+    plan: DirectPdfTransferPlanV1,
+    file: File,
+    options?: DirectPdfTransferOptions,
+  ): Promise<void>;
+  finalizeDirectPdfTransfer(
+    uploadId: string,
+    plan: DirectPdfTransferPlanV1,
+    command: FinalizeDirectPdfTransferCommandV1,
+  ): Promise<UploadStatusDto>;
+  /** Legacy local/server-proxy transfer; excluded from the serverless release path. */
   uploadContent(
     uploadId: string,
     file: File,

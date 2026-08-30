@@ -1,0 +1,15 @@
+/*
+
+!.vercelignore
+!package.json
+!package-lock.json
+!next.config.ts
+!next-env.d.ts
+!tsconfig.json
+!prisma.config.ts
+!src/
+!src/**
+!prisma/
+!prisma/**
+!public/
+!public/**

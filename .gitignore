@@ -11,3 +11,5 @@ src/generated/prisma/
 .paperpilot-prisma-dev/
 .codex-*/
 .devpost-hackathon-state.json
+/.swc
+/.vercel/

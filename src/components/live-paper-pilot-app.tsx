@@ -107,6 +107,7 @@ import {
   WorkspaceHttpError,
 } from "@/lib/workspace";
 import { authClient } from "@/lib/auth-client";
+import { sha256Hex as sha256PdfBytes } from "@/lib/workspace/reader-pdf";
 import {
   isWorkspaceRole,
   type InvitableWorkspaceRole,
@@ -761,6 +762,7 @@ export function LivePaperPilotApp({
   const uploadIntent = useRef<{
     operationId: string;
     file: File;
+    expectedSha256?: string;
     uploadId?: string;
   } | undefined>(undefined);
   const webMcpFinalSubmissions = useRef<Record<string, {
@@ -1546,6 +1548,14 @@ export function LivePaperPilotApp({
     let uploadId = intent.uploadId;
     let aggregateVersion = bootstrap.aggregateVersion;
     try {
+      if (!intent.expectedSha256) {
+        setUploadPhase("creating");
+        setUploadMessage("Verifying the selected PDF before reserving private storage…");
+        const fileBytes = new Uint8Array(await intent.file.arrayBuffer());
+        if (requestNumber !== uploadRequestCounter.current) return;
+        intent.expectedSha256 = await sha256PdfBytes(fileBytes);
+        if (requestNumber !== uploadRequestCounter.current) return;
+      }
       if (!uploadId) {
         setUploadPhase("creating");
         setUploadMessage("Creating a tenant-bound private upload session…");
@@ -1554,6 +1564,7 @@ export function LivePaperPilotApp({
           expectedVersion: aggregateVersion,
           fileName: intent.file.name,
           sizeBytes: intent.file.size,
+          sha256: intent.expectedSha256,
           declaredMimeType: "application/pdf",
         });
         if (!created.ok && created.code === "version_conflict") {
@@ -1566,6 +1577,7 @@ export function LivePaperPilotApp({
             expectedVersion: aggregateVersion,
             fileName: intent.file.name,
             sizeBytes: intent.file.size,
+            sha256: intent.expectedSha256,
             declaredMimeType: "application/pdf",
           });
         }

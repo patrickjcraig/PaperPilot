@@ -9,8 +9,9 @@ import { fileURLToPath } from "node:url";
 import { config as loadDotenv } from "dotenv";
 
 import {
+  PAPERPILOT_SUPABASE_DIRECT_DATABASE_HOST,
   PAPERPILOT_SUPABASE_DIRECT_DATABASE_PROFILE,
-  validatedPaperPilotApplicationDatabaseUrl,
+  validatedPostgresConnectionUrl,
 } from "../src/lib/postgres-connection-url.mjs";
 
 const SUPPORTED_PHASES = new Set(["infrastructure", "release"]);
@@ -520,10 +521,19 @@ function approvedSupabaseRuntimeDatabaseUrl(environment) {
       !== PAPERPILOT_SUPABASE_DIRECT_DATABASE_PROFILE
   ) return false;
   try {
-    const connection = validatedPaperPilotApplicationDatabaseUrl(
+    const connection = validatedPostgresConnectionUrl(
       environment.DATABASE_URL,
-      { databaseProfile: environment.PAPERPILOT_DATABASE_PROFILE },
+      {
+        label: "DATABASE_URL",
+        requireTlsForNonLoopback: true,
+        requiredUsername: "paperpilot_runtime",
+      },
     );
+    if (
+      connection.hostname !== PAPERPILOT_SUPABASE_DIRECT_DATABASE_HOST
+      || connection.port !== 5432
+      || connection.databaseName !== "postgres"
+    ) return false;
     const encodedPassword = new URL(connection.connectionString).password;
     const password = decodeURIComponent(encodedPassword);
     return strongSecret(password);

@@ -1,4 +1,17 @@
-# Supabase-only single-host HTTPS deployment
+# Superseded single-host deployment reference
+
+> **Not an approved PaperPilot release target.** On 2026-08-30 the project
+> owner required a fully serverless deployment. The canonical production path
+> is documented in [`../../docs/SERVERLESS-ARCHITECTURE.md`](../../docs/SERVERLESS-ARCHITECTURE.md):
+> Vercel Next.js Functions + Vercel Workflow + one fresh non-persistent Vercel
+> Sandbox per PDF attempt, with Supabase PostgreSQL and private Storage as the
+> only durable data plane. This directory's Compose, Caddy, shared-volume,
+> polling-worker, and daemon configuration is retained only as historical/local
+> implementation reference. It must not be deployed, used as a fallback, or
+> counted by release preflight.
+
+The remainder of this file records the superseded topology for migration and
+security-contract reference only.
 
 This directory is PaperPilot's Gate 0 deployment skeleton for one Linux host.
 It runs the web application, Caddy, the validator/extractor services, their

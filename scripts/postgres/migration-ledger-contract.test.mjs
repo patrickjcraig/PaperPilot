@@ -13,13 +13,17 @@ test("checked-in Prisma migrations form one exact sorted checksum contract", () 
   assert.ok(expected.length >= 40);
   assert.equal(new Set(expected.map((entry) => entry.migrationName)).size, expected.length);
   assert.ok(expected.every((entry) => /^[0-9a-f]{64}$/.test(entry.checksum)));
-  assert.equal(expected.at(-1)?.migrationName, "20260829261000_user_name_text_policy");
+  assert.equal(
+    expected.at(-1)?.migrationName,
+    "20260830184500_supabase_storage_custody_guards",
+  );
 });
 
 test("authority migrations hold their preflight locks through the final sentinel", () => {
   for (const migrationName of [
     "20260829260000_workspace_collaboration_access",
     "20260829261000_user_name_text_policy",
+    "20260830184500_supabase_storage_custody_guards",
   ]) {
     const sql = readFileSync(
       join(process.cwd(), "prisma", "migrations", migrationName, "migration.sql"),

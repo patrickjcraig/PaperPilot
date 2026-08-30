@@ -3,6 +3,7 @@ import "server-only";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/generated/prisma/client";
 import { configuredPaperPilotPostgresConnection } from "@/lib/postgres-client-config.mjs";
+import { paperPilotDatabasePoolMaxFromEnvironment } from "@/lib/postgres-pool-config";
 
 const prismaGlobal = globalThis as unknown as {
   paperPilotPrisma?: PrismaClient;
@@ -16,12 +17,10 @@ function configuredPrismaClient() {
     {
       caCertificatePath: process.env.PAPERPILOT_DATABASE_CA_CERT_PATH,
       databaseProfile: process.env.PAPERPILOT_DATABASE_PROFILE,
+      poolerHost: process.env.PAPERPILOT_SUPABASE_POOLER_HOST,
     },
   );
-  const configuredPoolSize = Number(process.env.DATABASE_POOL_MAX);
-  const poolSize = Number.isSafeInteger(configuredPoolSize) && configuredPoolSize > 0
-    ? configuredPoolSize
-    : 5;
+  const poolSize = paperPilotDatabasePoolMaxFromEnvironment(process.env);
   const adapter = new PrismaPg({
     ...configuredDatabase.clientConfig,
     connectionTimeoutMillis: 5_000,

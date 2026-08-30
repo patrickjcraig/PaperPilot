@@ -13,7 +13,8 @@ import {
   MAX_DATABASE_CA_CERT_BYTES,
 } from "./postgres-client-config.mjs";
 import {
-  PAPERPILOT_SUPABASE_DIRECT_DATABASE_PROFILE,
+  PAPERPILOT_SUPABASE_RUNTIME_DATABASE_USERNAME,
+  PAPERPILOT_SUPABASE_TRANSACTION_DATABASE_PROFILE,
 } from "./postgres-connection-url.mjs";
 
 const TEST_CA = rootCertificates[0];
@@ -28,15 +29,16 @@ function withTempDirectory<T>(run: (directory: string) => T): T {
   }
 }
 
-test("the Supabase profile installs one explicitly verified CA in pg", () => {
+test("the Supabase transaction profile installs verified TLS in pg", () => {
   withTempDirectory((directory) => {
     const caPath = join(directory, "supabase-ca.pem");
     writeFileSync(caPath, TEST_CA, { encoding: "utf8", flag: "wx" });
     const configured = configuredPaperPilotPostgresConnection(
-      "postgresql://paperpilot_runtime:unit%2Ftest@db.avmcmmayvnjxrhrmgsdx.supabase.co:5432/postgres?sslmode=verify-full",
+      `postgresql://${PAPERPILOT_SUPABASE_RUNTIME_DATABASE_USERNAME}:unit%2Ftest@aws-0-us-east-1.pooler.supabase.com:6543/postgres?sslmode=verify-full&pgbouncer=true`,
       {
         caCertificatePath: caPath,
-        databaseProfile: PAPERPILOT_SUPABASE_DIRECT_DATABASE_PROFILE,
+        databaseProfile: PAPERPILOT_SUPABASE_TRANSACTION_DATABASE_PROFILE,
+        poolerHost: "aws-0-us-east-1.pooler.supabase.com",
       },
     );
 
@@ -104,27 +106,32 @@ test("the Supabase CA loader accepts only bounded regular CA-only PEM files", ()
   });
 });
 
-test("CA trust and the approved profile are mandatory for every application client", () => {
+test("verified TLS and the approved transaction profile are mandatory", () => {
   const supabaseUrl =
-    "postgresql://paperpilot_runtime:unit@db.avmcmmayvnjxrhrmgsdx.supabase.co:5432/postgres?sslmode=verify-full";
-  assert.throws(
-    () => configuredPaperPilotPostgresConnection(supabaseUrl, {
-      databaseProfile: PAPERPILOT_SUPABASE_DIRECT_DATABASE_PROFILE,
-    }),
-    /PAPERPILOT_DATABASE_CA_CERT_PATH is required/,
+    `postgresql://${PAPERPILOT_SUPABASE_RUNTIME_DATABASE_USERNAME}:unit@aws-0-us-east-1.pooler.supabase.com:6543/postgres?sslmode=verify-full&pgbouncer=true`;
+  assert.deepEqual(
+    configuredPaperPilotPostgresConnection(supabaseUrl, {
+      databaseProfile: PAPERPILOT_SUPABASE_TRANSACTION_DATABASE_PROFILE,
+      poolerHost: "aws-0-us-east-1.pooler.supabase.com",
+    }).clientConfig.ssl,
+    { rejectUnauthorized: true },
   );
   assert.throws(
     () => configuredPaperPilotPostgresConnection(
       "postgresql://paperpilot_runtime:unit@db.example.test:5432/paperpilot?sslmode=verify-full",
-      { caCertificatePath: "C:\\private\\supabase-ca.pem" },
+      {
+        caCertificatePath: "C:\\private\\supabase-ca.pem",
+        databaseProfile: PAPERPILOT_SUPABASE_TRANSACTION_DATABASE_PROFILE,
+        poolerHost: "aws-0-us-east-1.pooler.supabase.com",
+      },
     ),
-    /must select the approved PaperPilot Supabase profile/,
+    /pgbouncer=true|authenticate as paperpilot_runtime/,
   );
   assert.throws(
     () => configuredPaperPilotPostgresConnection(
       "postgresql://postgres:postgres@127.0.0.1:51218/template1?sslmode=disable",
       { databaseProfile: "" },
     ),
-    /must select the approved PaperPilot Supabase profile/,
+    /must select the approved PaperPilot Supabase transaction profile/,
   );
 });

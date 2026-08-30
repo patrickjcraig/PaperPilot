@@ -14,12 +14,25 @@ import {
   DEFAULT_UPLOAD_STREAM_ABSOLUTE_TIMEOUT_MS,
   DEFAULT_UPLOAD_STREAM_IDLE_TIMEOUT_MS,
   uploadConfigurationFromEnvironment,
+  uploadPolicyConfigurationFromEnvironment,
 } from "./config";
 
 const WORKING_DIRECTORY = path.join(os.tmpdir(), "paperpilot-upload-config-workspace");
 const PRIVATE_ROOT = path.join(os.tmpdir(), "paperpilot-upload-config-private");
 
 describe("upload configuration", () => {
+  it("loads the serverless control-plane policy in production without a local root", () => {
+    const policy = uploadPolicyConfigurationFromEnvironment({
+      NODE_ENV: "production",
+      PAPERPILOT_UPLOAD_MAX_BYTES: "1048576",
+    });
+
+    assert.equal(policy.maxUploadBytes, 1_048_576);
+    assert.equal(policy.sessionTtlMs, DEFAULT_UPLOAD_SESSION_TTL_MS);
+    assert.equal("quarantineRoot" in policy, false);
+    assert.equal("streamIdleTimeoutMs" in policy, false);
+  });
+
   it("uses conservative local defaults under .paperpilot-data", () => {
     const configuration = uploadConfigurationFromEnvironment(
       { NODE_ENV: "development" },

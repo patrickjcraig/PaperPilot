@@ -17,9 +17,22 @@ const KNOWN_SSL_MODES = new Set([
  */
 export const PAPERPILOT_SUPABASE_DIRECT_DATABASE_PROFILE =
   "supabase-avmcmmayvnjxrhrmgsdx-direct-v1";
+export const PAPERPILOT_SUPABASE_TRANSACTION_DATABASE_PROFILE =
+  "supabase-avmcmmayvnjxrhrmgsdx-transaction-v1";
+export const PAPERPILOT_SUPABASE_MIGRATION_DATABASE_PROFILE =
+  "supabase-avmcmmayvnjxrhrmgsdx-migration-v1";
+export const PAPERPILOT_SUPABASE_BOOTSTRAP_DATABASE_PROFILE =
+  "supabase-avmcmmayvnjxrhrmgsdx-bootstrap-v1";
 export const PAPERPILOT_SUPABASE_PROJECT_REF = "avmcmmayvnjxrhrmgsdx";
 export const PAPERPILOT_SUPABASE_DIRECT_DATABASE_HOST =
   `db.${PAPERPILOT_SUPABASE_PROJECT_REF}.supabase.co`;
+export const PAPERPILOT_SUPABASE_RUNTIME_DATABASE_USERNAME =
+  `paperpilot_runtime.${PAPERPILOT_SUPABASE_PROJECT_REF}`;
+export const PAPERPILOT_SUPABASE_MIGRATION_DATABASE_USERNAME =
+  "paperpilot_migration_owner";
+
+const SUPABASE_POOLER_HOST_PATTERN =
+  /^aws-\d+-[a-z0-9-]+\.pooler\.supabase\.com$/u;
 
 export function isPostgresLoopbackHost(hostname) {
   const normalized = hostname.startsWith("[") && hostname.endsWith("]")
@@ -117,33 +130,80 @@ export function validatedPostgresConnectionUrl(rawValue, options = {}) {
   });
 }
 
-/** Application/worker policy: one exact managed project and runtime role. */
+function normalizedConfiguredPoolerHost(rawValue) {
+  if (typeof rawValue !== "string") {
+    throw new Error("PAPERPILOT_SUPABASE_POOLER_HOST is required.");
+  }
+  const value = rawValue.trim().toLowerCase();
+  if (
+    !value
+    || value !== rawValue
+    || !SUPABASE_POOLER_HOST_PATTERN.test(value)
+  ) {
+    throw new Error(
+      "PAPERPILOT_SUPABASE_POOLER_HOST must be the exact dashboard-issued Supavisor hostname.",
+    );
+  }
+  return value;
+}
+
+function parsedRuntimeUrlWithoutPgbouncer(rawValue) {
+  const value = typeof rawValue === "string" ? rawValue.trim() : "";
+  if (!value) throw new Error("DATABASE_URL is required.");
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error("DATABASE_URL must be an absolute PostgreSQL URL.");
+  }
+  const parameterNames = [...new Set(parsed.searchParams.keys())];
+  if (
+    parameterNames.length !== 2
+    || !parameterNames.includes("sslmode")
+    || !parameterNames.includes("pgbouncer")
+    || parsed.searchParams.getAll("pgbouncer").length !== 1
+    || parsed.searchParams.get("pgbouncer") !== "true"
+  ) {
+    throw new Error(
+      "DATABASE_URL must contain exactly sslmode=verify-full and pgbouncer=true.",
+    );
+  }
+  parsed.searchParams.delete("pgbouncer");
+  return Object.freeze({ original: value, validationUrl: parsed.toString() });
+}
+
+/**
+ * Application/Workflow policy: one exact dashboard-issued Supavisor
+ * transaction endpoint and one project-scoped runtime identity.
+ */
 export function validatedPaperPilotApplicationDatabaseUrl(rawValue, options = {}) {
   const configuredProfile = options.databaseProfile;
   if (configuredProfile !== undefined && typeof configuredProfile !== "string") {
     throw new Error("PAPERPILOT_DATABASE_PROFILE must be a string when configured.");
   }
   const databaseProfile = configuredProfile?.trim() ?? "";
-  if (databaseProfile !== PAPERPILOT_SUPABASE_DIRECT_DATABASE_PROFILE) {
+  if (databaseProfile !== PAPERPILOT_SUPABASE_TRANSACTION_DATABASE_PROFILE) {
     throw new Error(
-      "PAPERPILOT_DATABASE_PROFILE must select the approved PaperPilot Supabase profile.",
+      "PAPERPILOT_DATABASE_PROFILE must select the approved PaperPilot Supabase transaction profile.",
     );
   }
 
-  const runtime = validatedPostgresConnectionUrl(rawValue, {
+  const poolerHost = normalizedConfiguredPoolerHost(options.poolerHost);
+  const prepared = parsedRuntimeUrlWithoutPgbouncer(rawValue);
+  const runtime = validatedPostgresConnectionUrl(prepared.validationUrl, {
     label: "DATABASE_URL",
     requireTlsForNonLoopback: true,
-    requiredUsername: "paperpilot_runtime",
+    requiredUsername: PAPERPILOT_SUPABASE_RUNTIME_DATABASE_USERNAME,
   });
 
-  if (runtime.hostname !== PAPERPILOT_SUPABASE_DIRECT_DATABASE_HOST) {
+  if (runtime.hostname !== poolerHost) {
     throw new Error(
-      "DATABASE_URL must target the approved PaperPilot Supabase direct database host.",
+      "DATABASE_URL must target the configured PaperPilot Supabase transaction pooler host.",
     );
   }
-  if (runtime.port !== 5432) {
+  if (runtime.port !== 6543) {
     throw new Error(
-      "DATABASE_URL must use port 5432 for the approved PaperPilot Supabase direct profile.",
+      "DATABASE_URL must use port 6543 for the approved PaperPilot Supabase transaction profile.",
     );
   }
   if (runtime.databaseName !== "postgres") {
@@ -156,5 +216,68 @@ export function validatedPaperPilotApplicationDatabaseUrl(rawValue, options = {}
       "DATABASE_URL must contain an explicit password for the approved PaperPilot Supabase profile.",
     );
   }
-  return Object.freeze({ ...runtime, isLocalPrismaDev: false });
+  return Object.freeze({
+    ...runtime,
+    connectionString: prepared.original,
+    pgbouncer: true,
+    isLocalPrismaDev: false,
+  });
+}
+
+/** Reviewed migrations use only the direct endpoint and a separate owner. */
+export function validatedPaperPilotMigrationDatabaseUrl(rawValue, options = {}) {
+  const configuredProfile = options.databaseProfile;
+  if (configuredProfile !== undefined && typeof configuredProfile !== "string") {
+    throw new Error("PAPERPILOT_MIGRATION_DATABASE_PROFILE must be a string when configured.");
+  }
+  if (configuredProfile?.trim() !== PAPERPILOT_SUPABASE_MIGRATION_DATABASE_PROFILE) {
+    throw new Error(
+      "PAPERPILOT_MIGRATION_DATABASE_PROFILE must select the approved PaperPilot Supabase migration profile.",
+    );
+  }
+  const migration = validatedPostgresConnectionUrl(rawValue, {
+    label: "PAPERPILOT_MIGRATION_DATABASE_URL",
+    requireTlsForNonLoopback: true,
+    requiredUsername: PAPERPILOT_SUPABASE_MIGRATION_DATABASE_USERNAME,
+  });
+  if (
+    migration.hostname !== PAPERPILOT_SUPABASE_DIRECT_DATABASE_HOST
+    || migration.port !== 5432
+    || migration.databaseName !== "postgres"
+  ) {
+    throw new Error(
+      "PAPERPILOT_MIGRATION_DATABASE_URL must target the approved direct Supabase postgres database on port 5432.",
+    );
+  }
+  if (!new URL(migration.connectionString).password) {
+    throw new Error("PAPERPILOT_MIGRATION_DATABASE_URL must contain an explicit password.");
+  }
+  return Object.freeze({ ...migration, isLocalPrismaDev: false });
+}
+
+/** One-time provider administrator path used only to create PaperPilot roles. */
+export function validatedPaperPilotBootstrapDatabaseUrl(rawValue, options = {}) {
+  if (options.databaseProfile !== PAPERPILOT_SUPABASE_BOOTSTRAP_DATABASE_PROFILE) {
+    throw new Error(
+      "PAPERPILOT_BOOTSTRAP_DATABASE_PROFILE must select the approved PaperPilot Supabase bootstrap profile.",
+    );
+  }
+  const bootstrap = validatedPostgresConnectionUrl(rawValue, {
+    label: "PAPERPILOT_BOOTSTRAP_DATABASE_URL",
+    requireTlsForNonLoopback: true,
+    requiredUsername: "postgres",
+  });
+  if (
+    bootstrap.hostname !== PAPERPILOT_SUPABASE_DIRECT_DATABASE_HOST
+    || bootstrap.port !== 5432
+    || bootstrap.databaseName !== "postgres"
+  ) {
+    throw new Error(
+      "PAPERPILOT_BOOTSTRAP_DATABASE_URL must target the approved direct Supabase postgres database on port 5432.",
+    );
+  }
+  if (!new URL(bootstrap.connectionString).password) {
+    throw new Error("PAPERPILOT_BOOTSTRAP_DATABASE_URL must contain an explicit password.");
+  }
+  return Object.freeze({ ...bootstrap, isLocalPrismaDev: false });
 }

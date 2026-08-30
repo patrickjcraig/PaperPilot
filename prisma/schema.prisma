@@ -669,6 +669,7 @@ enum DocumentStatus {
 
 enum AssetStorageProvider {
   LOCAL
+  SUPABASE_STORAGE
   S3
   CLOUDFLARE_R2
   GOOGLE_CLOUD_STORAGE

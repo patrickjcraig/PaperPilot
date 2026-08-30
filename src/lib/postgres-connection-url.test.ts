@@ -3,9 +3,12 @@ import test from "node:test";
 
 import {
   PAPERPILOT_SUPABASE_DIRECT_DATABASE_HOST,
-  PAPERPILOT_SUPABASE_DIRECT_DATABASE_PROFILE,
+  PAPERPILOT_SUPABASE_MIGRATION_DATABASE_PROFILE,
   PAPERPILOT_SUPABASE_PROJECT_REF,
+  PAPERPILOT_SUPABASE_RUNTIME_DATABASE_USERNAME,
+  PAPERPILOT_SUPABASE_TRANSACTION_DATABASE_PROFILE,
   validatedPaperPilotApplicationDatabaseUrl,
+  validatedPaperPilotMigrationDatabaseUrl,
   validatedPostgresConnectionUrl,
 } from "./postgres-connection-url.mjs";
 
@@ -89,63 +92,73 @@ test("application connections require the exact Supabase profile before parsing 
         "postgresql://postgres:postgres@127.0.0.1:51218/template1?sslmode=disable",
         options,
       ),
-      /must select the approved PaperPilot Supabase profile/,
+      /must select the approved PaperPilot Supabase transaction profile/,
     );
   }
 });
 
-test("the approved Supabase direct profile is bound to one project and endpoint", () => {
+test("the approved Supabase transaction profile is bound to one exact pooler", () => {
   assert.equal(PAPERPILOT_SUPABASE_PROJECT_REF, "avmcmmayvnjxrhrmgsdx");
   assert.equal(
     PAPERPILOT_SUPABASE_DIRECT_DATABASE_HOST,
     "db.avmcmmayvnjxrhrmgsdx.supabase.co",
   );
 
+  const poolerHost = "aws-0-us-east-1.pooler.supabase.com";
   const accepted = validatedPaperPilotApplicationDatabaseUrl(
-    "postgresql://paperpilot_runtime:unit%2Ftest@db.avmcmmayvnjxrhrmgsdx.supabase.co:5432/postgres?sslmode=verify-full",
-    { databaseProfile: PAPERPILOT_SUPABASE_DIRECT_DATABASE_PROFILE },
+    `postgresql://${PAPERPILOT_SUPABASE_RUNTIME_DATABASE_USERNAME}:unit%2Ftest@${poolerHost}:6543/postgres?sslmode=verify-full&pgbouncer=true`,
+    {
+      databaseProfile: PAPERPILOT_SUPABASE_TRANSACTION_DATABASE_PROFILE,
+      poolerHost,
+    },
   );
-  assert.equal(accepted.hostname, PAPERPILOT_SUPABASE_DIRECT_DATABASE_HOST);
-  assert.equal(accepted.username, "paperpilot_runtime");
+  assert.equal(accepted.hostname, poolerHost);
+  assert.equal(accepted.username, PAPERPILOT_SUPABASE_RUNTIME_DATABASE_USERNAME);
   assert.equal(accepted.databaseName, "postgres");
-  assert.equal(accepted.port, 5432);
+  assert.equal(accepted.port, 6543);
   assert.equal(accepted.sslMode, "verify-full");
+  assert.equal(accepted.pgbouncer, true);
   assert.equal(accepted.isLocalPrismaDev, false);
 
   const rejected = [
     [
-      "postgresql://paperpilot_runtime:unit@db.otherprojectref.supabase.co:5432/postgres?sslmode=verify-full",
-      /approved PaperPilot Supabase direct database host/,
+      `postgresql://${PAPERPILOT_SUPABASE_RUNTIME_DATABASE_USERNAME}:unit@aws-0-us-west-2.pooler.supabase.com:6543/postgres?sslmode=verify-full&pgbouncer=true`,
+      /configured PaperPilot Supabase transaction pooler host/,
     ],
     [
-      "postgresql://paperpilot_runtime:unit@db.avmcmmayvnjxrhrmgsdx.supabase.co:6543/postgres?sslmode=verify-full",
-      /port 5432/,
+      `postgresql://${PAPERPILOT_SUPABASE_RUNTIME_DATABASE_USERNAME}:unit@${poolerHost}:5432/postgres?sslmode=verify-full&pgbouncer=true`,
+      /port 6543/,
     ],
     [
-      "postgresql://paperpilot_runtime:unit@db.avmcmmayvnjxrhrmgsdx.supabase.co:5432/paperpilot?sslmode=verify-full",
+      `postgresql://${PAPERPILOT_SUPABASE_RUNTIME_DATABASE_USERNAME}:unit@${poolerHost}:6543/paperpilot?sslmode=verify-full&pgbouncer=true`,
       /target the postgres database/,
     ],
     [
-      "postgresql://paperpilot_runtime@db.avmcmmayvnjxrhrmgsdx.supabase.co:5432/postgres?sslmode=verify-full",
+      `postgresql://${PAPERPILOT_SUPABASE_RUNTIME_DATABASE_USERNAME}@${poolerHost}:6543/postgres?sslmode=verify-full&pgbouncer=true`,
       /explicit password/,
     ],
     [
-      "postgresql://postgres:unit@db.avmcmmayvnjxrhrmgsdx.supabase.co:5432/postgres?sslmode=verify-full",
-      /authenticate as paperpilot_runtime/,
+      `postgresql://paperpilot_runtime:unit@${poolerHost}:6543/postgres?sslmode=verify-full&pgbouncer=true`,
+      /authenticate as paperpilot_runtime\.avmcmmayvnjxrhrmgsdx/,
     ],
     [
-      "postgresql://paperpilot_runtime.avmcmmayvnjxrhrmgsdx:unit@aws-0-example.pooler.supabase.com:5432/postgres?sslmode=verify-full",
-      /authenticate as paperpilot_runtime/,
+      `postgresql://${PAPERPILOT_SUPABASE_RUNTIME_DATABASE_USERNAME}:unit@${poolerHost}:6543/postgres?sslmode=verify-full`,
+      /pgbouncer=true/,
     ],
     [
-      "postgresql://paperpilot_runtime:unit@db.avmcmmayvnjxrhrmgsdx.supabase.co:5432/postgres?sslmode=verify-full&sslrootcert=C%3A%2Funsafe.pem",
-      /unsupported connection parameter/,
+      `postgresql://${PAPERPILOT_SUPABASE_RUNTIME_DATABASE_USERNAME}:unit@${poolerHost}:6543/postgres?sslmode=verify-full&pgbouncer=true&application_name=unsafe`,
+      /exactly sslmode=verify-full and pgbouncer=true/,
+    ],
+    [
+      "postgresql://paperpilot_runtime:unit@db.avmcmmayvnjxrhrmgsdx.supabase.co:5432/postgres?sslmode=verify-full&pgbouncer=true",
+      /authenticate as paperpilot_runtime\.avmcmmayvnjxrhrmgsdx/,
     ],
   ] as const;
   for (const [value, expected] of rejected) {
     assert.throws(
       () => validatedPaperPilotApplicationDatabaseUrl(value, {
-        databaseProfile: PAPERPILOT_SUPABASE_DIRECT_DATABASE_PROFILE,
+        databaseProfile: PAPERPILOT_SUPABASE_TRANSACTION_DATABASE_PROFILE,
+        poolerHost,
       }),
       expected,
     );
@@ -153,19 +166,44 @@ test("the approved Supabase direct profile is bound to one project and endpoint"
 
   assert.throws(
     () => validatedPaperPilotApplicationDatabaseUrl(
-      "postgresql://paperpilot_runtime:unit@db.avmcmmayvnjxrhrmgsdx.supabase.co:5432/postgres?sslmode=verify-full",
+      `postgresql://${PAPERPILOT_SUPABASE_RUNTIME_DATABASE_USERNAME}:unit@${poolerHost}:6543/postgres?sslmode=verify-full&pgbouncer=true`,
       { databaseProfile: "supabase-unreviewed-project-direct-v1" },
     ),
-    /must select the approved PaperPilot Supabase profile/,
+    /must select the approved PaperPilot Supabase transaction profile/,
   );
   assert.throws(
     () => validatedPaperPilotApplicationDatabaseUrl(
       "postgresql://postgres:postgres@127.0.0.1:51218/template1?sslmode=disable",
       {
-        databaseProfile: PAPERPILOT_SUPABASE_DIRECT_DATABASE_PROFILE,
+        databaseProfile: PAPERPILOT_SUPABASE_TRANSACTION_DATABASE_PROFILE,
+        poolerHost,
       },
     ),
-    /authenticate as paperpilot_runtime/,
+    /exactly sslmode=verify-full and pgbouncer=true/,
+  );
+});
+
+test("migration authority is direct and cannot be swapped with runtime", () => {
+  const accepted = validatedPaperPilotMigrationDatabaseUrl(
+    "postgresql://paperpilot_migration_owner:unit%2Ftest@db.avmcmmayvnjxrhrmgsdx.supabase.co:5432/postgres?sslmode=verify-full",
+    { databaseProfile: PAPERPILOT_SUPABASE_MIGRATION_DATABASE_PROFILE },
+  );
+  assert.equal(accepted.hostname, PAPERPILOT_SUPABASE_DIRECT_DATABASE_HOST);
+  assert.equal(accepted.username, "paperpilot_migration_owner");
+
+  assert.throws(
+    () => validatedPaperPilotMigrationDatabaseUrl(
+      "postgresql://paperpilot_runtime:unit@db.avmcmmayvnjxrhrmgsdx.supabase.co:5432/postgres?sslmode=verify-full",
+      { databaseProfile: PAPERPILOT_SUPABASE_MIGRATION_DATABASE_PROFILE },
+    ),
+    /authenticate as paperpilot_migration_owner/,
+  );
+  assert.throws(
+    () => validatedPaperPilotMigrationDatabaseUrl(
+      "postgresql://paperpilot_migration_owner:unit@aws-0-us-east-1.pooler.supabase.com:6543/postgres?sslmode=verify-full",
+      { databaseProfile: PAPERPILOT_SUPABASE_MIGRATION_DATABASE_PROFILE },
+    ),
+    /approved direct Supabase postgres database/,
   );
 });
 

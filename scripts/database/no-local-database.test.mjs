@@ -12,11 +12,12 @@ import {
 import { localWriteCommandDisabledMessage } from "./local-write-command-disabled.mjs";
 import { commandForSupabaseRuntimeOperation } from "./run-with-supabase-database.mjs";
 
-const PROFILE = "supabase-avmcmmayvnjxrhrmgsdx-direct-v1";
+const PROFILE = "supabase-avmcmmayvnjxrhrmgsdx-transaction-v1";
 const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const SAFE_ENVIRONMENT = Object.freeze({
   PAPERPILOT_DATABASE_PROFILE: PROFILE,
   PAPERPILOT_ALLOW_LOCAL_PRISMA_DEV: "0",
+  PAPERPILOT_SUPABASE_POOLER_HOST: "aws-0-us-east-1.pooler.supabase.com",
   DATABASE_URL: "",
   SHADOW_DATABASE_URL: "",
 });
@@ -38,13 +39,13 @@ test("the exact Supabase application target is accepted without opening it", asy
     environment: {
       ...SAFE_ENVIRONMENT,
       DATABASE_URL:
-        "postgresql://paperpilot_runtime:unit@db.avmcmmayvnjxrhrmgsdx.supabase.co:5432/postgres?sslmode=verify-full",
+        "postgresql://paperpilot_runtime.avmcmmayvnjxrhrmgsdx:unit@aws-0-us-east-1.pooler.supabase.com:6543/postgres?sslmode=verify-full&pgbouncer=true",
     },
     tcpProbeImpl: unreachable,
   });
   assert.equal(
     result.configuredApplicationTarget,
-    "db.avmcmmayvnjxrhrmgsdx.supabase.co",
+    "aws-0-us-east-1.pooler.supabase.com",
   );
 });
 
@@ -155,7 +156,6 @@ test("supported package commands cannot start or mutate the retired local databa
     "node scripts/database/local-write-command-disabled.mjs test:integration",
   );
   for (const operation of [
-    "db:deploy",
     "db:roles:bootstrap",
     "db:roles:reconcile",
     "db:roles:retire-deployer",
@@ -170,9 +170,13 @@ test("supported package commands cannot start or mutate the retired local databa
     );
     assert.match(localWriteCommandDisabledMessage(operation), /disabled/u);
   }
+  assert.equal(
+    packageJson.scripts["db:deploy"],
+    "node scripts/supabase/deploy-migrations.mjs",
+  );
   assert.doesNotMatch(
     JSON.stringify(packageJson.scripts),
-    /prisma\s+(?:dev|migrate|studio|db\s+(?:push|execute|seed)|validate|format)/u,
+    /prisma\s+(?:dev|studio|db\s+(?:push|execute|seed)|validate|format)|prisma\s+migrate\s+(?:dev|reset)/u,
   );
   assert.match(localWriteCommandDisabledMessage("db:dev"), /disabled/u);
 
@@ -202,7 +206,10 @@ test("supported package commands cannot start or mutate the retired local databa
 
   const directPrismaCommands = Object.values(packageJson.scripts)
     .filter((command) => /(?:^|\s)prisma(?:\s|$)/u.test(command));
-  assert.deepEqual(directPrismaCommands.sort(), ["prisma generate", "prisma generate"]);
+  assert.deepEqual(directPrismaCommands.sort(), [
+    "prisma generate",
+    "prisma generate",
+  ]);
 
   const directPrismaDev = spawnSync(
     process.execPath,
@@ -212,6 +219,6 @@ test("supported package commands cannot start or mutate the retired local databa
   assert.notEqual(directPrismaDev.status, 0);
   assert.match(
     `${directPrismaDev.stdout}${directPrismaDev.stderr}`,
-    /permits only offline `prisma generate`/u,
+    /permits only offline `prisma generate` or the exact reviewed Supabase `prisma migrate deploy` path/u,
   );
 });

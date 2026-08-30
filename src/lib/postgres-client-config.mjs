@@ -9,8 +9,12 @@ import {
 import { isAbsolute } from "node:path";
 
 import {
-  PAPERPILOT_SUPABASE_DIRECT_DATABASE_PROFILE,
+  PAPERPILOT_SUPABASE_BOOTSTRAP_DATABASE_PROFILE,
+  PAPERPILOT_SUPABASE_MIGRATION_DATABASE_PROFILE,
+  PAPERPILOT_SUPABASE_TRANSACTION_DATABASE_PROFILE,
   validatedPaperPilotApplicationDatabaseUrl,
+  validatedPaperPilotBootstrapDatabaseUrl,
+  validatedPaperPilotMigrationDatabaseUrl,
 } from "./postgres-connection-url.mjs";
 
 export const PAPERPILOT_DATABASE_CA_CERT_PATH_ENV =
@@ -146,10 +150,13 @@ export function configuredPaperPilotPostgresConnection(rawValue, options = {}) {
     throw caConfigurationError("must be a string when configured.");
   }
 
-  if (databaseProfile === PAPERPILOT_SUPABASE_DIRECT_DATABASE_PROFILE) {
-    const ca = loadPaperPilotDatabaseCaCertificate(rawCaPath);
+  if (databaseProfile === PAPERPILOT_SUPABASE_TRANSACTION_DATABASE_PROFILE) {
+    const ca = rawCaPath
+      ? loadPaperPilotDatabaseCaCertificate(rawCaPath)
+      : undefined;
     const driverUrl = new URL(connection.connectionString);
     driverUrl.searchParams.delete("sslmode");
+    driverUrl.searchParams.delete("pgbouncer");
     if ([...driverUrl.searchParams.keys()].length !== 0) {
       throw new Error("The validated Supabase driver URL retained an unexpected parameter.");
     }
@@ -157,7 +164,7 @@ export function configuredPaperPilotPostgresConnection(rawValue, options = {}) {
       connection,
       clientConfig: Object.freeze({
         connectionString: driverUrl.toString(),
-        ssl: Object.freeze({ ca, rejectUnauthorized: true }),
+        ssl: Object.freeze({ ...(ca ? { ca } : {}), rejectUnauthorized: true }),
       }),
     });
   }
@@ -168,5 +175,57 @@ export function configuredPaperPilotPostgresConnection(rawValue, options = {}) {
   return Object.freeze({
     connection,
     clientConfig: Object.freeze({ connectionString: connection.connectionString }),
+  });
+}
+
+/** Build the direct, migration-only driver configuration. */
+export function configuredPaperPilotMigrationPostgresConnection(rawValue, options = {}) {
+  const connection = validatedPaperPilotMigrationDatabaseUrl(rawValue, options);
+  const databaseProfile = options.databaseProfile?.trim() ?? "";
+  const rawCaPath = options.caCertificatePath;
+  if (rawCaPath !== undefined && typeof rawCaPath !== "string") {
+    throw caConfigurationError("must be a string when configured.");
+  }
+  if (databaseProfile !== PAPERPILOT_SUPABASE_MIGRATION_DATABASE_PROFILE) {
+    throw new Error("The approved Supabase migration profile is required.");
+  }
+  const ca = rawCaPath
+    ? loadPaperPilotDatabaseCaCertificate(rawCaPath)
+    : undefined;
+  const driverUrl = new URL(connection.connectionString);
+  driverUrl.searchParams.delete("sslmode");
+  if ([...driverUrl.searchParams.keys()].length !== 0) {
+    throw new Error("The validated Supabase migration URL retained an unexpected parameter.");
+  }
+  return Object.freeze({
+    connection,
+    clientConfig: Object.freeze({
+      connectionString: driverUrl.toString(),
+      ssl: Object.freeze({ ...(ca ? { ca } : {}), rejectUnauthorized: true }),
+    }),
+  });
+}
+
+/** Build the one-time provider-administrator connection without weakening migrations. */
+export function configuredPaperPilotBootstrapPostgresConnection(rawValue, options = {}) {
+  const connection = validatedPaperPilotBootstrapDatabaseUrl(rawValue, options);
+  if (options.databaseProfile !== PAPERPILOT_SUPABASE_BOOTSTRAP_DATABASE_PROFILE) {
+    throw new Error("The approved Supabase bootstrap profile is required.");
+  }
+  const rawCaPath = options.caCertificatePath;
+  if (rawCaPath !== undefined && typeof rawCaPath !== "string") {
+    throw caConfigurationError("must be a string when configured.");
+  }
+  const ca = rawCaPath
+    ? loadPaperPilotDatabaseCaCertificate(rawCaPath)
+    : undefined;
+  const driverUrl = new URL(connection.connectionString);
+  driverUrl.searchParams.delete("sslmode");
+  return Object.freeze({
+    connection,
+    clientConfig: Object.freeze({
+      connectionString: driverUrl.toString(),
+      ssl: Object.freeze({ ...(ca ? { ca } : {}), rejectUnauthorized: true }),
+    }),
   });
 }

@@ -14,18 +14,25 @@ export const DEFAULT_UPLOAD_MAX_RETAINED_BYTES_PER_WORKSPACE = 250 * 1024 * 1024
 
 const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001F\u007F-\u009F]/;
 
-export interface UploadConfiguration {
-  /** Absolute, server-private filesystem root. Never expose this value to clients. */
-  quarantineRoot: string;
+export interface UploadPolicyConfiguration {
   maxUploadBytes: number;
   sessionTtlMs: number;
   leaseTtlMs: number;
-  streamIdleTimeoutMs: number;
-  streamAbsoluteTimeoutMs: number;
   maxConcurrentUploadsPerUser: number;
   maxConcurrentUploadsPerWorkspace: number;
   maxRetainedBytesPerWorkspace: number;
 }
+
+export interface LocalQuarantineConfiguration {
+  /** Legacy/local-only absolute private root. Never expose this value to clients. */
+  quarantineRoot: string;
+  streamIdleTimeoutMs: number;
+  streamAbsoluteTimeoutMs: number;
+}
+
+/** Compatibility composition for the existing local custody adapter. */
+export interface UploadConfiguration
+  extends UploadPolicyConfiguration, LocalQuarantineConfiguration {}
 
 function positiveSafeInteger(
   environment: Readonly<Record<string, string | undefined>>,
@@ -162,14 +169,9 @@ function privateQuarantineRoot(
   return root;
 }
 
-export function uploadConfigurationFromEnvironment(
+export function uploadPolicyConfigurationFromEnvironment(
   environment: Readonly<Record<string, string | undefined>> = process.env,
-  workingDirectory = process.cwd(),
-): UploadConfiguration {
-  if (!path.isAbsolute(workingDirectory)) {
-    throw new Error("The upload configuration working directory must be absolute.");
-  }
-
+): UploadPolicyConfiguration {
   const maxUploadBytes = positiveSafeInteger(
     environment,
     "PAPERPILOT_UPLOAD_MAX_BYTES",
@@ -184,16 +186,6 @@ export function uploadConfigurationFromEnvironment(
     environment,
     "PAPERPILOT_UPLOAD_LEASE_TTL_SECONDS",
     DEFAULT_UPLOAD_LEASE_TTL_MS,
-  );
-  const streamIdleTimeoutMs = secondsAsMilliseconds(
-    environment,
-    "PAPERPILOT_UPLOAD_STREAM_IDLE_TIMEOUT_SECONDS",
-    DEFAULT_UPLOAD_STREAM_IDLE_TIMEOUT_MS,
-  );
-  const streamAbsoluteTimeoutMs = secondsAsMilliseconds(
-    environment,
-    "PAPERPILOT_UPLOAD_STREAM_ABSOLUTE_TIMEOUT_SECONDS",
-    DEFAULT_UPLOAD_STREAM_ABSOLUTE_TIMEOUT_MS,
   );
   const maxConcurrentUploadsPerUser = positiveSafeInteger(
     environment,
@@ -216,16 +208,6 @@ export function uploadConfigurationFromEnvironment(
       "PAPERPILOT_UPLOAD_LEASE_TTL_SECONDS cannot exceed the upload session lifetime.",
     );
   }
-  if (streamIdleTimeoutMs > streamAbsoluteTimeoutMs) {
-    throw new Error(
-      "PAPERPILOT_UPLOAD_STREAM_IDLE_TIMEOUT_SECONDS cannot exceed the absolute stream timeout.",
-    );
-  }
-  if (streamAbsoluteTimeoutMs >= leaseTtlMs) {
-    throw new Error(
-      "PAPERPILOT_UPLOAD_STREAM_ABSOLUTE_TIMEOUT_SECONDS must be shorter than the receive lease.",
-    );
-  }
   if (maxConcurrentUploadsPerUser > maxConcurrentUploadsPerWorkspace) {
     throw new Error(
       "Per-user upload concurrency cannot exceed per-workspace upload concurrency.",
@@ -238,14 +220,54 @@ export function uploadConfigurationFromEnvironment(
   }
 
   return {
-    quarantineRoot: privateQuarantineRoot(environment, workingDirectory),
     maxUploadBytes,
     sessionTtlMs,
     leaseTtlMs,
-    streamIdleTimeoutMs,
-    streamAbsoluteTimeoutMs,
     maxConcurrentUploadsPerUser,
     maxConcurrentUploadsPerWorkspace,
     maxRetainedBytesPerWorkspace,
   };
+}
+
+export function localQuarantineConfigurationFromEnvironment(
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+  workingDirectory = process.cwd(),
+): LocalQuarantineConfiguration {
+  if (!path.isAbsolute(workingDirectory)) {
+    throw new Error("The upload configuration working directory must be absolute.");
+  }
+  const streamIdleTimeoutMs = secondsAsMilliseconds(
+    environment,
+    "PAPERPILOT_UPLOAD_STREAM_IDLE_TIMEOUT_SECONDS",
+    DEFAULT_UPLOAD_STREAM_IDLE_TIMEOUT_MS,
+  );
+  const streamAbsoluteTimeoutMs = secondsAsMilliseconds(
+    environment,
+    "PAPERPILOT_UPLOAD_STREAM_ABSOLUTE_TIMEOUT_SECONDS",
+    DEFAULT_UPLOAD_STREAM_ABSOLUTE_TIMEOUT_MS,
+  );
+  if (streamIdleTimeoutMs > streamAbsoluteTimeoutMs) {
+    throw new Error(
+      "PAPERPILOT_UPLOAD_STREAM_IDLE_TIMEOUT_SECONDS cannot exceed the absolute stream timeout.",
+    );
+  }
+  return {
+    quarantineRoot: privateQuarantineRoot(environment, workingDirectory),
+    streamIdleTimeoutMs,
+    streamAbsoluteTimeoutMs,
+  };
+}
+
+export function uploadConfigurationFromEnvironment(
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+  workingDirectory = process.cwd(),
+): UploadConfiguration {
+  const policy = uploadPolicyConfigurationFromEnvironment(environment);
+  const local = localQuarantineConfigurationFromEnvironment(environment, workingDirectory);
+  if (local.streamAbsoluteTimeoutMs >= policy.leaseTtlMs) {
+    throw new Error(
+      "PAPERPILOT_UPLOAD_STREAM_ABSOLUTE_TIMEOUT_SECONDS must be shorter than the receive lease.",
+    );
+  }
+  return { ...local, ...policy };
 }

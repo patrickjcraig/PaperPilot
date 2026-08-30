@@ -2,7 +2,21 @@
 
 PaperPilot is a research workspace for discovering scholarly literature, collecting it with source provenance, organizing it around explicit research questions, and turning close reading into an auditable evidence trail.
 
+## Try the live WebMCP mentor
+
+Open the [public PaperPilot WebMCP demo](https://patrickjcraig.github.io/PaperPilot/webmcp/) in a WebMCP-capable browser. Upload any born-digital scientific PDF, freeze a difficult passage, and let an agent call `paperpilot.read_sources` and `paperpilot.stage_explanation`. The proposal remains unsaved until the reader explicitly keeps or discards it, and the source/callback trail can be downloaded as JSON.
+
+This public hackathon slice processes the PDF and optional saved note in the browser. It proves real WebMCP registration, bounded source disclosure, staged mentor output, and human review; it does not claim server custody, OCR, figure understanding, scientific verification, or completion of the Supabase service described below.
+
 > **Active build focus (2026-08-29): an accessible WebMCP research mentor for scientific PDFs.** A reader uploads a previously unseen PDF that meets published admission limits, selects exact text, an equation, a page or figure region, a whole figure, or a bounded same-paper source set, and asks a browser agent for help. PaperPilot exposes only that frozen source through WebMCP, stages the mentor's structured response unchanged, shows a source → WebMCP → mentor → human evidence trail, and lets the reader explicitly **Save to notes** or **Discard** it. New crawler/networking, Zotero, collaboration, and scale work is deferred until this loop is proven. The canonical requirements are the guided [Scope](docs/hackathon-build/scope.md) and [PRD](docs/hackathon-build/prd.md).
+
+> **Approved deployment architecture (2026-08-30): serverless only.** The
+> release target is Vercel Next.js Functions + Vercel Workflow + one fresh
+> non-persistent Vercel Sandbox per PDF attempt, backed by Supabase PostgreSQL
+> and private Supabase Storage. There is no release VPS, Compose host, polling
+> worker, shared local volume, production-local filesystem, or local database.
+> Browser PDF transfers bypass Function bodies through short-lived exact-object
+> capabilities. See the canonical [serverless architecture decision](docs/SERVERLESS-ARCHITECTURE.md).
 
 ## The WebMCP Challenge build
 
@@ -44,9 +58,9 @@ The split is deliberate. Authenticated features never silently fall back to brow
 | Reader | Working for bundled demo papers | Explicit validated-PDF linking plus database-admitted immutable manifests, generation-bound signed pagination, bounded keyset reads, and honest unavailable, processing, and no-text states |
 | Accounts and sessions | Not required | Better Auth database sessions, verification, recovery, and shared throttling |
 | Zotero | Product preview | Read-only OAuth 1.0a, personal/group discovery, explicit selection, durable cursor-safe metadata sync, sanitized attachment discovery, opt-in one-file imports, and shared quarantine/validation/extraction custody; metadata and attachment workers run separately |
-| PDF upload | Product preview | Authenticated private intake with durable validation, explicit linking, immutable extraction, and Inbox status that polls through processing |
+| PDF upload | Product preview | Existing exact-custody domain path is implemented; the required direct-to-private-Supabase reserve/finalize adapter and Workflow/Sandbox runtime are the active Gate 0 migration and are not yet release-verified |
 | WebMCP/MCP review | Legacy browser-local surfaces; not challenge proof | Metadata proposals already stage into a digest-bound human-review dossier. The challenge Reader target is specified but not release-verified: real `document.modelContext` tools read bounded exact-text, page/figure/region, or same-paper synthesis sources and stage immutable structured mentor responses for explicit human retention. Direct MCP tokens and remote byte acquisition remain deferred |
-| Crawler | Live first mode | An authenticated member may affirm rights for one query-free HTTPS PDF; a separately supervised worker enforces frozen robots, public-DNS/socket-pinning, redirect rejection, origin-rate, response-framing, byte, private-quarantine, receipt, retry, cleanup, and validation-handoff controls. A separate confirmed command closes Reader and retires private PDF custody only after fenced storage proof; evidence-dependent extracted-text generations and minimal audit records may remain. It never files into a project automatically |
+| Crawler | Live first mode | The existing supervised-worker implementation is retained as migration reference, not as a serverless release path. It must be converted to bounded event-driven Workflow/Sandbox execution after the upload/WebMCP vertical slice; no daemon or local-quarantine fallback is allowed in Production |
 
 The UI labels live, demo, preview, and upcoming states explicitly. A metadata result is never presented as processed full text.
 
@@ -136,7 +150,7 @@ That command verifies the exact REST and Storage gateway identities, database
 DNS, and TCP route. It deliberately does **not** claim database authentication,
 role setup, migrations, or Storage readiness. The E-drive database remains
 offline even while those checks are incomplete; PaperPilot remains unavailable
-rather than falling back locally. The exact profile, server-only CA
+rather than falling back locally. The exact profiles, verified TLS
 requirement, secret placement, and managed-provider migration boundary are
 documented in
 [`deploy/supabase/README.md`](deploy/supabase/README.md).
@@ -147,16 +161,20 @@ The Prisma CLI reads `.env`; Next.js also loads it. The file is ignored by Git.
 
 | Variable | Local development | Production requirement |
 | --- | --- | --- |
-| `DATABASE_URL` | Empty until the remote role exists; local URLs are forbidden | Exact Supabase direct URL authenticating as `paperpilot_runtime` on project `avmcmmayvnjxrhrmgsdx`, port `5432`, database `postgres`, and exactly `sslmode=verify-full` |
-| `PAPERPILOT_DATABASE_PROFILE` | Required exact value `supabase-avmcmmayvnjxrhrmgsdx-direct-v1` | Same exact reviewed profile; empty, generic, and alternate-project values fail closed |
-| `PAPERPILOT_DATABASE_CA_CERT_PATH` | Absolute E-drive path to the downloaded provider CA once configured | Required absolute provider CA path; never weaken `verify-full` to bypass a missing CA |
+| `DATABASE_URL` | Empty until the remote runtime role exists; local URLs are forbidden | Exact dashboard-issued Supavisor transaction URL, port `6543`, database `postgres`, project-scoped `paperpilot_runtime.avmcmmayvnjxrhrmgsdx`, `sslmode=verify-full`, and `pgbouncer=true` |
+| `PAPERPILOT_DATABASE_PROFILE` | `supabase-avmcmmayvnjxrhrmgsdx-transaction-v1` | Same exact transaction profile; the direct runtime transition profile is rejected |
+| `PAPERPILOT_SUPABASE_POOLER_HOST` | Exact non-secret hostname copied from Supabase Connect | Same reviewed hostname; arbitrary poolers are rejected before I/O |
+| `PAPERPILOT_DATABASE_CA_CERT_PATH` | Optional absolute CA-only PEM path; verified system trust roots are used when empty | Optional deployment-mounted CA bundle; TLS hostname/certificate verification is always enabled |
+| `PAPERPILOT_MIGRATION_DATABASE_PROFILE` | `supabase-avmcmmayvnjxrhrmgsdx-migration-v1` only while applying releases | Never installed in the Vercel runtime; protected migration job only |
+| `PAPERPILOT_MIGRATION_DATABASE_URL` | Exact direct `paperpilot_migration_owner` URL on port `5432` | Protected migration job only; never browser, Workflow, or Sandbox state |
 | `PAPERPILOT_ALLOW_LOCAL_PRISMA_DEV` | Must be `0`; `1` is rejected | Must be `0`; there is no local runtime exception |
 | `SHADOW_DATABASE_URL` | Must be empty | Must remain empty; `migrate dev` is disabled |
 | `PAPERPILOT_PRISMA_DEV_ROOT` | Optional location of the stopped archive for freeze verification | Not used by the application |
 | `PAPERPILOT_PRISMA_DEV_PORT` | Retired control port checked for absence; default `51213` | Not used by the application |
 | `PAPERPILOT_PRISMA_DEV_DB_PORT` | Retired database port checked for absence; default `51218` | Not used by the application |
 | `PAPERPILOT_PRISMA_DEV_SHADOW_DB_PORT` | Retired shadow port checked for absence; default `51219` | Not used by the application |
-| `DATABASE_POOL_MAX` | Optional Supabase connection ceiling; defaults to `5` | Tune conservatively for the provider and deployment concurrency |
+| `DATABASE_POOL_MAX` | May be empty or exactly `1` | Exactly `1` per serverless instance for this release; malformed or wider values fail closed |
+| `PAPERPILOT_SUPABASE_SECRET_KEY` | Server-only modern `sb_secret_...` key for Storage setup/control-plane work | Vercel encrypted server environment only; never `NEXT_PUBLIC_*`, Workflow state, or Sandbox |
 | `BETTER_AUTH_SECRET` | At least 32 characters | Independent high-entropy secret from a secret manager |
 | `BETTER_AUTH_URL` | `http://127.0.0.1:3000` | Canonical HTTPS origin |
 | `PAPERPILOT_RELEASE_ID` | Optional; readiness uses `development` when omitted | Required immutable commit/image release identity shared by the web deployment |
@@ -284,34 +302,36 @@ The browser-local walkthrough remains available at `/`: Discover → import prev
 
 ## Architecture
 
-PaperPilot uses Next.js 16, React 19, TypeScript, Better Auth 1.7, Prisma 7, PostgreSQL, and a server-mediated OpenAlex adapter.
+PaperPilot uses Next.js 16, React 19, TypeScript, Better Auth 1.7, Prisma 7,
+Supabase PostgreSQL/private Storage, Vercel Workflow, and Vercel Sandbox. The
+diagram below is the required release topology; current local-quarantine and
+polling-worker code is migration input, not an approved production fallback.
 
 ```text
 Browser
   ├─ /                 demo workspace client → versioned localStorage snapshot
-  └─ /app              HTTP workspace client → authenticated Next.js routes
-                                                │
-                                                ├─ authorization + idempotency DAL
-                                                ├─ shared PostgreSQL quotas
-                                                ├─ Prisma/PostgreSQL
-                                                ├─ OpenAlex adapter
-                                                ├─ Zotero OAuth lifecycle + Web API v3 adapter
-                                                │  └─ Zotero routes → durable sync jobs → Zotero worker
-                                                │                                             └─ run-owned staging → atomic metadata/Inbox/provenance commit
-                                                ├─ governed crawler route → frozen CRAWL job → crawler worker
-                                                │                                            ├─ robots + public DNS + pinned HTTPS + origin budget
-                                                │                                            └─ immutable attempt/receipt → private quarantine
-                                                └─ bounded PDF stream → private quarantine
-                                                                            │
-                                                validation worker + reconciler
-                                                                            └─ raw stream → isolated validator
-                                                                                                  │ accepted attestation
-                                                extraction worker ─────────────────────────────────┤
-                                                                                                  └─ raw stream → external Poppler extractor
-                                                                                                                    │
-                                                                                                                    └─ immutable manifest + page/paragraph chunks
-                                                                                                                                              │
-                                                explicit validated PDF → visible WorkspacePaper link ───────────────┴─ admitted manifest → bounded Reader API/UI
+  └─ /app              HTTPS workspace client → Vercel Next.js Functions
+                                                   │
+                                                   ├─ auth + authorization + idempotency
+                                                   ├─ Prisma → Supavisor transaction pooler
+                                                   ├─ WebMCP read/stage control plane
+                                                   └─ reserve/finalize PDF object + start Workflow
+
+Browser ── short-lived exact-object capability ──> private Supabase Storage
+                                                       ▲              │
+                                                       │              │ one PDF object
+                                                       │              ▼
+Supabase PostgreSQL <── bounded job/receipt ── Vercel Workflow
+                                                       │
+                                                       ▼
+                                             fresh Vercel Sandbox
+                                             persistent: false
+                                             qpdf + ClamAV + Poppler
+                                                       │
+                                                       └─ immutable artifacts/receipt
+
+Authorized Reader ── short-lived exact-generation capability ──> PDF.js
+                                                              └─ client verifies admitted SHA-256
 ```
 
 Important directories:
@@ -328,15 +348,16 @@ Important directories:
 - `src/workers/governed-crawler-worker.ts` leases one frozen crawler request at a time, streams an eligible PDF into attempt-specific private quarantine, persists an immutable receipt, hands the exact asset to the shared validation lifecycle, and reconciles confirmed custody deletion before claiming new work.
 - `src/workers/zotero-sync-worker.ts` schedules and leases selected-library pulls, enforces stable provider versions/backoff, and publishes staged metadata only through an atomic cursor commit.
 - `src/server/uploads/` owns upload configuration, filename/media validation, bounded streaming, private object finalization, durable custody transitions, and credential-free status DTOs.
+- `src/server/platform/` defines provider-neutral private-object and one-attempt PDF Sandbox boundaries; Supabase/Vercel adapters replace filesystem/polling deployment behavior without changing provenance semantics.
+- `src/workflows/` owns durable Vercel Workflow orchestration. Workflow state stays bounded; Supabase remains the user-visible job and receipt authority.
 - `src/server/documents/` owns the strict validation/extraction contracts and clients, fenced job/attestation/generation semantics, the database-admitted manifest seal, signed Reader cursors, the explicit document-to-paper link command, and the authorization-checked bounded Reader read model.
 - `docs/GROUNDED-EVIDENCE.md` defines the authority chain, byte-boundary contract, immutable revision rules, independent review/source states, and retry behavior for Reader capture.
 - `docs/CRAWLER-CUSTODY-DELETION.md` defines the destructive command, authorization, storage proof, quota release, derived-text retention, exact retry, and safe failure contract.
-- `src/workers/document-validation-worker.ts` owns reconciled queue consumption and streams one verified open object handle to the isolated validator.
-- `src/workers/document-extraction-worker.ts` consumes only accepted validation attestations, re-verifies the open object, and streams it to the external extractor boundary.
+- `src/workers/document-validation-worker.ts` and `src/workers/document-extraction-worker.ts` retain reusable one-shot domain behavior and historical polling entrypoints; production calls bounded behavior from Workflow/Sandbox and never deploys the polling loops.
 - `services/document-validator/` is the standalone hostile-PDF service with bounded HTTP parsing, subprocess isolation, ClamAV/qpdf wrappers, closed attestations, and safe JSON-line telemetry.
 - `services/document-extractor/` is the standalone embedded-text service with bounded HTTP parsing, shell-free Poppler wrappers, deterministic page/paragraph chunks, process-tree deadlines, and redacted telemetry.
-- `deploy/document-validator/` is the reference validator/ClamAV Compose topology and production release checklist.
-- `deploy/document-extractor/` is the reference non-root, read-only, no-egress extractor topology and production release checklist.
+- `deploy/document-validator/` and `deploy/document-extractor/` are local/reference contracts for the pinned Sandbox image, not production services.
+- `deploy/app/` is the superseded single-host topology and cannot satisfy release preflight.
 - `deploy/postgres/` defines the secret-free, exact-table PostgreSQL owner/runtime grant contract; [docs/POSTGRES-ROLES.md](docs/POSTGRES-ROLES.md) documents managed deployment, read-only verification, rollback, and the remaining arbitrary-DML limitation.
 - `prisma/schema.prisma` contains auth, organization, canonical-paper, workspace, evidence, connector, sync, job, audit, document, and asset models.
 - `prisma/migrations/` is the committed database history. Generated Prisma client files are regenerated by `postinstall` and are ignored.
@@ -485,37 +506,76 @@ The service slice has also been exercised in the browser through sign-up, live d
 
 ## Deployment sequence
 
-For a production-shaped deployment:
+For the serverless release, the sequence below is the required Gate 0 path.
+The Supabase role, migration, and private-bucket commands are now executable;
+the later Workflow/Sandbox steps remain under construction:
 
-1. Provision only the approved Supabase project, exact runtime role, provider
-   CA, and server-side secrets. Do not create a local or Compose PostgreSQL
-   fallback.
-2. Set an HTTPS `BETTER_AUTH_URL` and immutable `PAPERPILOT_RELEASE_ID`; do not set `PAPERPILOT_ALLOW_INSECURE_ORIGIN`.
-3. Set a unique `BETTER_AUTH_SECRET` and provider credentials through the platform's secret manager.
-4. Configure the rate-limit secret, Reader cursor secret, Reader user/workspace/IP budgets, and the host's exact trusted-proxy/IP-header topology. Every web node must share the cursor key.
-5. Deploy the HTTPS transactional-email receiver, disable request-body logging there, and set all three `PAPERPILOT_EMAIL_*` values.
-6. If enabling Zotero, register the exact HTTPS callback and configure independent OAuth state, consumer, encryption-keyring, and fingerprint secrets on the web, metadata-worker, and attachment-worker environments. Optionally set stable worker IDs. Before enabling stored-PDF imports, configure `PAPERPILOT_ZOTERO_ATTACHMENT_BLOB_ALLOWLIST` with only deployment-reviewed HTTPS destinations; shared S3 hosts require the exact bucket. Page operations immediately on `zotero_oauth_critical_audit_failed`; the log intentionally contains only its fixed code and request ID.
-7. Pre-provision a durable, server-private upload directory and configure `PAPERPILOT_UPLOAD_QUARANTINE_ROOT` plus byte/concurrency/deadline limits. Until the object-storage adapter exists, use one protected Linux volume shared by the web and worker processes—not Windows ACL inheritance, ephemeral filesystems, or independent per-instance volumes. If enabling the crawler, explicitly review and set every `PAPERPILOT_CRAWLER_*` policy, network, rate, lease, and worker-identity value on both web and crawler workers; never inherit development defaults into production.
-8. Build and deploy the standalone validator using the reference topology in `deploy/document-validator/`: deny validator egress, keep Clam TCP private, persist/update signatures separately, and enforce CPU, memory, process, byte, and wall-clock ceilings. Configure its exact private HTTPS endpoint, independent bearer secret, policy version, attested toolchain provenance, signature freshness, and clock boundaries.
-9. Build, scan, and provenance-bind the standalone extractor using `deploy/document-extractor/`. The reference Compose service is single-use, concurrency-one, and restart-always, but production must replace each admitted request with a fresh disposable container or microVM using distinct mount, PID, and user namespaces. Deny egress; preserve the non-root/read-only filesystem and bounded temporary storage; use private HTTPS with workload identity; and configure an independent bearer secret, extraction policy, expected Poppler toolchain digest, and clock boundaries. Treat the service's digest as drift detection, not binary proof.
-10. Run `npm ci` and `npm run db:generate` during the build.
-11. Keep traffic closed until the Supabase-specific replacement for the
-    [retained PostgreSQL authority design](docs/POSTGRES-ROLES.md) provisions the
-    exact role and migrations, verifies the live schema/sentinel and grants,
-    and passes authenticated readiness. The old dedicated-cluster commands and
-    direct Prisma migration alternatives are intentionally blocked.
-12. Run `npm run build`, then `npm start` or the platform's Next.js runtime, plus `npm run worker:validation`, `npm run worker:extraction`, `npm run worker:zotero`, `npm run worker:zotero-attachments`, and `npm run worker:crawler` as independently supervised processes. Route traffic only after `/livez` and `/readyz` pass; monitor workers independently. Both Zotero workers need the same database and credential-keyring versions as the web nodes; the crawler, attachment, validation, and extraction workers also need the same private storage view until object storage replaces the local adapter.
-13. Exercise signup verification, password recovery, quotas, PDF reservation → quarantine → validation → explicit paper link → processing/extracted/no-text Reader, worker deferral/retry/dead-letter recovery, Zotero connect → discover → select → sync → tombstone/backoff, explicit Zotero PDF → checksum-bound quarantine → validation → extraction, and one deployment-approved crawler URL through robots → pinned fetch → receipt → quarantine → validation → confirmed custody retirement behavior end to end. Include redirect, DNS rebinding/private-address, rate exhaustion, timeout, oversize, malformed PDF, stale-lease, a writer paused across deletion, wrong storage-generation/root reconciliation, retry-cleanup, reload recovery, post-`DELETED` mutation attempts, and unknown-POST-outcome drills; then confirm backups, restore drills, database/worker alerts, structured request IDs, HTTPS cookies, key rotation, private-volume durability, and provider budgets before public access.
+1. Link the GitHub repository to a Vercel project and create Preview and
+   Production environments. Pin Node, dependency-lock, Workflow, Sandbox, and
+   release identity; never configure a VPS/Compose fallback.
+2. Provision only Supabase project `avmcmmayvnjxrhrmgsdx`. Create a private
+   object bucket, an exact least-privilege runtime role, and the separate
+   Supabase-compatible migration authority using the commands in
+   `deploy/supabase/README.md`. Runtime Functions/Workflow steps
+   use the dashboard-issued Supavisor transaction endpoint on port `6543` with
+   prepared statements disabled. Direct port `5432` is migration/bootstrap
+   authority only.
+3. Put Better Auth, rate-limit, Reader cursor, transactional-email, database,
+   Storage, and provider secrets in Vercel environment variables. No browser,
+   Workflow argument, or Sandbox receives the database password or Supabase
+   server secret key.
+4. Run the reviewed migrations and role/grant/sentinel verification from the
+   explicit deployment job. Keep traffic closed until authenticated `/readyz`
+   proves the exact project, schema, runtime grants, and private bucket.
+5. Build, scan, and digest-pin one PDF-tools image containing the reviewed qpdf,
+   ClamAV, Poppler, and PaperPilot processing entrypoint. It must run non-root,
+   bound CPU/memory/PID/time/output, record tool/signature identities, and emit a
+   closed receipt without raw paths or document content.
+6. Deploy Next.js with the stable Workflow integration. The upload path is
+   reserve → short-lived exact-object signed browser upload → finalize → one
+   durable Workflow. The Reader returns a short-lived capability for the exact
+   admitted generation; neither path proxies PDF bytes through a Function.
+7. Every Workflow attempt creates a native Workflow-serializable Vercel
+   Sandbox with `persistent: false` and networking initially `deny-all`. A
+   server-only, job-fenced binder installs a short-lived Storage credential in
+   an exact host/path/method firewall transform; neither the credential nor a
+   signed URL enters Workflow arguments or the guest. The lifecycle restores
+   deny-all before parsing, runs extraction only after validation acceptance,
+   persists bounded artifacts/receipt, rejects stale leases/results, and
+   attempts stop in `finally`.
+8. Deploy a Preview and run provider-contract, isolated Supabase, live Sandbox,
+   and Playwright gates. Prove success, rejection, timeout, abort, retry with a
+   distinct Sandbox ID, no cross-document state, no PDF in Function/Workflow
+   payloads, and no secret/content telemetry. Also prove a scheduled idempotent
+   reconciler stops tagged Sandboxes left by external Workflow cancellation or
+   platform termination; `finally` alone is not accepted as orphan proof.
+9. Exercise two unrelated previously unseen PDFs through direct upload,
+   admission, Reader render, exact-text readiness when available, source freeze,
+   real WebMCP read/stage, human Save/Discard, refresh, and source reopen. Record
+   the exact Vercel URL/deployment, commit, Supabase project, Workflow/Sandbox
+   correlations, policy/toolchain identities, accessibility results, and
+   sanitized evidence bundle.
+10. Promote the verified deployment. Confirm Vercel rollback, Supabase backup
+    and restore, Storage recovery/retention, provider quota headroom, structured
+    request IDs, HTTPS cookies, key rotation, and explicit quota-exhausted UI.
+11. Keep Zotero synchronization, crawler operation, broader networking, and
+    semantic retrieval out of the Tuesday runtime unless separately migrated to
+    bounded event-driven serverless paths. They cannot reintroduce polling
+    workers or shared storage into the WebMCP candidate.
 
-The application boundaries for transactional email, required verification, password reset, and shared auth/discovery/workspace throttling are implemented. Public sign-up still requires an externally deployed delivery receiver plus a verified sender/domain, and production still needs observability, backups, restore drills, and deployment-specific proxy validation.
+The application boundaries for transactional email, required verification,
+password reset, and shared auth/discovery/workspace throttling are implemented.
+Public sign-up still requires a deployed delivery receiver plus verified
+sender/domain. Production still requires authenticated provider setup,
+observability, recovery drills, Preview evidence, and the WebMCP client gates.
 
 ## Known boundaries
 
-- Authenticated Discover → Inbox → project import, project detail, collection writes, structured manual evidence, Zotero OAuth connect/status/disconnect, library discovery/selection, durable metadata synchronization, sanitized attachment discovery, opt-in manual stored-PDF import, metadata-only WebMCP proposals, digest-bound human review/OpenAlex-backed canonical promotion, the governed explicit one-PDF crawler plus confirmed custody retirement, PDF quarantine, durable validation/extraction, explicit validated-PDF linking, bounded live Reader pagination, immutable grounded passage capture, explicit review/re-anchor successors, revision-ledger history, and collaborative workspace invitations/roles/rosters/switching are implemented. Challenge-scoped figure/region interaction, same-paper selection sets, and Reader mentor WebMCP tools are specified but not yet release-verified. Broad OCR plus automatic figure, panel, caption, equation, and section detection; append-only WebMCP duplicate-refresh successors; direct MCP authorization; remote WebMCP byte acquisition; comment/mention activity; note/annotation bodies; object storage; and exports remain subsequent slices.
+- Authenticated Discover → Inbox → project import, project detail, collection writes, structured manual evidence, Zotero OAuth connect/status/disconnect, library discovery/selection, durable metadata synchronization, sanitized attachment discovery, opt-in manual stored-PDF import, metadata-only WebMCP proposals, digest-bound human review/OpenAlex-backed canonical promotion, the governed explicit one-PDF crawler plus confirmed custody retirement, PDF quarantine, durable validation/extraction, explicit validated-PDF linking, bounded live Reader pagination, immutable grounded passage capture, explicit review/re-anchor successors, revision-ledger history, and collaborative workspace invitations/roles/rosters/switching are implemented in the existing domain architecture. Challenge-scoped figure/region interaction, same-paper selection sets, Reader mentor WebMCP tools, private Supabase Storage transfer, Vercel Workflow, and Vercel Sandbox execution are specified but not yet release-verified. Broad OCR plus automatic figure, panel, caption, equation, and section detection; append-only WebMCP duplicate-refresh successors; direct MCP authorization; remote WebMCP byte acquisition; comment/mention activity; note/annotation bodies; and exports remain subsequent slices.
 - PDF quarantine is deliberately not a safety verdict. Neither quarantined bytes, metadata, a merely `READY` document, nor unlinked extracted storage unlocks Reader. The Reader serves only an explicitly linked document whose current accepted validation and authoritative current-policy extraction generation agree.
-- The validation and extraction contracts, workers, leases, retries, dead letters, immutable attestations/generations, standalone services, and reference container topologies exist, but this environment has no Docker daemon or production Linux Poppler runtime. No image build is claimed. A production platform must build, scan, pin, deploy, and adversarially exercise those images before routing jobs.
-- The reference extractor's single-use, concurrency-one, restart-always mode reduces the window in which one request could observe another, but it does not provide the required production isolation. Production needs one new disposable container or microVM per request with distinct mount, PID, and user namespaces plus private HTTPS/workload identity. Its self-reported toolchain digest detects drift only; signed or measured immutable release provenance is still required.
-- The current upload adapter uses a private local filesystem. Horizontally scaled or ephemeral deployments require the planned direct-to-object-storage adapter before upload traffic is enabled.
+- The validation/extraction contracts, leases, retries, dead letters, immutable attestations/generations, standalone tools, and one-shot worker functions exist. The old polling entrypoints and Compose topologies are not deployable production paths. Gate 0 must build, scan, digest-pin, and adversarially exercise the PDF-tools image in one fresh non-persistent Vercel Sandbox per attempt.
+- The reference extractor's single-use mode is only migration input. Production requires a new Sandbox for every attempt, bounded resources, deny-all egress while parsing, exact object capabilities, receipt fencing, and unconditional termination. Its self-reported toolchain digest detects drift only; pinned-image and release evidence are still required.
+- The current upload adapter uses a private local filesystem and the current Reader route proxies complete PDFs. Both are explicitly blocked for Vercel release. Direct private Supabase Storage reserve/finalize upload and exact-generation signed Reader download are required before upload traffic is enabled.
 - Reader, workspace bootstrap, and upload polling share the same fail-closed validation/extraction authority. PostgreSQL now creates an immutable admission seal only after the complete manifest passes ordered/canonical-text/hash/locator checks; Reader requires that seal, verifies a user/workspace/paper-bound HMAC cursor, and keyset-reads only the requested page plus one boundary predecessor. Bootstrap and upload status fetch no chunk text, and the public Reader route atomically consumes dedicated user/workspace/trusted-IP read budgets. Production must use separate non-owner runtime and migration roles because a table owner or superuser can bypass trigger-based integrity controls.
 - The guided demo Reader still uses bundled papers. The live Reader serves verified chunks only after explicit linking and authoritative extraction; an OpenAlex result remains metadata until that custody path completes. Live Reader capture creates a source-current but researcher-unreviewed `captured` record. Review and source re-anchoring create immutable successors and preserve the prior quote/anchor; they do not turn metadata-only results into possessed full text.
 - Zotero connection alone does not import metadata or files: an owner/admin must discover and explicitly select readable libraries, request or await a scheduled metadata run, and keep the metadata worker online. Stored PDFs require a second owner/admin policy decision, one explicit file command, a deployment-reviewed redirect allowlist, and the separate attachment worker. Cursored metadata sync, sanitized attachment projection, fenced download/quarantine handoff, validation/extraction lifecycle projection, tombstones, provider backoff, and provenance are implemented; notes/annotation bodies, streaming notifications, and conflict-aware write-back are not.

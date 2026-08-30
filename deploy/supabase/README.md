@@ -1,11 +1,34 @@
-# PaperPilot Supabase direct-connection profile
+# PaperPilot Supabase serverless connection profiles
 
 This directory records the provider-specific connection boundary for the
 Supabase project whose public project reference is `avmcmmayvnjxrhrmgsdx`.
 It does not contain a database password, API key, service-role key, or migrated
 data.
 
-## Approved runtime profile
+## Approved Vercel runtime profile
+
+The serverless release uses the exact **Supavisor transaction-mode** connection
+shown by this project's Supabase dashboard:
+
+| Setting | Required value |
+| --- | --- |
+| `PAPERPILOT_DATABASE_PROFILE` | `supabase-avmcmmayvnjxrhrmgsdx-transaction-v1` |
+| Project reference | `avmcmmayvnjxrhrmgsdx` |
+| Host | Exact transaction-pooler hostname copied from the project dashboard; never a wildcard |
+| Port | `6543` |
+| Database | `postgres` |
+| PostgreSQL role | Exact project-scoped `paperpilot_runtime` identity issued for the pooler |
+| TLS | Certificate and hostname verification enabled |
+| Client behavior | Prepared statements disabled; no session-state, `LISTEN`, or session-lock dependency |
+
+The exact pooler hostname is deliberately not invented in this repository.
+`PAPERPILOT_SUPABASE_POOLER_HOST` must contain the exact non-secret hostname
+from Supabase **Connect**. The connection parser verifies that value, the
+project-scoped username, port, database, password presence,
+`sslmode=verify-full`, and `pgbouncer=true` before any socket opens. It rejects
+the direct endpoint for Vercel Function/Workflow traffic.
+
+## Legacy direct runtime profile — not a migration authority
 
 | Setting | Exact value |
 | --- | --- |
@@ -18,14 +41,16 @@ data.
 | TLS mode | `verify-full` |
 | CA path variable | `PAPERPILOT_DATABASE_CA_CERT_PATH` |
 
-The application and readiness probe accept this profile only when every value
-above matches. A different Supabase project, arbitrary `*.supabase.co` host,
-shared-pooler hostname, port `6543`, default `postgres` login, missing password,
+The legacy profile is retained only for the old Compose demo preflight. The
+application parser no longer accepts it. It is not an approved Vercel release
+profile and is not a migration/admin profile.
+
+Do not install it in Vercel Function, Workflow, browser, or Sandbox
+environments, and do not point `db:deploy` at it. A different Supabase project,
+arbitrary `*.supabase.co` host, default `postgres` login, missing password,
 missing/invalid CA bundle, query-level host/service/CA override, or weaker TLS
-mode fails before network I/O.
-The profile is mandatory for every application, worker, and readiness process.
-Empty, generic, alternate-project, and loopback profiles fail before network
-I/O. There is no writable local-database fallback.
+mode still fails before network I/O. There is no writable local-database
+fallback.
 
 ## Credential-free endpoint preflight
 
@@ -41,27 +66,34 @@ reachable from the current machine. The result explicitly lists database
 authentication, database roles, migrations, the private Storage bucket, and
 Storage credentials as unverified. It never reads or prints those credentials.
 
-## Local secret configuration
+## Migration and bootstrap profiles
 
-Keep the real password only in the ignored root `.env` file or an external
-secret manager. Percent-encode it for the URL user-info component; do not paste
-the password into source, documentation, command-line history, screenshots, or
-support messages.
+The repository now has two purpose-fenced direct profiles:
 
-```dotenv
-PAPERPILOT_DATABASE_PROFILE="supabase-avmcmmayvnjxrhrmgsdx-direct-v1"
-PAPERPILOT_DATABASE_CA_CERT_PATH="E:/PaperPilot-Secrets/supabase-prod-ca.pem"
-DATABASE_URL="postgresql://paperpilot_runtime:URL_ENCODED_DATABASE_PASSWORD@db.avmcmmayvnjxrhrmgsdx.supabase.co:5432/postgres?sslmode=verify-full"
-DATABASE_POOL_MAX="5"
-PAPERPILOT_ALLOW_LOCAL_PRISMA_DEV="0"
-```
+| Use | Profile | Login |
+| --- | --- | --- |
+| One-time role bootstrap | `supabase-avmcmmayvnjxrhrmgsdx-bootstrap-v1` | provider-managed `postgres` |
+| Reviewed Prisma release | `supabase-avmcmmayvnjxrhrmgsdx-migration-v1` | `paperpilot_migration_owner` |
 
-`URL_ENCODED_DATABASE_PASSWORD` is intentionally a placeholder. Do not run the
-application with the example value.
+Both require the exact direct project host, port `5432`, database `postgres`,
+`sslmode=verify-full`, and an explicit password. The runtime, migration, and
+bootstrap profiles reject one another. `prisma.config.ts` permits only offline
+`generate` and exact `migrate deploy`; `migrate dev`, reset, db push, Studio,
+shadow databases, loopback targets, and transaction-pooler migrations remain
+blocked.
 
-Download the current database CA from the project's Supabase **Connect** or
-database SSL settings and place it outside the repository. The configured path
-must be absolute, at most 1,024 characters, and identify a readable regular
+The generic files under `deploy/postgres` still target a dedicated PostgreSQL
+cluster and must not be run against Supabase. PaperPilot's provider-specific
+bootstrap changes only `paperpilot_migration_owner`, `paperpilot_runtime`, and
+their exact schema privileges. The grant reconciler scopes changes to the
+checked-in 57-table manifest, the migration ledger, and migration-owner
+functions; it does not transfer ownership of `public` or rewrite provider
+database ACLs.
+
+Node and Prisma use verified system trust roots by default. If the project
+requires a private/custom CA, download it from Supabase **Connect** or database
+SSL settings and place it outside the repository. The configured path must be
+absolute, at most 1,024 characters, and identify a readable regular
 non-symlink file containing only one to eight valid CA certificate blocks with
 a total size of at most 65,536 bytes. PaperPilot loads those bytes once into
 the server-side PostgreSQL client configuration with
@@ -73,33 +105,45 @@ other query parameters remain rejected.
 
 The direct endpoint currently resolves to IPv6 from this workstation, which can
 also establish TCP connectivity to it. That is not a credential or migration
-check. If a future runtime is IPv4-only,
-copy the exact Session pooler hostname from the Supabase dashboard and add a
-separate reviewed profile. Do not repurpose this direct profile or broadly
-allow all pooler hosts. Transaction mode on port `6543` is not approved for the
-current persistent Prisma/worker topology.
+check. The runtime pooler hostname must be copied independently from the
+Supabase dashboard. Do not repurpose the legacy direct runtime profile or
+broadly allow all pooler hosts.
 
-## Deliberate migration boundary
+## Setup sequence
 
-This profile only closes and activates runtime URL validation. It does not
-claim that the database is provisioned. PaperPilot remains unavailable until:
+The code path is ready, but no remote claim is made until the credentialed
+commands succeed against the project. Never paste credentials into Git, an
+issue, a Workflow input, or chat.
 
-1. create the `paperpilot_runtime` role using a Supabase-reviewed role setup;
-2. reconcile the existing migrations and ownership/grant contract against
-   Supabase's managed-role restrictions in a disposable project or branch;
-3. download and install the current Supabase database CA required by
-   `sslmode=verify-full` outside the repository, then set the absolute
-   `PAPERPILOT_DATABASE_CA_CERT_PATH` only in server-side configuration;
-4. run the focused URL test, then the schema, role, integration, and readiness
-   gates; and
-5. pass a complete arbitrary-PDF workflow and provenance trail against
-   Supabase. The E-drive database stays offline and is not a runtime rollback.
+1. In Supabase **Connect**, copy the exact transaction-pooler hostname and URLs.
+   Create strong independent passwords for `paperpilot_migration_owner` and
+   `paperpilot_runtime`. Fill a gitignored `.env`; keep only the transaction
+   runtime variables in Vercel later.
+2. Temporarily configure the bootstrap URL and run
+   `npm run supabase:roles:bootstrap`. Remove the bootstrap variables from the
+   shell immediately afterward.
+3. Run `npm run db:deploy` with only the exact migration profile/URL installed.
+   This applies the checked-in Prisma chain directly as
+   `paperpilot_migration_owner`.
+4. Run `npm run supabase:roles:reconcile` to remove public/managed Data API
+   access from PaperPilot-owned objects and grant only the reviewed runtime
+   manifest.
+5. Create a named server secret key in Supabase, configure
+   `PAPERPILOT_SUPABASE_SECRET_KEY`, then run
+   `npm run supabase:storage:apply`. The command creates or reconciles exactly
+   `paperpilot-private-pdfs` as private, PDF-only, and 25 MiB maximum.
+6. Run `npm run supabase:storage:check`, `npm run local:check`, the test suite,
+   and one live pooler readiness/smoke check before installing Vercel secrets.
 
-Do not run the generic dedicated-cluster bootstrap blindly against Supabase.
+The Supabase CLI is pinned as a development dependency for later project-link,
+JWT-signing-key, and migration inspection work. No command in this setup starts
+the local Supabase stack.
+
+Do not run the generic dedicated-cluster bootstrap against Supabase.
 It requires a true PostgreSQL superuser and a dedicated non-default application
 database, while this managed profile targets the provider-owned `postgres`
-database. A future provider-specific role/migration runbook must make those
-differences explicit instead of weakening `deploy/postgres`.
+database. The provider-specific replacement must make those differences
+explicit instead of weakening `deploy/postgres` or elevating the runtime role.
 
 Run the no-network focused contract test with:
 

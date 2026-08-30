@@ -1,5 +1,20 @@
 # PaperPilot Technical Specification
 
+> **Approved serverless architecture amendment — 2026-08-30:** The project
+> owner made serverless operation a hard production requirement. PaperPilot's
+> release topology is Vercel Next.js Functions for the authenticated control
+> plane and WebMCP surface, Vercel Workflow for durable orchestration, one new
+> `persistent: false` Vercel Sandbox for each PDF job attempt, Supabase
+> PostgreSQL as the sole durable database, and private Supabase Storage as the
+> sole durable object store. Browser PDF transfers use short-lived,
+> single-object signed capabilities and do not traverse a Vercel Function body.
+> There is no release VPS, Docker Compose host, shared local volume,
+> continuously polling worker, local database, or production filesystem
+> authority. Existing Compose and local-quarantine artifacts are retained only
+> as implementation references until their provider adapters are replaced; any
+> conflicting requirement below is superseded by this amendment. The complete
+> decision record is [`../SERVERLESS-ARCHITECTURE.md`](../SERVERLESS-ARCHITECTURE.md).
+>
 > **Approved database architecture amendment — 2026-08-29:** The project owner
 > superseded every conflicting writable-local-PostgreSQL instruction with a
 > Supabase-only invariant. Project `avmcmmayvnjxrhrmgsdx` is the sole approved
@@ -7,14 +22,18 @@
 > offline and receives no application, worker, test, migration, Studio, or
 > pgAdmin traffic. Until authenticated Supabase roles, migrations, CA trust,
 > and readiness pass, PaperPilot fails closed instead of using a local or
-> generic database. The active Compose topology has now removed self-hosted
-> PostgreSQL and requires the provider-specific runtime profile, CA mount, and
-> egress; authenticated provider authority remains a red Gate 0 prerequisite.
+> generic database. The serverless runtime requires the provider-specific
+> pooled runtime profile while migrations retain a separate direct provider
+> authority; authenticated provider authority remains a red Gate 0 prerequisite.
 
-**Status:** Approved; implementation-ready  
-**Date:** 2026-08-29  
-**Target:** Feature-complete candidate by Tuesday, 2026-09-01  
-**Product contract:** [`scope.md`](./scope.md) and [`prd.md`](./prd.md)  
+**Status:** Approved; serverless amendment in active implementation
+
+**Date:** 2026-08-30
+
+**Target:** Feature-complete candidate by Tuesday, 2026-09-01
+
+**Product contract:** [`scope.md`](./scope.md) and [`prd.md`](./prd.md)
+
 **Next guided artifact:** `checklist.md`
 
 ## Overview
@@ -47,7 +66,7 @@ The Tuesday candidate is successful when all of the following are true:
 - Save and Discard are available only through PaperPilot UI, never through WebMCP.
 - Pending proposals remain private to the staging actor, including from other workspace owners.
 - The complete text and visual primary paths are keyboard operable and screen-reader understandable.
-- The public HTTPS deployment, workers, private storage, database runtime role, and exact supported-client tuple pass the release preflight.
+- The public Vercel deployment, durable workflow, per-attempt disposable PDF sandbox, private Supabase Storage, pooled database runtime role, and exact supported-client tuple pass the release preflight.
 
 ### Canonical user journey
 
@@ -106,7 +125,7 @@ Upload PDF
 - No editable mentor response or general conversational thread.
 - No WebMCP tool that saves, discards, approves, verifies, or writes a note.
 - No broad rewrite of the existing webpage evidence, metadata approval, Zotero, or crawler domains.
-- No serverless migration, managed database migration, or managed object-storage migration.
+- No VPS, always-on worker fleet, shared local volume, production local filesystem, or second durable data authority.
 - No SSE, WebSocket, token streaming, or generalized event bus.
 - No claim that every WebMCP client or every ChatGPT model supports the flow.
 
@@ -119,10 +138,10 @@ Upload PDF
 | Web application | Next.js 16.3.x App Router | Already deployed by the repository; route handlers and server/client boundaries are established |
 | UI | React 19 + TypeScript | Existing application and accessibility patterns |
 | Authentication | Better Auth 1.7.2 + Prisma adapter | Existing session, verification, and workspace membership authority |
-| Database | PostgreSQL + Prisma 7.10 | Existing tenant-qualified schema, migrations, runtime roles, idempotency, and database guards |
-| PDF validation | Existing isolated validator using qpdf and ClamAV | Preserve admitted-byte and security chain |
-| Exact-text extraction | Existing isolated Poppler extractor using `pdfinfo` and `pdftotext` | Preserve current manifest/chunk authority |
-| Private storage | Existing identity-bound local quarantine on durable shared storage | Reuse immutable original custody and extend it for bounded visual artifacts |
+| Database | Supabase PostgreSQL + Prisma 7.10 | Sole durable relational authority; existing tenant-qualified schema, migrations, runtime roles, idempotency, and guards remain |
+| PDF validation | Existing qpdf and ClamAV contract inside a fresh Vercel Sandbox per job attempt | Preserve the admitted-byte and security chain without a daemon on the web runtime |
+| Exact-text extraction | Existing Poppler contract inside that fresh Vercel Sandbox | Preserve current manifest/chunk authority without a polling worker |
+| Private storage | Private Supabase Storage behind exact-object capabilities | Durable immutable PDF/artifact custody that works across ephemeral Functions and Sandboxes |
 | Styling | Existing CSS and font stack | Preserve PaperPilot's current visual language while reshaping the authenticated live app |
 
 ### Added dependencies
@@ -132,10 +151,15 @@ Upload PDF
 | `pdfjs-dist` | Pin the exact current verified release; initial target `6.3.289` | Client-only PDF page rendering and canvas capture | [PDF.js getting started](https://mozilla.github.io/pdf.js/getting_started/), [examples](https://mozilla.github.io/pdf.js/examples/) |
 | `sharp` | Pin the exact verified direct dependency | Hardened server-side PNG signature/decode, dimension, decompressed-pixel, and re-encode validation; no optional/transitive decoder is accepted | [sharp documentation](https://sharp.pixelplumbing.com/) |
 | `@playwright/test` | Pin the version installed for the release | Browser regression, keyboard, responsive, refresh, and trace evidence | [Playwright docs](https://playwright.dev/docs/intro) |
-| Caddy | Pin container image by version or digest | Automatic HTTPS and reverse proxy for the single-host deployment | [Caddy documentation](https://caddyserver.com/docs/) |
-| Docker Compose | Host-supported current Compose v2 | Reproducible public web, PostgreSQL, workers, services, and volume topology | [Docker Compose docs](https://docs.docker.com/compose/) |
+| `workflow` | Exact stable release `4.8.5` | Durable, retryable orchestration around bounded Function steps and one PDF-processing Sandbox; Next integration is `workflow/next` | [Vercel Workflow](https://vercel.com/docs/workflows) |
+| `@vercel/sandbox` | Exact stable release `3.2.1` | Fresh non-persistent microVM execution for qpdf, ClamAV, and Poppler | [Vercel Sandbox](https://vercel.com/docs/sandbox) |
+| `@vercel/sandbox-mock` | Exact matching release `3.2.1`, development only | Credential-free lifecycle and failure-path tests without consuming cloud quota | [Sandbox mock](https://www.npmjs.com/package/@vercel/sandbox-mock) |
+| Supabase Storage | Provider-managed service; pin application contract version | Private original/artifact custody plus short-lived exact-object upload/read capabilities | [Supabase Storage](https://supabase.com/docs/guides/storage) |
 
-`pdfjs-dist` and `sharp` are the only new product runtime libraries required by the mentor slice. PaperPilot must not add an LLM SDK, model provider key, Python API, vector store, or image-understanding service.
+The Workflow, Sandbox, and Storage adapters are infrastructure dependencies,
+not a second explanation engine. PaperPilot must not add an LLM SDK, model
+provider key, Python API, vector store, or image-understanding service to the
+exact-source mentor path.
 
 ### WebMCP dependency boundary
 
@@ -197,7 +221,7 @@ The exact current supported Chrome/Inspector combination recorded at test time i
 └───────────┼───────────────────────────────────────────────────────────┘
             │ authenticated same-origin HTTP
             ▼
-┌──────────────────────────── Next.js server ───────────────────────────┐
+┌──────────────────── Vercel Next.js control plane ─────────────────────┐
 │ Session + origin + membership + rate-limit + exact-schema boundary    │
 │                                                                       │
 │ Upload service       Reader services          Mentor service           │
@@ -209,36 +233,57 @@ The exact current supported Chrome/Inspector combination recorded at test time i
 └──────────┬─────────────────────┬──────────────────────┬────────────────┘
            │                     │                      │
            ▼                     ▼                      ▼
-  durable private volume     PostgreSQL          validator/extractor
-  - admitted originals       - tenant custody    services + workers
-  - PDF.js artifacts         - immutable sources - qpdf/ClamAV
-                             - proposals/events  - Poppler chunks
-                             - decisions/notes
+  Supabase private Storage  Supabase PostgreSQL   Vercel Workflow
+  - admitted originals      - tenant custody       - durable job state
+  - PDF.js artifacts        - immutable sources    - one fresh Sandbox
+                            - proposals/events       per PDF attempt
+                            - decisions/notes       - qpdf/ClamAV/Poppler
 ```
 
 ### Deployment topology
 
 ```text
-Internet
-  -> Caddy :443
-       -> Next.js web container
-            -> PostgreSQL runtime role
-            -> shared private storage volume
-            -> validator HTTPS service
-            -> extractor HTTPS service
+Browser / named WebMCP client
+  -> Vercel HTTPS edge
+       -> Next.js Functions
+            -> Supabase Postgres through Supavisor transaction mode :6543
+            -> short-lived exact-object Storage capabilities
+            -> Vercel Workflow start/signal
 
-validation worker
-  -> PostgreSQL job queue
-  -> shared private storage volume
-  -> validator HTTPS service
+Browser
+  -> short-lived signed upload URL
+       -> private Supabase Storage object with a new attempt-specific key
 
-extraction worker
-  -> PostgreSQL job queue
-  -> shared private storage volume
-  -> extractor HTTPS service
+Vercel Workflow
+  -> create Vercel Sandbox { persistent: false } for one jobAttemptId
+       -> starts with networkPolicy: deny-all
+       -> server-only binder installs one exact host/path/method firewall
+          transform with an attempt-scoped Storage JWT loaded inside the step
+       -> guest stages exactly one object using a non-authorizing path/header
+       -> restore deny-all before parsing
+       -> verify size and SHA-256
+       -> qpdf + ClamAV validation
+       -> Poppler extraction only after acceptance
+       -> return bounded receipt/artifacts
+       -> attempt stop in finally
+  -> commit only against the still-current Supabase job lease/generation
+
+Scheduled Vercel reconciliation
+  -> stop PaperPilot-tagged Sandboxes whose attempts are cancelled, expired,
+     superseded, or terminal without confirmed cleanup
 ```
 
-All components run on one Linux VPS for the hackathon. PostgreSQL and private object data use named persistent volumes. Web and both workers mount the same private object volume at the same configured logical root. Caddy terminates TLS and forwards only to the web container. Validator and extractor ports remain private to the Compose network.
+Vercel and Supabase are the complete release runtime. Functions are stateless,
+their temporary files are disposable, and they never proxy the PDF upload body.
+Workflow state is orchestration metadata only; user-visible job state and every
+durable artifact remain in Supabase. A Sandbox is created for exactly one job
+attempt, receives no database password, Supabase service-role credential,
+signed URL, or storage JWT in its process or command arguments. Vercel's
+firewall injects the short-lived attempt credential outside the guest after a
+server-only job/Sandbox binding check. Ordinary terminal paths attempt stop in
+`finally`; a scheduled idempotent reconciler handles external cancellation or
+platform termination, for which `finally` is not assumed. A retry always
+receives a new `sandboxId`.
 
 ### Authority model
 
@@ -328,10 +373,13 @@ Legend: `[M]` modifies an existing file, `[A]` adds a file, and `[R]` reuses an 
 ```text
 PaperPilot/
 ├─ package.json                                      [M]
-│  Add pinned pdfjs-dist and Playwright; add mentor unit/e2e scripts.
+│  Add pinned PDF.js, Playwright, Workflow, Sandbox, and Supabase adapters;
+│  add mentor, provider-contract, preview-e2e, and serverless-preflight scripts.
 ├─ package-lock.json                                 [M]
 ├─ playwright.config.ts                              [A]
 │  Authenticated Chromium configuration and trace/video retention.
+├─ vercel.json                                       [A if platform defaults are insufficient]
+│  Bounded Function duration/routing only; no PDF bodies or daemon processes.
 ├─ next.config.ts                                    [M if required]
 │  Preserve security headers; explicitly support top-level site tools and
 │  the same-origin PDF.js worker without weakening CSP/origin isolation.
@@ -339,17 +387,16 @@ PaperPilot/
 │  Publish admission, source-set, artifact, feature-flag, and deployment vars.
 ├─ README.md                                         [M]
 │  Live architecture, setup, limits, supported client, claims, and preflight.
-├─ Dockerfile                                        [A]
-│  Production Next.js image; worker commands may reuse this application image.
-│
 ├─ deploy/
-│  ├─ app/                                           [A]
-│  │  ├─ compose.yaml
-│  │  │  Caddy, web, PostgreSQL, validator/extractor, workers, volumes.
-│  │  ├─ Caddyfile
-│  │  │  HTTPS termination and reverse proxy.
+│  ├─ app/                                           [R: superseded reference only]
+│  │  Prior Compose topology; never a release or fallback path.
+│  ├─ pdf-sandbox/                                   [A]
+│  │  ├─ Dockerfile
+│  │  │  Pinned qpdf, ClamAV, Poppler, non-root user, and processing entrypoint.
 │  │  └─ README.md
-│  │     Provision, migrate, preflight, deploy, and rollback instructions.
+│  │     Immutable image, signature/toolchain, resource, and egress contract.
+│  ├─ supabase/                                      [M]
+│  │  Provider migration/runtime role, private bucket, and signed-capability setup.
 │  └─ postgres/
 │     ├─ runtime-access-manifest.json                [M]
 │     │  Add seven application tables and regenerated authority snapshots.
@@ -368,8 +415,11 @@ PaperPilot/
 ├─ scripts/
 │  ├─ check-devpost-readiness.mjs                    [M]
 │  │  Gate machine-checkable repository, release-metadata, and evidence-bundle requirements.
-│  └─ demo-preflight.mjs                             [A]
-│     Execute build/test/health/upload/DB checks and validate manually recorded client/a11y metadata.
+│  ├─ demo-preflight.mjs                             [M]
+│  │  Gate Vercel URL/commit, Supabase roles/bucket, Workflow, Sandbox canary,
+│  │  real upload, and manually recorded client/a11y metadata.
+│  └─ serverless/                                    [A]
+│     Provider-contract and credential-safe environment checks.
 │
 ├─ src/
 │  ├─ app/
@@ -383,15 +433,17 @@ PaperPilot/
 │  │     │  └─ [uploadSessionId]/
 │  │     │     ├─ route.ts                          [R]
 │  │     │     └─ content/route.ts                  [R]
-│  │     │        Thin existing handlers; enriched service DTOs only.
+│  │     │        Replaced by reserve/finalize handlers that issue no body proxy;
+│  │     │        the browser uploads through one exact-object signed capability.
 │  │     └─ papers/[paperId]/
 │  │        ├─ reader/
 │  │        │  ├─ route.ts                          [M]
 │  │        │  │  GET page/capability state; PUT actor page progress.
 │  │        │  ├─ text-reliability/route.ts         [A]
 │  │        │  │  POST actor-scoped, downgrade-only PDF.js mismatch observation.
-│  │        │  └─ pdf/route.ts                      [A]
-│  │        │     GET one expected admitted PDF generation after authorization.
+│  │        │  └─ pdf-access/route.ts               [A]
+│  │        │     GET one short-lived read capability for the expected admitted
+│  │        │     PDF generation after authorization.
 │  │        └─ mentor/
 │  │           ├─ exchanges/
 │  │           │  ├─ route.ts                       [A]
@@ -473,6 +525,15 @@ PaperPilot/
 │  │     └─ reader-evidence-selection.test.ts       [M]
 │  │
 │  ├─ server/
+│  │  ├─ platform/                                  [A]
+│  │  │  ├─ private-object-store.ts
+│  │  │  │  Provider-neutral exact-object reserve/head/read/delete contract.
+│  │  │  ├─ supabase-object-store.ts
+│  │  │  │  Private bucket implementation; signed capabilities, never public URLs.
+│  │  │  ├─ pdf-sandbox-runner.ts
+│  │  │  │  One-attempt processing request/receipt and termination contract.
+│  │  │  └─ vercel-pdf-sandbox-runner.ts
+│  │  │     `persistent: false` Vercel adapter with no durable local state.
 │  │  ├─ documents/
 │  │  │  ├─ reader-service.ts                       [M]
 │  │  │  │  Existing lifecycle/cursor path plus exact page mode and progress.
@@ -492,7 +553,8 @@ PaperPilot/
 │  │  │  └─ mentor-contract.test.ts                 [A]
 │  │  ├─ uploads/
 │  │  │  ├─ service.ts                              [M]
-│  │  │  │  Create provisional Paper/WorkspacePaper identity during intake.
+│  │  │  │  Reserve/finalize attempt-specific objects and create provisional
+│  │  │  │  Paper/WorkspacePaper identity during intake.
 │  │  │  ├─ dto.ts                                  [M]
 │  │  │  └─ service.integration.test.ts             [M]
 │  │  ├─ workspaces/
@@ -506,6 +568,10 @@ PaperPilot/
 │  │     ├─ health.ts                               [M]
 │  │     │  Advance expected migration sentinel.
 │  │     └─ health.test.ts                          [M]
+│  ├─ workflows/                                    [A]
+│  │  └─ process-upload.ts
+│  │     Durable orchestration; each step idempotently fences Supabase job state,
+│  │     creates one fresh Sandbox, commits a bounded receipt, and terminates it.
 │  └─ generated/prisma/                             [generated]
 │     Regenerate with `npm run db:generate`; never hand-edit.
 │
@@ -1091,7 +1157,9 @@ The saved-note projection maps `EvidenceNote.kind=NOTE`, `status=CAPTURED`, `doc
 
 Implements: `prd.md > Epic 1`, `Epic 2`, `Epic 10`
 
-The existing handler and custody flow remain. The service transaction additionally creates:
+The route is a metadata-only reservation. It rejects a PDF request body, binds
+the expected byte count and client-computed SHA-256 to a new attempt-specific
+private object key, and creates:
 
 - an upload-sourced `Paper` with a sanitized filename-derived provisional display title;
 - a visible `WorkspacePaper` with no invented bibliography; and
@@ -1107,9 +1175,27 @@ type UploadPaperAssignment = {
   titleAuthority: "upload_filename";
   readerState: "checking_file" | "page_pending" | "page_ready" | "rejected";
 };
+
+type SignedPdfUploadPlanV1 = {
+  kind: "signed-object-put";
+  method: "PUT";
+  url: string;
+  headers: Record<string, string>;
+  expiresAt: string;
+  completeUrl: string;
+  expectedSizeBytes: string;
+  expectedSha256: string;
+};
 ```
 
-This must not overload existing `linkedPaperId` semantics if that value currently means a Reader-authoritative accepted link. The DTO uses an explicit assigned/provisional paper field.
+The signed URL/token is ephemeral response data and is never stored, logged, or
+treated as evidence. The plan permits one exact new key with overwrite disabled;
+the browser uses it directly, then calls `completeUrl`. Completion heads and
+fences the exact object and starts Workflow, but validation/Sandbox admission—not
+the browser completion claim—establishes authoritative size, digest, MIME, and
+PDF status. This must not overload existing `linkedPaperId` semantics if that
+value currently means a Reader-authoritative accepted link. The DTO uses an
+explicit assigned/provisional paper field.
 
 Exact replay reuses the same provisional paper/workspace-paper/document IDs. Provisional papers use random tenant-scoped identity and are never title/filename-deduplicated. An expired upload session that received no bytes is hidden from normal library queries and reconciled by the existing intake cleanup, which releases quota and removes or archives the zero-byte shell without touching a completed or replayed upload.
 
@@ -1200,7 +1286,7 @@ type DowngradeReaderTextReliabilityV1 = {
 
 After actor/path authorization and replay lookup, the server verifies the current admitted generation/page and that its own candidate was `reliable`, then idempotently records the actor-scoped page downgrade in `ReaderProgress.textReliabilityDowngrades`. The route cannot accept `reliable`, clear a downgrade, change extraction authority, or increment the shared aggregate version. Success is `WorkspaceCommandResultV1<{ documentId: string; pageNumber: number; textReliability: "mismatch"; capability: "visual_only" }>`; page bootstrap applies the persisted downgrade only to the exact matching document digest. Tuesday's safe behavior retains it for that actor/document generation; a newly admitted generation starts with its own server candidate.
 
-### `GET /api/workspaces/:workspaceId/papers/:paperId/reader/pdf?documentId=:expectedDocumentId&inputSha256=:expectedInputSha256`
+### `POST /api/workspaces/:workspaceId/papers/:paperId/reader/pdf-access`
 
 Implements: `prd.md > Epic 2`, `Epic 3`, `Epic 4`, `Epic 10`
 
@@ -1211,24 +1297,40 @@ session + workspace membership + expected generation
   -> visible WorkspacePaper
   -> current linked Document
   -> accepted validation admission
-  -> matching ORIGINAL Asset
-  -> identity-bound private object open
-  -> exact bounded PDF response
+  -> matching ORIGINAL Asset and exact object generation
+  -> short-lived signed read capability for that one private object
 ```
 
-Required response headers:
+Request and response:
 
-```text
-Content-Type: application/pdf
-Content-Disposition: inline; filename="safe-name.pdf"
-Cache-Control: private, no-store
-X-Content-Type-Options: nosniff
-X-PaperPilot-Document-SHA256: <input digest>
-X-PaperPilot-Document-Id: <document id>
-ETag: "<input digest>"
+```ts
+type ReaderPdfAccessRequestV1 = {
+  schemaVersion: 1;
+  expectedDocumentId: string;
+  expectedInputSha256: string;
+};
+
+type ReaderPdfAccessDescriptorV1 = {
+  schemaVersion: 1;
+  kind: "signed-object-get";
+  url: string;
+  expiresAt: string;
+  documentId: string;
+  inputSha256: string;
+  inputSizeBytes: string;
+  mediaType: "application/pdf";
+};
 ```
 
-The Reader passes both identities returned by its page bootstrap and sends `If-Match: "<input digest>"`. If the paper's current generation or expected values differ, the route returns `412 document_generation_changed` (or `409` before opening storage) and never silently serves a newer PDF. The first release may return the complete file because upload admission already applies a published byte limit. HTTP Range support is a post-critical-path optimization. The route never reveals a storage path, key, bucket, mount, or signed public URL.
+The Reader passes both identities returned by its page bootstrap. If the paper's
+current generation or expected values differ, the route returns
+`412 document_generation_changed` (or `409` before capability creation) and
+never silently authorizes a newer PDF. The descriptor is `private, no-store`;
+its URL is a short-lived bearer capability, not a public object URL or durable
+locator. PDF.js fetches directly from private Storage, requires the returned byte
+count, recomputes SHA-256, and grants rendered-page authority only when it
+matches the admitted digest. Storage bucket/key/service credentials never enter
+the application DTO.
 
 ### `GET /api/workspaces/:workspaceId/papers/:paperId/mentor/exchanges`
 
@@ -1356,14 +1458,23 @@ For a genuinely new operation after the common replay/deduplication branch, the 
 1. reauthorizes actor, paper, and current admitted document;
 2. enforces 1–8 items, same admitted original/attestation, 50,000 durable exact-text UTF-8 bytes, at most two visual items, the separately measured WebMCP serialized-result character ceiling, PNG-only, configured dimensions, decompressed pixels, retained-artifact workspace quota, and total payload;
 3. for every exact draft, rechecks the server page candidate is `reliable` and the actor has no persisted matching-generation downgrade, then reconstructs exact text;
-4. MIME-sniffs, decodes with pinned `sharp`, dimension/pixel-checks, and re-hashes the exact received PNG bytes;
-5. writes each bounded upload to a fresh private temporary file, fsyncs, hashes and decode-validates it, then atomically renames it into its content-addressed location; an existing identical object is reused rather than overwritten;
+4. reserves retained-byte quota and one immutable attempt-specific private Storage key for each visual artifact, then returns short-lived exact-object upload capabilities; artifact bytes never traverse a Function body;
+5. after direct upload, heads and fetches the exact object inside the bounded validation step, MIME-sniffs, decodes with pinned `sharp`, dimension/pixel-checks, and re-hashes the exact received PNG bytes; a digest-identical admitted object may be reused by durable identity but no object is overwritten;
 6. under the workspace advisory lock, reserves retained-artifact bytes and creates/reuses `Asset` plus same-document `DocumentAsset(PREVIEW)` relations;
 7. inserts one immutable source set and ordered items, or validates source-set reuse;
 8. inserts one exchange and `REQUEST_PREPARED` event; and
 9. returns `WorkspaceCommandResultV1<{ exchange: MentorExchangeSummaryV1; sharingSummary: { itemCount: number; paperpilotToolReturnedNoOtherPapersOrLibraryContent: true } }>`.
 
-The object write precedes the database transaction but is not called database-atomic. Writer and reconciler share a per-tenant/per-digest advisory lock. Reconciliation considers only objects older than a published safety window greater than the maximum request/transaction duration, then rechecks both `Asset` and in-progress idempotency references while holding that lock; it never races a freshly renamed object or deletes a pre-existing shared object. An exact replay reuses the same object and `Asset` rows. Before visual bytes are accepted, the server predicts quota impact under the workspace lock so concurrent freezes cannot over-admit derivatives.
+The object write precedes final database admission but is not called
+database-atomic. The finalize transaction and reconciler share the durable
+attempt/object identity plus a tenant/digest advisory lock. Reconciliation
+considers only attempt objects older than a published safety window greater than
+the maximum capability/transaction duration, then rechecks `Asset`, upload
+attempt, and idempotency references under the lock. It deletes only the exact
+orphan attempt key/version, never a shared or live object. Exact replay reuses
+the admitted object and `Asset` rows. Before visual bytes are accepted, the
+server reserves quota under the workspace lock so concurrent freezes cannot
+over-admit derivatives.
 
 Applied freeze returns `201`; exact idempotent replay returns `200`; changed content under the same operation returns `409 idempotency_conflict` or `selection_conflict`.
 
@@ -1746,14 +1857,16 @@ Both tool names are at most 30 characters, each tool description at most 500 cha
 ### 1. Upload, admission, and provisional library identity
 
 1. The authenticated user chooses a PDF with the picker or drag-and-drop.
-2. The client creates an upload session through the existing exact upload contract.
-3. The server creates immutable upload custody plus a provisional Paper/WorkspacePaper using only the sanitized filename as display authority.
-4. The UI displays `Checking file`; it does not route the upload into a metadata-only Inbox dead end.
-5. The validation worker and isolated validator establish accepted/rejected authority over the exact original bytes.
-6. Once validation accepts the PDF, the Reader PDF endpoint may serve those exact bytes even while text extraction continues.
-7. The extraction worker and isolated Poppler service create the admitted manifest/chunks when embedded text is usable.
-8. The library state advances independently to page-ready and exact-text-ready capabilities.
-9. A no-byte expired provisional intake is hidden and reconciled; exact upload replay reuses its IDs, and no filename/title deduplication merges separate PDFs.
+2. The client computes the declared size and SHA-256, then asks the Function control plane to reserve one attempt-specific object key. The server records the expected envelope and creates a provisional Paper/WorkspacePaper using only the sanitized filename as display authority.
+3. After membership, quota, media, and idempotency checks, the server returns a short-lived signed upload capability scoped to that one new private Supabase Storage key with overwrite disabled.
+4. The browser transfers the PDF directly to Supabase Storage. The PDF body never crosses a Vercel Function or Workflow payload.
+5. The client finalizes the session. The server heads the exact key, checks the reserved size/envelope, fences replay, records durable job state, and starts one idempotent Workflow run.
+6. Workflow creates a fresh non-persistent native Vercel `Sandbox` for the `jobAttemptId` with deny-all networking. A server-only step loads an attempt-scoped Storage credential without returning it, binds the configured Supabase project plus exact input path/method to that Sandbox/job in a firewall transform, and returns only a closed status. The guest stages the one object without receiving the credential, restores deny-all, rechecks size and SHA-256, and establishes accepted/rejected authority with qpdf and ClamAV.
+7. If validation accepts, the same fresh job boundary runs Poppler and emits bounded manifest/chunk artifacts plus a receipt that binds input object, digest, policy, toolchain, sandbox, and attempt. Validation rejection never reaches extraction.
+8. Workflow commits only if the Supabase job lease/object generation remains current and writes artifacts through a separately bound output-only firewall transform. It restores deny-all and attempts to stop the Sandbox in `finally`. A scheduled reconciler stops tagged Sandboxes left by external cancellation/termination; a retry creates a new attempt and a different Sandbox.
+9. The UI displays `Checking file`, then advances independently to page-ready and exact-text-ready capabilities. It does not route the upload into a metadata-only Inbox dead end.
+10. Once validation accepts, an authorized Reader route issues a short-lived exact-generation signed read capability; PDF.js downloads from private Storage and verifies the admitted digest before rendering.
+11. A no-byte expired provisional intake is hidden and reconciled; exact upload replay reuses its IDs, and no filename/title deduplication merges separate PDFs.
 
 Accessibility behavior:
 
@@ -1998,7 +2111,10 @@ Responsibilities:
 - Bind follow-ups to the same source set and parent proposal.
 - Enforce same-paper, item, byte, visual, geometry, MIME, dimension, and payload ceilings.
 - Enforce admitted-original/validation bindings, WebMCP serialized-output ceiling, and locked retained-artifact workspace quota.
-- Use staged-file validation, atomic content-addressed rename, idempotent object reuse, and orphan reconciliation around the database transaction.
+- Use reserved attempt-specific private Storage keys, direct signed upload,
+  exact object-version/digest validation, idempotent admitted-object reuse, and
+  exact-key orphan reconciliation around the database transaction. Never stage
+  durable artifact bytes on a Function filesystem.
 - Return only source summaries safe for the current actor.
 - Keep transport native/local immutable and authoritative.
 
@@ -2133,9 +2249,10 @@ Implements: `prd.md > Release acceptance matrix`, `Submission proof points`
 
 Responsibilities:
 
-- Verify build, migration ledger, runtime grants, and web liveness/readiness.
-- Verify authenticated validator/extractor readiness and worker supervision.
-- Prove the web and workers access the same private object generation through real uploads.
+- Verify build, migration ledger, runtime grants, Vercel deployment identity, and web liveness/readiness.
+- Verify the private bucket, signed upload/read capabilities, Workflow dispatch, and one fresh non-persistent Sandbox per PDF attempt.
+- Prove the browser, Workflow, and Sandbox bind the same attempt-specific private object generation through real uploads.
+- Prove that Functions do not accept PDF bodies; Sandbox/Workflow state receives no database/service-role/signed-URL/injected-JWT secret; retries use distinct Sandbox IDs; ordinary paths confirm stop; and the tagged-Sandbox reconciler cleans an externally cancelled run.
 - Verify one published byte/page/source/artifact limit set.
 - Machine-check the public health/auth configuration and verify that required manual client/a11y evidence metadata is present and tied to the release URL/commit.
 - Never claim that the script itself operated ChatGPT desktop, delivered a screenshot to a model, or completed the NVDA walkthrough; those remain named human-recorded gates.
@@ -2233,13 +2350,21 @@ CSS grid may render these left/center/right at wide widths. Narrow layouts stack
 ### Artifact handling
 
 - Accept PNG only in the critical path.
-- Enforce content length before buffering and decompressed pixel/dimension ceilings after decode.
+- Bind expected content length before direct upload and enforce it again before
+  bounded decode; enforce decompressed pixel/dimension ceilings after decode.
 - MIME-sniff rather than trusting multipart type or filename.
 - Recompute SHA-256 server-side and use a content-addressed immutable storage key.
 - Bind each artifact to tenant, document, page, geometry, renderer, and source item.
-- Do not serve private artifact paths directly; issue authenticated bounded responses.
+- Do not serve private artifact paths or bytes through Functions; after
+  actor/source authorization, issue a short-lived capability for the exact
+  retained object generation and verify its digest on use.
 - Do not claim that client-produced pixels were independently server-rasterized.
-- Write to a fresh bounded private temporary file, fsync/hash/decode-validate, then atomically rename into content-addressed storage under the tenant/digest writer lock. Reconciliation uses that same lock, an age safety window, and a second reference/in-progress check; it never deletes a pre-existing shared or live-writer object. Idempotent replay reuses object and `Asset` identity.
+- Write each upload to a fresh non-overwritable private Storage key, then
+  hash/decode-validate the exact object version under the tenant/digest writer
+  lock before database admission. Reconciliation uses that same lock, an age
+  safety window, and a second reference/in-progress check; it deletes only the
+  exact unreferenced attempt object and never a pre-existing shared or active
+  object. Idempotent replay reuses admitted object and `Asset` identity.
 - Account retained derivative bytes under a workspace quota and advisory lock; per-exchange limits alone do not bound long-term storage.
 
 ### Idempotency and transactions
@@ -2289,11 +2414,14 @@ It appears in status, proposal, evidence trail, decision detail, and saved note 
 | ChatGPT built-in browser | Shared top-level live Reader context | Sign in separately; keep tools on the top-level page | [Built-in browser](https://help.openai.com/en/articles/20001277-using-the-built-in-browser-in-the-chatgpt-desktop-app) |
 | PDF.js | Client page rendering/capture | Page-specific unavailable state; no exact-text promotion | [Project](https://github.com/mozilla/pdf.js), [API](https://mozilla.github.io/pdf.js/api/draft/module-pdfjsLib.html) |
 | Better Auth | Session and account lifecycle | Fail closed; no private proposal shown on sign-in | [Better Auth docs](https://www.better-auth.com/docs) |
-| Prisma/PostgreSQL | Durable tenant, idempotency, custody, guards | Fail closed with no optimistic Save | [Prisma docs](https://www.prisma.io/docs), [PostgreSQL docs](https://www.postgresql.org/docs/) |
+| Prisma/Supabase PostgreSQL | Durable tenant, idempotency, custody, guards; Functions use Supavisor transaction mode while migrations use separate direct authority | Fail closed with no optimistic Save and no local fallback | [Prisma docs](https://www.prisma.io/docs), [Supabase database connections](https://supabase.com/docs/guides/database/connecting-to-postgres) |
+| Supabase private Storage | Durable originals/artifacts; signed exact-object browser capabilities; attempt-scoped JWT + exact Vercel Sandbox firewall transforms for Sandbox transfer | Fail closed; never make the bucket public, place a bearer credential in Workflow/guest arguments, or proxy PDF bodies through Functions | [Uploads](https://supabase.com/docs/guides/storage/uploads/resumable-uploads), [downloads](https://supabase.com/docs/guides/storage/serving/downloads) |
+| Vercel Workflow | Durable PDF-job orchestration and retry fencing | Persist user-visible status in Supabase; never put PDF/artifact bytes in Workflow state | [Vercel Workflow](https://vercel.com/docs/workflows) |
+| Vercel Sandbox | Fresh disposable qpdf/ClamAV/Poppler boundary per job attempt; native Workflow serialization and credential-injecting firewall | Attempt stop on ordinary paths, reconcile externally terminated runs, retry with a new Sandbox, and provide no VM/daemon fallback | [Vercel Sandbox](https://vercel.com/docs/sandbox) |
 | Existing validator | PDF malware/encryption/syntax/page admission | Explicit safe rejection or processing-unavailable state | Repository service contract |
 | Existing Poppler extractor | Exact embedded text and manifest/chunks | Visual-only Reader remains available; no OCR claim | [Poppler project](https://poppler.freedesktop.org/) |
 | Playwright | Browser and accessibility-adjacent regression evidence | Release is blocked when required flows fail | [Playwright docs](https://playwright.dev/docs/intro) |
-| Caddy/Docker Compose | Public HTTPS single-host deployment | Preflight blocks release if service/volume topology fails | [Caddy](https://caddyserver.com/docs/), [Compose](https://docs.docker.com/compose/) |
+| Vercel Preview/Production | Public HTTPS deployment and release identity | Preflight blocks release if environment, Function, Workflow, Sandbox, or Supabase bindings fail | [Vercel deployments](https://vercel.com/docs/deployments/overview) |
 
 ### External citations in mentor proposals
 
@@ -2405,6 +2533,40 @@ Flags are used to build and verify vertical slices. A disabled flag fails closed
 
 All approved Reader, exact-text, visual, Connect-ideas, and follow-up flags must be enabled before the Tuesday candidate is called feature complete. Inline image and local review may remain off without weakening the native core claim.
 
+### Serverless release invariants
+
+- Runtime database traffic uses the exact approved Supabase project through
+  Supavisor transaction mode on port `6543`, with prepared statements disabled.
+  Migration/admin authority uses a separately provisioned direct connection and
+  never ships to the browser or Sandbox.
+- The private Storage bucket is never public. Each upload/read/write capability
+  names one attempt-specific object, has a short expiry, and is never logged.
+- A Vercel Function rejects PDF request bodies. The browser uploads and reads
+  directly through authorized capabilities so the Function body limit is not a
+  hidden PDF-size limit.
+- Workflow arguments and results contain bounded IDs, digests, status, and
+  receipt metadata only—never PDF bytes, rendered artifacts, cookies, service
+  keys, or database credentials.
+- `Sandbox.create` always specifies `persistent: false`, a bounded timeout and
+  resources, a digest-pinned processing image, and a restrictive network
+  policy. Untrusted PDF parsing runs under deny-all egress.
+- Browser transfer capabilities never enter Workflow. The Sandbox starts
+  deny-all and receives no bearer value; an exact project/host/path/method
+  firewall transform injects an attempt-scoped Storage JWT outside the guest.
+  The binder loads that credential inside a server step and returns no secret.
+- The native Workflow-serializable Sandbox verifies expected size/SHA-256
+  before tools run, restores deny-all before untrusted parsing, and is stopped
+  in `finally` on ordinary paths. A durable tagged-Sandbox reconciler covers
+  external Workflow cancellation or platform termination. The commit step
+  rejects a stale lease, object generation, attempt, digest, toolchain, policy,
+  or duplicate/late Sandbox receipt.
+- Vercel Workflow traces are operational evidence, not the product database.
+  Supabase retains the durable job state and source/proposal/decision chain.
+- The release stays within documented Hobby quotas and personal/non-commercial
+  terms. Preflight reports remaining Function, Workflow, Sandbox, Storage, and
+  database budgets; exhausted quota produces a clear unavailable state, never a
+  local/VPS fallback.
+
 ## Error Strategy
 
 ### User-visible failure matrix
@@ -2471,18 +2633,21 @@ Release gate:
 - Full-figure run plus controlled region A/B runs produce correct selection-exclusive differences, correct source refs/digests, real read/stage receipts, observation/interpretation separation, uncertainty, and useful screen-reader descriptions.
 - If the gate fails, native figure understanding is not claimed even if callbacks succeed.
 
-### Risk 3: upload/web health hides a broken worker or shared-volume topology
+### Risk 3: web health hides a broken Workflow, Sandbox, or object-capability path
 
 Mitigation:
 
-- Preflight validator/extractor authenticated readiness and worker supervision.
-- Prove shared storage with actual uploads, not path-string comparison.
+- Preflight authenticated Workflow dispatch, a real non-persistent Sandbox canary, private-bucket access, and bounded receipt commit.
+- Prove direct upload, Sandbox download, admitted digest, artifact publication, and Reader download all bind one attempt-specific object through actual uploads.
+- Assert every ordinary success, rejection, timeout, abort, and thrown-error path attempts and confirms Sandbox stop; externally cancel/terminate a run and prove the tagged-Sandbox reconciler stops it. Retry must produce a distinct `sandboxId`.
+- Inspect Workflow arguments/results plus Sandbox environment, commands, serialized state, firewall policy evidence, and telemetry to prove no database password, Supabase service-role credential, signed URL, injected Storage JWT, unrelated object capability, or PDF content appears where forbidden.
 - Align validator, extractor, UI, and documentation page limits.
 
 Release gate:
 
 - Two consecutive fresh public-origin uploads render the correct first page in the preceding 30 minutes.
 - One born-digital paper reaches exact text; one figure-rich/visual-only paper reaches its honest capability.
+- Vercel Functions never receive the PDF body, Workflow state contains only bounded identifiers/receipts, and all durable state survives a new deployment through Supabase.
 
 ### Risk 4: artifact custody overclaims pixel truth or cannot reopen
 
@@ -2566,14 +2731,17 @@ Required coverage:
 Required coverage:
 
 - upload creates provisional paper identity without invented metadata;
-- current accepted PDF route authorization and exact-byte/digest response;
+- current accepted PDF access-capability authorization plus direct-download
+  byte-count/SHA-256 verification;
 - expected-generation/ETag mismatch rejects rather than serving a newer PDF;
 - rejected/foreign/archived/deleted document denial;
 - exact-text reconstruction and stale manifest rejection;
 - actor-scoped reliability downgrade persistence, generation isolation, exact-freeze rejection, and no promotion/aggregate-version change;
 - visual artifact MIME/dimension/pixel/byte/geometry/digest validation;
 - source-item-scoped context/selection retrieval, actor/note visibility, masked 404, tamper/missing integrity failure, and `Source incomplete`;
-- staged-file/object/DB failure reconciliation, idempotent object reuse, and concurrent retained-artifact quota enforcement;
+- signed-transfer/object-version/DB failure reconciliation, exact-key orphan
+  cleanup, idempotent admitted-object reuse, and concurrent retained-artifact
+  quota enforcement;
 - same-document source set and aggregate ceilings;
 - owner-principal-only source-set reuse, digest-is-not-capability behavior, historical-generation validation, and non-owner saved-note viewer denial;
 - admitted original/attestation/source-set binding and complete manifest-schema/chunk FKs;
@@ -2713,7 +2881,7 @@ The implementation checklist should split work into verified vertical slices in 
 
 ### Gate 0 — Truth spikes
 
-1. Stand up the minimum public HTTPS/Caddy, auth, database, worker, and shared-private-volume skeleton needed by the real named client.
+1. Stand up the minimum Vercel Preview, auth, Supabase Postgres/private Storage, Workflow, and one-attempt non-persistent Sandbox skeleton needed by the real named client.
 2. Prove a previously unseen admitted PDF reaches the authenticated PDF.js Reader.
 3. Prove a minimal native WebMCP read/stage loop in the exact ChatGPT built-in-browser client and record the safe serialized-result ceiling and unregister behavior.
 4. Prove crop-specific use of the visible `Selected source` with the pre-keyed controlled A/B test.
@@ -2739,7 +2907,7 @@ Checkpoint: a previously unseen born-digital paper completes native read, stage,
 
 1. Whole-page/manual-figure/region controls.
 2. Bounded PNG context/crop and private artifact storage.
-3. Artifact quota, staged-file custody, source-item-scoped private retrieval, byte-identical reopen, and reconciliation proof.
+3. Artifact quota, signed exact-object custody, source-item-scoped private retrieval, byte-identical reopen, and reconciliation proof.
 4. Visual source freeze through the existing exchange path.
 5. Visual proposal/accessibility contract and evidence detail.
 6. Visual-only weak-text paper.
@@ -2756,7 +2924,7 @@ Checkpoint: one unrelated figure-rich paper and one weak-text paper complete the
 4. Optional local review with persistent labeling.
 5. Full failure matrix and actor-privacy tests.
 6. Playwright, NVDA, reflow, and reduced-motion proof.
-7. Harden the Gate-0 Docker Compose deployment, validate backup/rollback, complete preflight metadata, recordings, and judge guide.
+7. Harden the Gate-0 Vercel/Supabase deployment, validate deployment rollback, provider recovery/budgets, Sandbox termination, complete preflight metadata, recordings, and judge guide.
 
 Checkpoint: two same-paper sources either yield a supported connection covering both or an explicit insufficient-evidence response.
 
@@ -2772,7 +2940,7 @@ Cut or defer, in order:
 6. SSE/WebSockets;
 7. discard archive/undo/bulk review;
 8. advanced progress history;
-9. managed infrastructure migration; and
+9. optional semantic retrieval/pgvector discovery; and
 10. exports, additional response styles, and new integrations.
 
 Exact text, visual selection, Connect ideas, the three follow-up intents, provenance, actor-private proposals, human decisions, public deployment, and accessibility are approved candidate requirements. They are not silently disabled; an actual inability to complete one requires an explicit PRD scope decision.

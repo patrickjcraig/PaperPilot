@@ -9,6 +9,7 @@ import {
   EXPECTED_LATEST_MIGRATION,
   MAX_HEALTH_RESPONSE_BYTES,
   createPaperPilotDatabaseReadinessClient,
+  databaseIdentityReadiness,
   livenessResponse,
   probePaperPilotDatabaseReadiness,
   readinessResponse,
@@ -20,7 +21,7 @@ const PRODUCTION_ENVIRONMENT = Object.freeze({
   NODE_ENV: "production",
   PAPERPILOT_RELEASE_ID: "paperpilot-2026.08.29+abcdef1",
   PAPERPILOT_DATABASE_PROFILE:
-    "supabase-avmcmmayvnjxrhrmgsdx-direct-v1",
+    "supabase-avmcmmayvnjxrhrmgsdx-transaction-v1",
   BETTER_AUTH_URL: "https://paperpilot.example",
   BETTER_AUTH_SECRET: "2bN7!rQ9#xL4@vC8$kM5%tP1&wD6*zH3",
 });
@@ -39,9 +40,26 @@ function assertCommonHeaders(response: Response): void {
 test("the expected migration identity is isolated and bounded", () => {
   assert.equal(
     EXPECTED_LATEST_MIGRATION,
-    "20260829261000_user_name_text_policy",
+    "20260830184500_supabase_storage_custody_guards",
   );
   assert.match(EXPECTED_LATEST_MIGRATION, /^[0-9]{14}_[a-z0-9_]+$/u);
+});
+
+test("database readiness stays red until the atomic runtime grants commit", () => {
+  const identity = {
+    currentUser: "paperpilot_runtime",
+    latestMigrationPresent: true,
+    runtimeGrantsPresent: false,
+    rowSecurity: "on",
+    searchPath: "pg_catalog, public",
+  };
+  assert.deepEqual(databaseIdentityReadiness([identity], true), {
+    status: "migration-incomplete",
+  });
+  assert.deepEqual(
+    databaseIdentityReadiness([{ ...identity, runtimeGrantsPresent: true }], true),
+    { status: "ready" },
+  );
 });
 
 test("liveness is a fixed process-only GET and HEAD contract", async () => {
@@ -90,7 +108,7 @@ test("non-production readiness still requires the Supabase-only database profile
   assert.deepEqual(runtimeReleaseContractFromEnvironment({
     NODE_ENV: "development",
     PAPERPILOT_DATABASE_PROFILE:
-      "supabase-avmcmmayvnjxrhrmgsdx-direct-v1",
+      "supabase-avmcmmayvnjxrhrmgsdx-transaction-v1",
   }), {
     ok: true,
     value: { production: false, releaseId: "development" },
@@ -98,7 +116,7 @@ test("non-production readiness still requires the Supabase-only database profile
   assert.deepEqual(runtimeReleaseContractFromEnvironment({
     NODE_ENV: "test",
     PAPERPILOT_DATABASE_PROFILE:
-      "supabase-avmcmmayvnjxrhrmgsdx-direct-v1",
+      "supabase-avmcmmayvnjxrhrmgsdx-transaction-v1",
     PAPERPILOT_RELEASE_ID: "invalid release",
   }), { ok: false });
 });
@@ -167,14 +185,15 @@ test("local database compatibility flags cannot reach a readiness probe", async 
   });
 });
 
-test("the Supabase readiness probe fails closed before I/O without its CA", async () => {
+test("the Supabase readiness probe rejects the retired direct runtime before I/O", async () => {
   const result = await probePaperPilotDatabaseReadiness({
     deadlineMs: 100,
     environment: {
       DATABASE_URL:
         "postgresql://paperpilot_runtime:unit@db.avmcmmayvnjxrhrmgsdx.supabase.co:5432/postgres?sslmode=verify-full",
       PAPERPILOT_DATABASE_PROFILE:
-        "supabase-avmcmmayvnjxrhrmgsdx-direct-v1",
+        "supabase-avmcmmayvnjxrhrmgsdx-transaction-v1",
+      PAPERPILOT_SUPABASE_POOLER_HOST: "aws-0-us-east-1.pooler.supabase.com",
     },
     runtime: { production: false, releaseId: "development" },
   });
@@ -190,10 +209,11 @@ test("the Supabase readiness client uses the configured verified CA", () => {
     writeFileSync(caPath, ca, { encoding: "utf8", flag: "wx" });
     const client = createPaperPilotDatabaseReadinessClient({
       DATABASE_URL:
-        "postgresql://paperpilot_runtime:unit@db.avmcmmayvnjxrhrmgsdx.supabase.co:5432/postgres?sslmode=verify-full",
+        "postgresql://paperpilot_runtime.avmcmmayvnjxrhrmgsdx:unit@aws-0-us-east-1.pooler.supabase.com:6543/postgres?sslmode=verify-full&pgbouncer=true",
       PAPERPILOT_DATABASE_CA_CERT_PATH: caPath,
       PAPERPILOT_DATABASE_PROFILE:
-        "supabase-avmcmmayvnjxrhrmgsdx-direct-v1",
+        "supabase-avmcmmayvnjxrhrmgsdx-transaction-v1",
+      PAPERPILOT_SUPABASE_POOLER_HOST: "aws-0-us-east-1.pooler.supabase.com",
     }, 100);
     const parameters = (client as unknown as {
       connectionParameters: {

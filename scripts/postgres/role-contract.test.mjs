@@ -269,11 +269,12 @@ test("manifest parsing fails closed on drift and unsafe identifiers", () => {
   );
 });
 
-test("the retired dedicated-cluster deployment implementation remains reviewable but unreachable", () => {
+test("the Supabase deploy path leaves dedicated-cluster deployment reviewable but unreachable", () => {
   assert.equal(
     packageJson.scripts["db:deploy"],
-    "node scripts/database/local-write-command-disabled.mjs db:deploy",
+    "node scripts/supabase/deploy-migrations.mjs",
   );
+  assert.doesNotMatch(JSON.stringify(packageJson.scripts), /scripts\/postgres\/deploy\.mjs/u);
   assert.match(deployWrapperSource, /migration-preflight\.sql/);
   assert.match(deployWrapperSource, /DATABASE_URL: connectionString/);
   assert.doesNotMatch(deployWrapperSource, /\[.*connectionString.*"migrate"/s);

@@ -3,7 +3,7 @@ import "server-only";
 import { Client } from "pg";
 
 import { configuredPaperPilotPostgresConnection } from "@/lib/postgres-client-config.mjs";
-import { PAPERPILOT_SUPABASE_DIRECT_DATABASE_PROFILE } from "@/lib/postgres-connection-url.mjs";
+import { PAPERPILOT_SUPABASE_TRANSACTION_DATABASE_PROFILE } from "@/lib/postgres-connection-url.mjs";
 
 /**
  * The newest migration whose atomic schema effects this release requires.
@@ -13,6 +13,20 @@ import { PAPERPILOT_SUPABASE_DIRECT_DATABASE_PROFILE } from "@/lib/postgres-conn
  * from this migration instead of weakening that privilege boundary.
  */
 const MIGRATION_SENTINELS = Object.freeze({
+  "20260830184500_supabase_storage_custody_guards": Object.freeze({
+    kind: "constraint" as const,
+    schema: "public",
+    objectName: "Asset_supabase_storage_shape_check",
+    identityArguments: "Asset",
+    relationKinds: Object.freeze([] as string[]),
+  }),
+  "20260830183000_supabase_storage_provider": Object.freeze({
+    kind: "enum-value" as const,
+    schema: "public",
+    objectName: "AssetStorageProvider",
+    identityArguments: "SUPABASE_STORAGE",
+    relationKinds: Object.freeze([] as string[]),
+  }),
   "20260829254000_crawler_deleted_custody_guards": Object.freeze({
     kind: "function" as const,
     schema: "public",
@@ -40,7 +54,7 @@ const MIGRATION_SENTINELS = Object.freeze({
 // this exported release requirement can move. That makes a constant-only bump
 // fail type checking instead of silently probing the preceding schema.
 export const EXPECTED_LATEST_MIGRATION: keyof typeof MIGRATION_SENTINELS =
-  "20260829261000_user_name_text_policy";
+  "20260830184500_supabase_storage_custody_guards";
 
 export const EXPECTED_LATEST_MIGRATION_SENTINEL =
   MIGRATION_SENTINELS[EXPECTED_LATEST_MIGRATION];
@@ -123,7 +137,7 @@ export function runtimeReleaseContractFromEnvironment(
 
   if (
     environment.PAPERPILOT_DATABASE_PROFILE
-      !== PAPERPILOT_SUPABASE_DIRECT_DATABASE_PROFILE
+      !== PAPERPILOT_SUPABASE_TRANSACTION_DATABASE_PROFILE
     || environment.PAPERPILOT_ALLOW_LOCAL_PRISMA_DEV === "1"
   ) {
     return { ok: false };
@@ -161,8 +175,41 @@ function boundedDatabaseDeadline(deadlineMs: number): number | null {
 interface DatabaseIdentityRow {
   currentUser: string;
   latestMigrationPresent: boolean;
+  runtimeGrantsPresent: boolean;
   rowSecurity: string;
   searchPath: string;
+}
+
+export function databaseIdentityReadiness(
+  rows: readonly DatabaseIdentityRow[],
+  production: boolean,
+): DatabaseReadinessResult {
+  const row = rows[0];
+  if (
+    rows.length !== 1
+    || !row
+    || typeof row.currentUser !== "string"
+    || typeof row.searchPath !== "string"
+    || typeof row.rowSecurity !== "string"
+    || typeof row.latestMigrationPresent !== "boolean"
+    || typeof row.runtimeGrantsPresent !== "boolean"
+  ) {
+    return { status: "unavailable" };
+  }
+  if (!row.latestMigrationPresent || !row.runtimeGrantsPresent) {
+    return { status: "migration-incomplete" };
+  }
+  if (
+    production
+    && (
+      row.currentUser !== "paperpilot_runtime"
+      || normalizedSearchPath(row.searchPath) !== "pg_catalog,public"
+      || row.rowSecurity !== "on"
+    )
+  ) {
+    return { status: "configuration-invalid" };
+  }
+  return { status: "ready" };
 }
 
 export function createPaperPilotDatabaseReadinessClient(
@@ -181,6 +228,7 @@ export function createPaperPilotDatabaseReadinessClient(
     {
       caCertificatePath: environment.PAPERPILOT_DATABASE_CA_CERT_PATH,
       databaseProfile: environment.PAPERPILOT_DATABASE_PROFILE,
+      poolerHost: environment.PAPERPILOT_SUPABASE_POOLER_HOST,
     },
   );
   return new Client({
@@ -225,6 +273,22 @@ export async function probePaperPilotDatabaseReadiness(
          current_user::text AS "currentUser",
          current_setting('search_path')::text AS "searchPath",
          current_setting('row_security')::text AS "rowSecurity",
+         (
+           has_table_privilege(current_user, 'public."User"', 'SELECT')
+           AND has_table_privilege(current_user, 'public."User"', 'INSERT')
+           AND has_table_privilege(current_user, 'public."User"', 'UPDATE')
+           AND has_table_privilege(current_user, 'public."User"', 'DELETE')
+           AND NOT has_table_privilege(
+             current_user,
+             'public._prisma_migrations',
+             'SELECT'
+           )
+           AND has_function_privilege(
+             current_user,
+             'public.document_text_manifest_field_v1(text)',
+             'EXECUTE'
+           )
+         ) AS "runtimeGrantsPresent",
          CASE $1::text
            WHEN 'function' THEN EXISTS (
              SELECT 1
@@ -257,6 +321,17 @@ export async function probePaperPilotDatabaseReadiness(
                 AND constraint_record.contype = 'c'
                 AND constraint_record.convalidated
             )
+            WHEN 'enum-value' THEN EXISTS (
+              SELECT 1
+              FROM pg_catalog.pg_type AS enum_type
+              JOIN pg_catalog.pg_namespace AS namespace
+                ON namespace.oid = enum_type.typnamespace
+              JOIN pg_catalog.pg_enum AS enum_value
+                ON enum_value.enumtypid = enum_type.oid
+              WHERE namespace.nspname = $2
+                AND enum_type.typname = $3
+                AND enum_value.enumlabel = $4
+            )
            ELSE false
          END AS "latestMigrationPresent"`,
       [
@@ -267,29 +342,7 @@ export async function probePaperPilotDatabaseReadiness(
         EXPECTED_LATEST_MIGRATION_SENTINEL.relationKinds,
       ],
     );
-    const row = result.rows[0];
-    if (
-      result.rows.length !== 1
-      || !row
-      || typeof row.currentUser !== "string"
-      || typeof row.searchPath !== "string"
-      || typeof row.rowSecurity !== "string"
-      || typeof row.latestMigrationPresent !== "boolean"
-    ) {
-      return { status: "unavailable" };
-    }
-    if (!row.latestMigrationPresent) return { status: "migration-incomplete" };
-    if (
-      input.runtime.production
-      && (
-        row.currentUser !== "paperpilot_runtime"
-        || normalizedSearchPath(row.searchPath) !== "pg_catalog,public"
-        || row.rowSecurity !== "on"
-      )
-    ) {
-      return { status: "configuration-invalid" };
-    }
-    return { status: "ready" };
+    return databaseIdentityReadiness(result.rows, input.runtime.production);
   } catch {
     return { status: "unavailable" };
   } finally {

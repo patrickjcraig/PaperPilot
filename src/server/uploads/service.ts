@@ -18,7 +18,10 @@ import {
   inboxEntryVisibleTo,
   requireWorkspaceMutationRole,
 } from "@/server/workspaces/project-access";
-import { uploadConfigurationFromEnvironment } from "./config";
+import {
+  uploadConfigurationFromEnvironment,
+  uploadPolicyConfigurationFromEnvironment,
+} from "./config";
 import { uploadStatusDto, uploadStatusInclude } from "./dto";
 import { inboxReaderAuthorityFromLifecycle } from "@/server/workspaces/import-dto";
 import {
@@ -35,6 +38,7 @@ import {
 export const MAX_UPLOAD_SESSION_COMMAND_BYTES = 16 * 1_024;
 const MAX_TRANSACTION_ATTEMPTS = 4;
 const OPERATION_ID_PATTERN = /^[a-zA-Z0-9._:-]{1,100}$/;
+const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 
 interface SessionUser {
   id: string;
@@ -46,6 +50,7 @@ interface ValidatedCreateUpload {
   expectedVersion: number;
   fileName: string;
   sizeBytes: number;
+  sha256: string;
   declaredMimeType: "application/pdf";
 }
 
@@ -54,6 +59,7 @@ interface UploadClaim {
   intakeId: string;
   assetId: string;
   expectedSizeBytes: bigint;
+  expectedSha256: string;
   attemptNumber: number;
   storageKey: string;
   leaseExpiresAt: Date;
@@ -64,6 +70,7 @@ const CREATE_UPLOAD_KEYS = new Set([
   "expectedVersion",
   "fileName",
   "sizeBytes",
+  "sha256",
   "declaredMimeType",
 ]);
 
@@ -101,6 +108,9 @@ function validateCreateUpload(value: unknown, maxBytes: number): ValidatedCreate
   if (value.sizeBytes > maxBytes) {
     throw new HttpProblem(413, "upload_too_large", "The selected PDF exceeds the upload limit.");
   }
+  if (typeof value.sha256 !== "string" || !SHA256_PATTERN.test(value.sha256)) {
+    validation("sha256 must be the lowercase SHA-256 of the selected PDF.");
+  }
   const declaredMimeType = requireExactPdfContentType(
     typeof value.declaredMimeType === "string" ? value.declaredMimeType : null,
   );
@@ -109,6 +119,7 @@ function validateCreateUpload(value: unknown, maxBytes: number): ValidatedCreate
     expectedVersion: value.expectedVersion,
     fileName,
     sizeBytes: value.sizeBytes,
+    sha256: value.sha256,
     declaredMimeType,
   };
 }
@@ -288,11 +299,15 @@ export async function createWorkspaceUploadSession(
 ): Promise<WorkspaceCommandResult<CreateUploadSessionResult>> {
   const membership = await requireWorkspaceMembership(user.id, workspaceId);
   requireWorkspaceMutationRole(membership.role);
-  const configuration = uploadConfigurationFromEnvironment();
+  // Reserving durable upload identity is a control-plane operation. It must not
+  // require a local filesystem, because the serverless transfer adapter writes
+  // the PDF directly to private object storage.
+  const configuration = uploadPolicyConfigurationFromEnvironment();
   const command = validateCreateUpload(rawCommand, configuration.maxUploadBytes);
   const requestHash = digest({
     fileName: command.fileName,
     sizeBytes: command.sizeBytes,
+    sha256: command.sha256,
     declaredMimeType: command.declaredMimeType,
   });
 
@@ -509,6 +524,7 @@ export async function createWorkspaceUploadSession(
         originalFileName: command.fileName,
         declaredMimeType: command.declaredMimeType,
         expectedSizeBytes: BigInt(command.sizeBytes),
+        sha256: command.sha256,
         expiresAt,
       },
     });
@@ -521,7 +537,11 @@ export async function createWorkspaceUploadSession(
         actorUserId: user.id,
         sourceProvider: "PaperPilot upload",
         sourceRecordId: uploadSessionId,
-        payload: { stage: "session-issued" },
+        payload: {
+          stage: "session-issued",
+          expectedSha256: command.sha256,
+          digestAuthority: "browser-claim-until-sandbox-verification",
+        },
       },
     });
     await transaction.auditEvent.create({
@@ -532,7 +552,13 @@ export async function createWorkspaceUploadSession(
         entityType: "upload-session",
         entityId: uploadSessionId,
         requestId: command.clientOperationId,
-        metadata: { expectedSizeBytes: command.sizeBytes, documentId, inboxEntryId },
+        metadata: {
+          expectedSizeBytes: command.sizeBytes,
+          expectedSha256: command.sha256,
+          digestAuthority: "browser-claim-until-sandbox-verification",
+          documentId,
+          inboxEntryId,
+        },
       },
     });
     const created = await transaction.uploadSession.findUniqueOrThrow({
@@ -578,6 +604,9 @@ async function claimUpload(
       || session.intake.documentId !== session.documentId
       || session.intake.assetId !== session.assetId
     ) {
+      throw new HttpProblem(500, "invalid_upload_state", "Stored upload state is invalid.");
+    }
+    if (typeof session.sha256 !== "string" || !SHA256_PATTERN.test(session.sha256)) {
       throw new HttpProblem(500, "invalid_upload_state", "Stored upload state is invalid.");
     }
     if (session.status === "STORED") return { kind: "stored" as const, value: uploadStatusDto(session) };
@@ -732,6 +761,7 @@ async function claimUpload(
         intakeId: session.intakeId,
         assetId: session.assetId,
         expectedSizeBytes: session.expectedSizeBytes,
+        expectedSha256: session.sha256 as string,
         attemptNumber,
         storageKey,
         leaseExpiresAt: claimExpiresAt,
@@ -749,6 +779,7 @@ const SAFE_REJECTION_CODES = new Set([
   "invalid_pdf_envelope",
   "pdf_trailing_data",
   "size_mismatch",
+  "sha256_mismatch",
   "upload_too_large",
   "upload_aborted",
   "upload_timed_out",
@@ -1235,6 +1266,25 @@ export async function storeWorkspaceUploadContent(
     await rejectClaim(user.id, workspaceId, uploadSessionId, claimed.claimId, failureCode)
       .catch(() => undefined);
     throw error;
+  }
+
+  if (stored.sha256 !== claimed.expectedSha256) {
+    await removeLocalQuarantineObject(configuration, stored.storageKey, {
+      organizationId: workspaceId,
+      assetId: claimed.assetId,
+    }).catch(() => undefined);
+    await rejectClaim(
+      user.id,
+      workspaceId,
+      uploadSessionId,
+      claimed.claimId,
+      "sha256_mismatch",
+    ).catch(() => undefined);
+    throw new HttpProblem(
+      409,
+      "sha256_mismatch",
+      "The received PDF does not match the file that was reserved.",
+    );
   }
 
   try {

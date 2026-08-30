@@ -17,9 +17,13 @@ import type {
   CreateCollectionResult,
   CreateProjectCommand,
   CreateProjectResult,
+  CreateDirectPdfTransferCommandV1,
   CreateUploadSessionCommand,
   CreateUploadSessionResult,
+  DirectPdfTransferOptions,
+  DirectPdfTransferPlanV1,
   FileImportCommand,
+  FinalizeDirectPdfTransferCommandV1,
   FrozenWebMcpApprovalSubmission,
   GetWorkspaceProjectQuery,
   LinkValidatedDocumentCommand,
@@ -47,6 +51,12 @@ import type {
   WebMcpVerifiedAuthoritySnapshot,
   WorkspacePaperReaderDto,
 } from "./contracts";
+import {
+  parseCreateDirectPdfTransferCommand,
+  parseDirectPdfTransferPlan,
+  parseFinalizeDirectPdfTransferCommand,
+  uploadPdfDirectly as performDirectPdfUpload,
+} from "./direct-pdf-transfer";
 import type {
   CrawlerDocumentInboxEntry,
   EvidenceNote,
@@ -266,6 +276,43 @@ function uploadStatusDto(value: unknown): UploadStatusDto | null {
   })();
   if (!coherent) return null;
   return value as unknown as UploadStatusDto;
+}
+
+function closedDirectUploadStatusDto(value: unknown): UploadStatusDto | null {
+  if (
+    !isRecord(value)
+    || !hasExactKeys(value, ["inboxEntry", "upload", "asset", "document"])
+    || !isRecord(value.upload)
+    || !hasExactKeys(value.upload, ["id", "status", "expiresAt"])
+    || !isRecord(value.asset)
+    || !hasRequiredAndOptionalKeys(value.asset, ["status"], ["sizeBytes"])
+    || !isRecord(value.document)
+    || !hasExactKeys(value.document, ["id", "status"])
+  ) return null;
+  const parsedInboxEntry = documentUploadInboxEntryReadModel(value.inboxEntry);
+  const parsed = uploadStatusDto(value);
+  if (
+    !parsedInboxEntry
+    || parsedInboxEntry.entryKind !== "document-upload"
+    || !parsed
+    || parsed.upload.expiresAt !== parsedInboxEntry.upload.expiresAt
+  ) return null;
+  return {
+    inboxEntry: parsedInboxEntry,
+    upload: {
+      id: parsed.upload.id,
+      status: parsed.upload.status,
+      expiresAt: parsed.upload.expiresAt,
+    },
+    asset: {
+      status: parsed.asset.status,
+      ...(parsed.asset.sizeBytes === undefined ? {} : { sizeBytes: parsed.asset.sizeBytes }),
+    },
+    document: {
+      id: parsed.document.id,
+      status: parsed.document.status,
+    },
+  };
 }
 
 function readerDocumentMetadata(value: unknown): ReaderDocumentMetadata | null {
@@ -2563,6 +2610,114 @@ export class HttpWorkspaceClient implements UploadWorkspaceClient {
     command: CreateUploadSessionCommand,
   ): Promise<WorkspaceCommandResult<CreateUploadSessionResult>> {
     return this.postCommand("uploads", command);
+  }
+
+  async createDirectPdfTransfer(
+    uploadId: string,
+    command: CreateDirectPdfTransferCommandV1,
+  ): Promise<DirectPdfTransferPlanV1> {
+    const parsedCommand = parseCreateDirectPdfTransferCommand(command);
+    if (!parsedCommand || parsedCommand.expectedUploadId !== uploadId) {
+      throw new TypeError("A direct PDF transfer request must match its reserved upload.");
+    }
+    const workspaceId = this.requireWorkspaceId();
+    const uploadPath = `/api/workspaces/${encodeURIComponent(workspaceId)}/uploads/${encodeURIComponent(uploadId)}`;
+    const response = await this.fetchImpl(`${uploadPath}/transfer`, {
+      method: "POST",
+      credentials: "same-origin",
+      cache: "no-store",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "Idempotency-Key": parsedCommand.clientOperationId,
+      },
+      body: JSON.stringify(parsedCommand),
+    });
+    const payload: unknown = await response.json().catch(() => undefined);
+    if (!response.ok) {
+      throw this.httpError(
+        response.status,
+        response.headers,
+        payload,
+        "PaperPilot could not create a private PDF transfer.",
+      );
+    }
+    const plan = parseDirectPdfTransferPlan(payload);
+    if (
+      !plan
+      || plan.uploadSessionId !== uploadId
+      || plan.expectedSizeBytes !== parsedCommand.expectedSizeBytes
+      || plan.expectedSha256 !== parsedCommand.expectedSha256
+      || plan.finalizeUrl !== `${uploadPath}/finalize`
+    ) {
+      throw new Error(apiMessage(
+        payload,
+        "PaperPilot received an invalid direct PDF transfer plan.",
+      ));
+    }
+    return plan;
+  }
+
+  uploadPdfDirectly(
+    plan: DirectPdfTransferPlanV1,
+    file: File,
+    options: DirectPdfTransferOptions = {},
+  ): Promise<void> {
+    return performDirectPdfUpload(plan, file, options, this.xhrFactory);
+  }
+
+  async finalizeDirectPdfTransfer(
+    uploadId: string,
+    plan: DirectPdfTransferPlanV1,
+    command: FinalizeDirectPdfTransferCommandV1,
+  ): Promise<UploadStatusDto> {
+    const parsedCommand = parseFinalizeDirectPdfTransferCommand(command);
+    const planAtItsExpiry = isRecord(plan) && typeof plan.expiresAt === "string"
+      ? new Date(plan.expiresAt)
+      : new Date(Number.NaN);
+    const parsedPlan = parseDirectPdfTransferPlan(plan, planAtItsExpiry);
+    const workspaceId = this.requireWorkspaceId();
+    const finalizeUrl = `/api/workspaces/${encodeURIComponent(workspaceId)}/uploads/${encodeURIComponent(uploadId)}/finalize`;
+    if (
+      !parsedCommand
+      || !parsedPlan
+      || parsedPlan.uploadSessionId !== uploadId
+      || parsedPlan.finalizeUrl !== finalizeUrl
+      || parsedCommand.attemptId !== parsedPlan.attemptId
+      || parsedCommand.expectedSizeBytes !== parsedPlan.expectedSizeBytes
+      || parsedCommand.expectedSha256 !== parsedPlan.expectedSha256
+    ) {
+      throw new TypeError("A direct PDF finalize request must match its issued transfer plan.");
+    }
+
+    const response = await this.fetchImpl(finalizeUrl, {
+      method: "POST",
+      credentials: "same-origin",
+      cache: "no-store",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "Idempotency-Key": parsedCommand.clientOperationId,
+      },
+      body: JSON.stringify(parsedCommand),
+    });
+    const payload: unknown = await response.json().catch(() => undefined);
+    if (!response.ok) {
+      throw this.httpError(
+        response.status,
+        response.headers,
+        payload,
+        "PaperPilot could not finalize the private PDF transfer.",
+      );
+    }
+    const parsed = closedDirectUploadStatusDto(payload);
+    if (!parsed || parsed.upload.id !== uploadId) {
+      throw new Error(apiMessage(
+        payload,
+        "PaperPilot received an invalid PDF finalization response.",
+      ));
+    }
+    return parsed;
   }
 
   linkValidatedDocument(

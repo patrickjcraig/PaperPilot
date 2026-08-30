@@ -5,8 +5,10 @@ import { pathToFileURL } from "node:url";
 
 import {
   PAPERPILOT_SUPABASE_DIRECT_DATABASE_HOST,
-  PAPERPILOT_SUPABASE_DIRECT_DATABASE_PROFILE,
+  PAPERPILOT_SUPABASE_TRANSACTION_DATABASE_PROFILE,
   validatedPaperPilotApplicationDatabaseUrl,
+  validatedPaperPilotBootstrapDatabaseUrl,
+  validatedPaperPilotMigrationDatabaseUrl,
   validatedPostgresConnectionUrl,
 } from "../../src/lib/postgres-connection-url.mjs";
 import { configuredPaperPilotPostgresConnection } from "../../src/lib/postgres-client-config.mjs";
@@ -19,6 +21,8 @@ const DATABASE_AUTHORITY_ENVIRONMENTS = Object.freeze([
   "PAPERPILOT_DEPLOY_DATABASE_URL",
   "PAPERPILOT_MIGRATION_AUDIT_DATABASE_URL",
   "PAPERPILOT_ROLE_AUDIT_DATABASE_URL",
+  "PAPERPILOT_MIGRATION_DATABASE_URL",
+  "PAPERPILOT_BOOTSTRAP_DATABASE_URL",
 ]);
 const CONFIGURED_LOCAL_PORT_ENVIRONMENTS = Object.freeze([
   "PAPERPILOT_PRISMA_DEV_PORT",
@@ -83,12 +87,27 @@ function defaultTcpProbe(host, port, timeoutMs = 250) {
   });
 }
 
-function validateConfiguredAuthority(name, rawValue, databaseProfile) {
+function validateConfiguredAuthority(name, rawValue, environment) {
   const value = rawValue?.trim();
   if (!value) return null;
 
   if (name === "DATABASE_URL" || name === "PAPERPILOT_SUPABASE_DATABASE_URL") {
-    return validatedPaperPilotApplicationDatabaseUrl(value, { databaseProfile });
+    return validatedPaperPilotApplicationDatabaseUrl(value, {
+      databaseProfile: environment.PAPERPILOT_DATABASE_PROFILE,
+      poolerHost: environment.PAPERPILOT_SUPABASE_POOLER_HOST,
+    });
+  }
+
+  if (name === "PAPERPILOT_MIGRATION_DATABASE_URL") {
+    return validatedPaperPilotMigrationDatabaseUrl(value, {
+      databaseProfile: environment.PAPERPILOT_MIGRATION_DATABASE_PROFILE,
+    });
+  }
+
+  if (name === "PAPERPILOT_BOOTSTRAP_DATABASE_URL") {
+    return validatedPaperPilotBootstrapDatabaseUrl(value, {
+      databaseProfile: environment.PAPERPILOT_BOOTSTRAP_DATABASE_PROFILE,
+    });
   }
 
   const parsed = validatedPostgresConnectionUrl(value, {
@@ -117,7 +136,7 @@ export async function verifyNoLocalDatabaseWrites({
 } = {}) {
   if (
     environment.PAPERPILOT_DATABASE_PROFILE
-      !== PAPERPILOT_SUPABASE_DIRECT_DATABASE_PROFILE
+      !== PAPERPILOT_SUPABASE_TRANSACTION_DATABASE_PROFILE
   ) {
     policyFailure("approved_supabase_profile_required");
   }
@@ -134,7 +153,7 @@ export async function verifyNoLocalDatabaseWrites({
       const parsed = validateConfiguredAuthority(
         name,
         environment[name],
-        environment.PAPERPILOT_DATABASE_PROFILE,
+        environment,
       );
       if (
         (name === "DATABASE_URL" || name === "PAPERPILOT_SUPABASE_DATABASE_URL")
@@ -166,7 +185,7 @@ export async function verifyNoLocalDatabaseWrites({
   return Object.freeze({
     schemaVersion: 1,
     status: "local_database_write_frozen",
-    databaseProfile: PAPERPILOT_SUPABASE_DIRECT_DATABASE_PROFILE,
+    databaseProfile: PAPERPILOT_SUPABASE_TRANSACTION_DATABASE_PROFILE,
     configuredApplicationTarget: configuredApplicationTarget ?? "not_configured",
     checkedLocalPorts: Object.freeze(localPorts),
   });
@@ -181,6 +200,7 @@ export async function verifySupabaseRuntimeConfiguration({
   configuredPaperPilotPostgresConnection(environment.DATABASE_URL, {
     caCertificatePath: environment.PAPERPILOT_DATABASE_CA_CERT_PATH,
     databaseProfile: environment.PAPERPILOT_DATABASE_PROFILE,
+    poolerHost: environment.PAPERPILOT_SUPABASE_POOLER_HOST,
   });
   return Object.freeze({
     ...freeze,

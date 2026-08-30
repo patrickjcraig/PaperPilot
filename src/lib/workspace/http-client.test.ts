@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 import type {
   ApproveWebMcpProposalCommand,
+  DirectPdfTransferPlanV1,
   WebMcpDuplicateDecision,
   WorkspaceProjectDto,
 } from "./contracts";
@@ -400,6 +401,27 @@ const uploadStatus = {
   asset: { status: "quarantined" as const, sizeBytes: 17 },
   document: { id: "document:one", status: "pending" as const },
 };
+
+function directPdfTransferPlan(): DirectPdfTransferPlanV1 {
+  const objectKey = `tenants/${"1".repeat(64)}/assets/${"2".repeat(64)}/attempts/${"3".repeat(64)}/original.pdf`;
+  return {
+    schemaVersion: 1,
+    provider: "SUPABASE_STORAGE",
+    uploadSessionId: "upload:one",
+    attemptId: "attempt:one",
+    method: "PUT",
+    url: `https://avmcmmayvnjxrhrmgsdx.supabase.co/storage/v1/object/upload/sign/paperpilot-private-pdfs/${objectKey}?token=signed-provider-token-value`,
+    headers: {
+      "cache-control": "max-age=0",
+      "content-type": "application/pdf",
+      "x-upsert": "false",
+    },
+    expectedSizeBytes: 17,
+    expectedSha256: "d".repeat(64),
+    expiresAt: new Date(Date.now() + 60 * 60 * 1_000).toISOString(),
+    finalizeUrl: "/api/workspaces/workspace%2Fone/uploads/upload%3Aone/finalize",
+  };
+}
 
 function crawlerDocumentEntryFixture() {
   return {
@@ -1577,6 +1599,7 @@ test("createUploadSession uses the versioned JSON reservation endpoint", async (
     expectedVersion: 7,
     fileName: "paper.pdf",
     sizeBytes: 17,
+    sha256: "a".repeat(64),
     declaredMimeType: "application/pdf" as const,
   };
 
@@ -1653,6 +1676,194 @@ test("uploadContent sends the untouched File as raw PDF and reports transfer pro
   assert.equal(xhr.requestHeaders.get("Accept"), "application/json");
   assert.equal(xhr.sentBody, file, "the File must not be wrapped, encoded, or converted");
   assert.deepEqual(progress, [{ loadedBytes: 17, totalBytes: 17 }]);
+});
+
+test("direct PDF client seam posts closed control JSON, uploads without credentials, and finalizes", async () => {
+  class FakeXhr {
+    method = "";
+    url = "";
+    async = false;
+    withCredentials = true;
+    responseType: XMLHttpRequestResponseType = "";
+    status = 200;
+    responseURL = "";
+    responseText = "";
+    sentBody?: Document | XMLHttpRequestBodyInit | null;
+    readonly requestHeaders = new Headers();
+    readonly upload = { onprogress: null as ((event: ProgressEvent) => void) | null };
+    onload: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    ontimeout: (() => void) | null = null;
+    onabort: (() => void) | null = null;
+
+    open(method: string, url: string, async: boolean) {
+      this.method = method;
+      this.url = url;
+      this.async = async;
+    }
+    setRequestHeader(name: string, value: string) {
+      this.requestHeaders.set(name, value);
+    }
+    abort() {
+      this.onabort?.();
+    }
+    send(body?: Document | XMLHttpRequestBodyInit | null) {
+      this.sentBody = body;
+      queueMicrotask(() => {
+        this.upload.onprogress?.({ loaded: 17, total: 17, lengthComputable: true } as ProgressEvent);
+        this.onload?.();
+      });
+    }
+  }
+
+  const plan = directPdfTransferPlan();
+  const xhr = new FakeXhr();
+  xhr.responseURL = plan.url;
+  xhr.responseText = JSON.stringify({
+    Key: new URL(plan.url).pathname.slice("/storage/v1/object/upload/sign/".length),
+  });
+  const requests: Array<{ url: string; init?: RequestInit }> = [];
+  const client = new HttpWorkspaceClient(
+    "workspace/one",
+    async (input, init) => {
+      const url = String(input);
+      requests.push({ url, init });
+      if (url.endsWith("/transfer")) {
+        return Response.json(plan, {
+          status: 201,
+          headers: { "Cache-Control": "private, no-store" },
+        });
+      }
+      return Response.json(uploadStatus, {
+        status: 202,
+        headers: { "Cache-Control": "private, no-store" },
+      });
+    },
+    () => xhr as unknown as XMLHttpRequest,
+  );
+  const transferCommand = {
+    schemaVersion: 1 as const,
+    clientOperationId: "transfer:one",
+    expectedUploadId: "upload:one",
+    expectedSizeBytes: 17,
+    expectedSha256: "d".repeat(64),
+  };
+
+  const issuedPlan = await client.createDirectPdfTransfer("upload:one", transferCommand);
+  const file = new File(["12345678901234567"], "paper.pdf", { type: "application/pdf" });
+  const progress: Array<{ loadedBytes: number; totalBytes: number }> = [];
+  await client.uploadPdfDirectly(issuedPlan, file, {
+    onProgress: (value) => progress.push(value),
+  });
+  const finalizeCommand = {
+    schemaVersion: 1 as const,
+    clientOperationId: "finalize:one",
+    attemptId: issuedPlan.attemptId,
+    expectedSizeBytes: issuedPlan.expectedSizeBytes,
+    expectedSha256: issuedPlan.expectedSha256,
+  };
+  const result = await client.finalizeDirectPdfTransfer(
+    "upload:one",
+    issuedPlan,
+    finalizeCommand,
+  );
+
+  assert.deepEqual(result, uploadStatus);
+  assert.equal(requests.length, 2);
+  assert.equal(
+    requests[0]?.url,
+    "/api/workspaces/workspace%2Fone/uploads/upload%3Aone/transfer",
+  );
+  assert.equal(requests[0]?.init?.method, "POST");
+  assert.equal(requests[0]?.init?.credentials, "same-origin");
+  assert.equal(requests[0]?.init?.cache, "no-store");
+  assert.equal(
+    new Headers(requests[0]?.init?.headers).get("Idempotency-Key"),
+    transferCommand.clientOperationId,
+  );
+  assert.deepEqual(JSON.parse(String(requests[0]?.init?.body)), transferCommand);
+  assert.equal(xhr.method, "PUT");
+  assert.equal(xhr.url, issuedPlan.url);
+  assert.equal(xhr.withCredentials, false);
+  assert.equal(xhr.requestHeaders.get("authorization"), null);
+  assert.equal(xhr.requestHeaders.get("cookie"), null);
+  assert.equal(xhr.sentBody, file);
+  assert.deepEqual(progress, [{ loadedBytes: 17, totalBytes: 17 }]);
+  assert.equal(
+    requests[1]?.url,
+    "/api/workspaces/workspace%2Fone/uploads/upload%3Aone/finalize",
+  );
+  assert.equal(requests[1]?.init?.method, "POST");
+  assert.equal(requests[1]?.init?.credentials, "same-origin");
+  assert.equal(requests[1]?.init?.cache, "no-store");
+  assert.equal(
+    new Headers(requests[1]?.init?.headers).get("Idempotency-Key"),
+    finalizeCommand.clientOperationId,
+  );
+  assert.deepEqual(JSON.parse(String(requests[1]?.init?.body)), finalizeCommand);
+  assert.equal(Object.hasOwn(JSON.parse(String(requests[1]?.init?.body)), "bucket"), false);
+  assert.equal(Object.hasOwn(JSON.parse(String(requests[1]?.init?.body)), "objectKey"), false);
+  assert.equal(Object.hasOwn(JSON.parse(String(requests[1]?.init?.body)), "etag"), false);
+});
+
+test("direct PDF client seam rejects open or cross-attempt control DTOs before authority can drift", async () => {
+  let requestCount = 0;
+  const plan = directPdfTransferPlan();
+  const transferCommand = {
+    schemaVersion: 1 as const,
+    clientOperationId: "transfer:one",
+    expectedUploadId: "upload:one",
+    expectedSizeBytes: 17,
+    expectedSha256: "d".repeat(64),
+  };
+  const client = new HttpWorkspaceClient("workspace/one", async () => {
+    requestCount += 1;
+    return Response.json({ ...plan, bucket: "paperpilot-private-pdfs" }, {
+      headers: { "Cache-Control": "private, no-store" },
+    });
+  });
+
+  await assert.rejects(
+    client.createDirectPdfTransfer("upload:one", transferCommand),
+    /invalid direct PDF transfer plan/i,
+  );
+  assert.equal(requestCount, 1);
+  await assert.rejects(
+    client.createDirectPdfTransfer("upload:one", {
+      ...transferCommand,
+      objectKey: "untrusted",
+    } as typeof transferCommand),
+    /must match its reserved upload/i,
+  );
+  assert.equal(requestCount, 1, "an open outgoing command must fail before fetch");
+
+  const finalizedClient = new HttpWorkspaceClient("workspace/one", async () => {
+    requestCount += 1;
+    return Response.json({
+      ...uploadStatus,
+      asset: { ...uploadStatus.asset, etag: "provider-authority-must-not-leak" },
+    }, { headers: { "Cache-Control": "private, no-store" } });
+  });
+  const finalizeCommand = {
+    schemaVersion: 1 as const,
+    clientOperationId: "finalize:one",
+    attemptId: plan.attemptId,
+    expectedSizeBytes: plan.expectedSizeBytes,
+    expectedSha256: plan.expectedSha256,
+  };
+  await assert.rejects(
+    finalizedClient.finalizeDirectPdfTransfer("upload:one", plan, {
+      ...finalizeCommand,
+      attemptId: "attempt:other",
+    }),
+    /must match its issued transfer plan/i,
+  );
+  assert.equal(requestCount, 1, "a cross-attempt finalize must fail before fetch");
+  await assert.rejects(
+    finalizedClient.finalizeDirectPdfTransfer("upload:one", plan, finalizeCommand),
+    /invalid PDF finalization response/i,
+  );
+  assert.equal(requestCount, 2);
 });
 
 test("getUploadStatus validates the credential-free upload read model", async () => {

@@ -11,7 +11,7 @@ export const MAX_DATABASE_CA_CERT_PATH_CHARACTERS: 1024;
 export interface PaperPilotPostgresClientConfig {
   readonly connectionString: string;
   readonly ssl?: {
-    readonly ca: string;
+    readonly ca?: string;
     readonly rejectUnauthorized: true;
   };
 }
@@ -25,6 +25,21 @@ export function loadPaperPilotDatabaseCaCertificate(
   rawPath: string | undefined,
 ): string;
 export function configuredPaperPilotPostgresConnection(
+  rawValue: string | undefined,
+  options?: {
+    caCertificatePath?: string;
+    databaseProfile?: string;
+    poolerHost?: string;
+  },
+): ConfiguredPaperPilotPostgresConnection;
+export function configuredPaperPilotMigrationPostgresConnection(
+  rawValue: string | undefined,
+  options?: {
+    caCertificatePath?: string;
+    databaseProfile?: string;
+  },
+): ConfiguredPaperPilotPostgresConnection;
+export function configuredPaperPilotBootstrapPostgresConnection(
   rawValue: string | undefined,
   options?: {
     caCertificatePath?: string;

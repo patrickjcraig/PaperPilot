@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="PaperPilot's live WebMCP research-mentor prototype for arbitrary scientific PDFs."
+    />
+    <meta name="theme-color" content="#101b38" />
+    <title>PaperPilot — WebMCP research mentor</title>
+    <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
+    <link rel="stylesheet" href="./paperpilot.css" />
+    <script type="module" src="./paperpilot.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#reader">Skip to paper reader</a>
+
+    <header class="topbar">
+      <a class="brand" href="./" aria-label="PaperPilot WebMCP home">
+        <span class="brand-mark" aria-hidden="true">P</span>
+        <span>PaperPilot</span>
+      </a>
+      <div class="topbar-meta">
+        <span class="release-chip">Hackathon live slice</span>
+        <a href="https://github.com/patrickjcraig/PaperPilot">Open-source repo</a>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="hero-copy">
+          <p class="eyebrow">A research mentor, anchored to the page</p>
+          <h1 id="hero-title">Point at the hard part.<br /><em>Keep the evidence.</em></h1>
+          <p class="hero-lede">
+            Upload a scientific PDF, select the passage you are stuck on, and let a browser
+            agent explain it through real WebMCP tools. PaperPilot keeps the source, the
+            mentor proposal, and your decision visibly separate.
+          </p>
+        </div>
+        <aside class="hero-proof" aria-label="Current prototype boundaries">
+          <span class="proof-number">02</span>
+          <p><strong>page-defined tools</strong> — one bounded read, one proposal stage.</p>
+          <p class="boundary-copy">
+            This public slice keeps the PDF and saved note in this browser. It does not claim
+            server custody, model reasoning, or scientific verification.
+          </p>
+        </aside>
+      </section>
+
+      <section class="control-ribbon" aria-label="Prototype status">
+        <div class="status-block">
+          <span class="status-label">WebMCP</span>
+          <span id="webmcp-status" class="status-value waiting" role="status" aria-live="polite">
+            Checking this browser…
+          </span>
+        </div>
+        <div class="status-block">
+          <span class="status-label">Source</span>
+          <span id="source-status" class="status-value">No paper selected</span>
+        </div>
+        <div class="status-block">
+          <span class="status-label">Human authority</span>
+          <span id="decision-status" class="status-value">Nothing saved</span>
+        </div>
+      </section>
+
+      <section id="reader" class="workspace" aria-label="PaperPilot research mentor workspace">
+        <article class="workspace-panel source-panel" aria-labelledby="source-heading">
+          <header class="panel-header">
+            <div>
+              <span class="panel-index">Source / 01</span>
+              <h2 id="source-heading">The paper</h2>
+            </div>
+            <span id="paper-badge" class="panel-badge">Waiting for PDF</span>
+          </header>
+
+          <div id="upload-zone" class="upload-zone">
+            <input id="pdf-input" type="file" accept="application/pdf,.pdf" />
+            <label for="pdf-input">
+              <span class="upload-glyph" aria-hidden="true">↗</span>
+              <strong>Choose a scientific PDF</strong>
+              <span>PDF only · up to 25 MiB · processed in this browser</span>
+            </label>
+          </div>
+
+          <div id="paper-view" class="paper-view" hidden>
+            <div class="paper-meta">
+              <div>
+                <span class="meta-label">Loaded document</span>
+                <strong id="paper-title">Untitled paper</strong>
+              </div>
+              <div class="paper-meta-actions">
+                <span id="paper-pages">— pages</span>
+                <button id="replace-pdf" class="text-button" type="button">Replace PDF</button>
+              </div>
+            </div>
+
+            <div id="pdf-alert" class="inline-alert" role="alert" hidden></div>
+
+            <figure class="page-figure">
+              <div class="canvas-shell">
+                <canvas id="pdf-canvas" aria-hidden="true"></canvas>
+              </div>
+              <figcaption id="page-caption">
+                Page 1 visual preview. The selectable transcript below is the source used by
+                the WebMCP read tool.
+              </figcaption>
+            </figure>
+
+            <div class="selection-editor">
+              <div class="field-heading">
+                <label for="page-text">Page 1 transcript</label>
+                <span id="selection-count">Select a passage below</span>
+              </div>
+              <textarea
+                id="page-text"
+                rows="11"
+                readonly
+                spellcheck="false"
+                aria-describedby="selection-help"
+              ></textarea>
+              <p id="selection-help" class="field-help">
+                Highlight a word, equation, or passage in this transcript. If the PDF has no
+                embedded text, choose another born-digital paper for this text proof.
+              </p>
+              <div class="button-row">
+                <button id="use-selection" class="button primary" type="button" disabled>
+                  Freeze selected passage
+                </button>
+                <button id="use-page" class="button quiet" type="button" disabled>
+                  Use first readable passage
+                </button>
+              </div>
+            </div>
+
+            <section id="frozen-source" class="frozen-source" aria-labelledby="frozen-heading" hidden>
+              <div class="frozen-head">
+                <div>
+                  <span class="meta-label">Frozen source</span>
+                  <h3 id="frozen-heading">Ready for your browser mentor</h3>
+                </div>
+                <button id="clear-source" class="text-button" type="button">Change source</button>
+              </div>
+              <blockquote id="frozen-quote"></blockquote>
+              <dl class="digest-grid">
+                <div><dt>Page</dt><dd>1</dd></div>
+                <div><dt>Words</dt><dd id="frozen-words">0</dd></div>
+                <div><dt>Quote digest</dt><dd id="quote-digest">—</dd></div>
+              </dl>
+              <p class="mentor-prompt">
+                Ask your browser agent: <q>Use PaperPilot to explain my active source at an
+                undergraduate level, then stage the explanation for review.</q>
+              </p>
+            </section>
+          </div>
+        </article>
+
+        <article class="workspace-panel mentor-panel" aria-labelledby="mentor-heading">
+          <header class="panel-header">
+            <div>
+              <span class="panel-index">Mentor / 02</span>
+              <h2 id="mentor-heading">The explanation</h2>
+            </div>
+            <span id="mentor-badge" class="panel-badge">Awaiting agent</span>
+          </header>
+
+          <div id="mentor-empty" class="empty-state">
+            <span class="empty-orbit" aria-hidden="true"></span>
+            <h3>Your mentor has not answered yet</h3>
+            <p>
+              Freeze one source, then ask a WebMCP-capable browser agent to read it and stage
+              a response. Nothing is accepted or saved automatically.
+            </p>
+          </div>
+
+          <section id="mentor-review" class="mentor-review" aria-labelledby="review-heading" hidden>
+            <div class="review-intro">
+              <span class="review-kicker">Proposal received · not saved</span>
+              <h3 id="review-heading" tabindex="-1">Research mentor explanation</h3>
+            </div>
+
+            <section class="explanation-section featured">
+              <span class="authority mentor-authority">Mentor interpretation</span>
+              <h4>In plain language</h4>
+              <p id="plain-language"></p>
+            </section>
+
+            <details open>
+              <summary>Key terms</summary>
+              <dl id="key-terms" class="term-list"></dl>
+            </details>
+
+            <details>
+              <summary>How it works · step by step</summary>
+              <ol id="step-list" class="step-list"></ol>
+            </details>
+
+            <details>
+              <summary>Connection to the paper</summary>
+              <div class="authority-copy">
+                <span class="authority paper-authority">Bound to selected paper text</span>
+                <p id="paper-connection"></p>
+              </div>
+            </details>
+
+            <details>
+              <summary>Background knowledge</summary>
+              <div class="authority-copy">
+                <span class="authority background-authority">Not directly stated by the paper</span>
+                <p id="background-knowledge"></p>
+              </div>
+            </details>
+
+            <details>
+              <summary>External sources</summary>
+              <ul id="external-sources" class="source-list"></ul>
+            </details>
+
+            <details>
+              <summary>Uncertainty or limitations</summary>
+              <p id="limitations"></p>
+            </details>
+
+            <label class="takeaway-field" for="takeaway">
+              <span>My takeaway <small>optional · written by you</small></span>
+              <textarea id="takeaway" rows="3" placeholder="What clicked for you?"></textarea>
+            </label>
+
+            <div class="button-row decision-row">
+              <button id="save-note" class="button primary" type="button">Save to this browser</button>
+              <button id="discard-note" class="button danger" type="button">Discard proposal</button>
+            </div>
+          </section>
+
+          <section id="saved-note" class="saved-note" aria-labelledby="saved-heading" hidden>
+            <span class="saved-seal" aria-hidden="true">✓</span>
+            <div>
+              <span class="review-kicker">Human decision retained locally</span>
+              <h3 id="saved-heading">Saved by you</h3>
+              <p id="saved-summary"></p>
+              <button id="download-receipt" class="button quiet" type="button">
+                Download provenance receipt
+              </button>
+            </div>
+          </section>
+        </article>
+
+        <aside class="workspace-panel trail-panel" aria-labelledby="trail-heading">
+          <header class="panel-header">
+            <div>
+              <span class="panel-index">Evidence / 03</span>
+              <h2 id="trail-heading">The trail</h2>
+            </div>
+            <span id="event-count" class="panel-badge">0 events</span>
+          </header>
+
+          <p class="trail-intro">
+            These are page-observed events. A callback proves that PaperPilot's tool ran; it
+            does not expose the agent's private reasoning or prove the explanation is true.
+          </p>
+
+          <ol id="evidence-events" class="evidence-events" aria-live="polite"></ol>
+
+          <div id="trail-empty" class="trail-empty">
+            <span aria-hidden="true">◇</span>
+            <p>The trail begins when this page registers its tools.</p>
+          </div>
+
+          <details class="tool-contract">
+            <summary>What the agent can do</summary>
+            <ul>
+              <li><code>paperpilot.read_sources</code> reads only the frozen passage.</li>
+              <li><code>paperpilot.stage_explanation</code> stages one reviewable response.</li>
+              <li>There is no save, approve, verify, or discard tool.</li>
+            </ul>
+          </details>
+        </aside>
+      </section>
+
+      <section class="how-it-works" aria-labelledby="how-heading">
+        <div>
+          <p class="eyebrow">Provenance without the paperwork</p>
+          <h2 id="how-heading">Three authorities. One calm reading flow.</h2>
+        </div>
+        <ol>
+          <li><strong>Source</strong><span>You freeze the exact passage that may be shared.</span></li>
+          <li><strong>Agent</strong><span>The browser mentor reads and stages through WebMCP.</span></li>
+          <li><strong>Human</strong><span>Only you decide whether the proposal becomes a note.</span></li>
+        </ol>
+      </section>
+    </main>
+
+    <footer>
+      <p>PaperPilot · WebMCP Challenge prototype · MIT licensed</p>
+      <p>PDF content stays in this browser in this release slice.</p>
+    </footer>
+
+    <div id="toast" class="toast" role="status" aria-live="polite" aria-atomic="true"></div>
+  </body>
+</html>
