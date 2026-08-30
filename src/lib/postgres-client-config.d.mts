@@ -27,9 +27,7 @@ export function loadPaperPilotDatabaseCaCertificate(
 export function configuredPaperPilotPostgresConnection(
   rawValue: string | undefined,
   options?: {
-    allowLocalPrismaDev?: boolean;
     caCertificatePath?: string;
     databaseProfile?: string;
-    nodeEnvironment?: string;
   },
 ): ConfiguredPaperPilotPostgresConnection;

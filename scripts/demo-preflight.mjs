@@ -3,10 +3,15 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { isIP } from "node:net";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { dirname, isAbsolute, posix, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { config as loadDotenv } from "dotenv";
+
+import {
+  PAPERPILOT_SUPABASE_DIRECT_DATABASE_PROFILE,
+  validatedPaperPilotApplicationDatabaseUrl,
+} from "../src/lib/postgres-connection-url.mjs";
 
 const SUPPORTED_PHASES = new Set(["infrastructure", "release"]);
 const RELEASE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:+-]{0,127}$/u;
@@ -24,7 +29,6 @@ const MAX_RELEASE_MANIFEST_BYTES = 262_144;
 const REQUIRED_RUNTIME_SERVICES = Object.freeze([
   "caddy",
   "web",
-  "postgres",
   "validator",
   "clamav",
   "validation-worker",
@@ -36,41 +40,47 @@ const WORKER_SERVICES = Object.freeze([
   "extraction-worker",
 ]);
 const REQUIRED_COMPLETED_SERVICES = Object.freeze([
-  "internal-tls-export",
+  "internal-ca-export",
   "storage-init",
 ]);
 const CONFIG_HEALTHCHECKED_SERVICES = Object.freeze([
   "caddy",
-  "postgres",
   "validator",
   "extractor",
 ]);
 const REQUIRED_INTERNAL_NETWORKS = Object.freeze([
   "app",
-  "database",
   "validation",
   "extraction",
   "scan",
 ]);
 const REQUIRED_EGRESS_NETWORKS = Object.freeze([
   "edge",
+  "database_egress",
   "web_egress",
   "signature_updates",
 ]);
+const DATABASE_USING_SERVICES = Object.freeze([
+  "web",
+  "validation-worker",
+  "extraction-worker",
+]);
+const FORBIDDEN_SELF_HOSTED_DATABASE_VOLUMES = Object.freeze([
+  "postgres_data",
+  "postgres_tls",
+]);
 const SERVICE_NETWORK_CONTRACT = Object.freeze({
   caddy: Object.freeze(["app", "edge", "extraction", "validation"]),
-  web: Object.freeze(["app", "database", "web_egress"]),
-  postgres: Object.freeze(["database"]),
+  web: Object.freeze(["app", "database_egress", "web_egress"]),
   validator: Object.freeze(["scan", "validation"]),
   clamav: Object.freeze(["scan", "signature_updates"]),
-  "validation-worker": Object.freeze(["database", "validation"]),
+  "validation-worker": Object.freeze(["database_egress", "validation"]),
   extractor: Object.freeze(["extraction"]),
-  "extraction-worker": Object.freeze(["database", "extraction"]),
+  "extraction-worker": Object.freeze(["database_egress", "extraction"]),
 });
 const RUNTIME_HEALTHCHECKED_SERVICES = Object.freeze([
   "caddy",
   "web",
-  "postgres",
   "validator",
   "clamav",
   "extractor",
@@ -453,6 +463,112 @@ function namedVolumeMounts(service) {
   });
 }
 
+function canonicalContainerFilePath(value) {
+  if (
+    typeof value !== "string"
+    || value.length === 0
+    || value !== value.trim()
+    || value.length > 1_024
+    || /[\u0000-\u001f\u007f]/u.test(value)
+    || !posix.isAbsolute(value)
+    || value.endsWith("/")
+    || posix.normalize(value) !== value
+  ) return null;
+  return value;
+}
+
+/**
+ * Return container targets whose Compose declaration makes them read-only.
+ * `docker compose config --format json` normally expands short volume syntax
+ * to objects, but retaining the string branch keeps direct fixture inspection
+ * fail-closed and deterministic.
+ */
+function readOnlyMountedTargets(service) {
+  const targets = [];
+  if (Array.isArray(service?.volumes)) {
+    for (const volume of service.volumes) {
+      if (plainObject(volume)) {
+        if (volume.read_only === true && typeof volume.target === "string") {
+          targets.push(volume.target);
+        }
+        continue;
+      }
+      const segments = String(volume).split(":");
+      const options = segments.length >= 3 ? segments.at(-1).split(",") : [];
+      if (options.includes("ro") && segments.length >= 3) {
+        targets.push(segments.at(-2));
+      }
+    }
+  }
+  // Compose configs and secrets are mounted read-only by the container
+  // runtime. Only explicit targets can cover the configured CA path.
+  for (const collectionName of ["configs", "secrets"]) {
+    const collection = service?.[collectionName];
+    if (!Array.isArray(collection)) continue;
+    for (const item of collection) {
+      if (plainObject(item) && typeof item.target === "string") {
+        targets.push(item.target);
+      }
+    }
+  }
+  return [...new Set(targets)];
+}
+
+function approvedSupabaseRuntimeDatabaseUrl(environment) {
+  if (
+    environment.PAPERPILOT_DATABASE_PROFILE
+      !== PAPERPILOT_SUPABASE_DIRECT_DATABASE_PROFILE
+  ) return false;
+  try {
+    const connection = validatedPaperPilotApplicationDatabaseUrl(
+      environment.DATABASE_URL,
+      { databaseProfile: environment.PAPERPILOT_DATABASE_PROFILE },
+    );
+    const encodedPassword = new URL(connection.connectionString).password;
+    const password = decodeURIComponent(encodedPassword);
+    return strongSecret(password);
+  } catch {
+    return false;
+  }
+}
+
+function configuredSupabaseDatabaseIssues(services) {
+  const issues = [];
+  for (const serviceName of DATABASE_USING_SERVICES) {
+    const service = services[serviceName];
+    const environment = serviceEnvironment(service);
+    if (
+      environment.PAPERPILOT_DATABASE_PROFILE
+        !== PAPERPILOT_SUPABASE_DIRECT_DATABASE_PROFILE
+    ) {
+      issues.push(`${serviceName} does not select the exact approved Supabase database profile`);
+    }
+    if (!approvedSupabaseRuntimeDatabaseUrl(environment)) {
+      issues.push(`${serviceName} DATABASE_URL is not the approved password-bearing Supabase direct runtime URL`);
+    }
+    if (environment.PAPERPILOT_ALLOW_LOCAL_PRISMA_DEV === "1") {
+      issues.push(`${serviceName} permits retired local Prisma development mode`);
+    }
+    if (environment.SHADOW_DATABASE_URL?.trim()) {
+      issues.push(`${serviceName} exposes a forbidden runtime shadow database URL`);
+    }
+
+    const caPath = canonicalContainerFilePath(
+      environment.PAPERPILOT_DATABASE_CA_CERT_PATH,
+    );
+    if (!caPath) {
+      issues.push(`${serviceName} Supabase CA path is not one canonical absolute container file path`);
+    } else if (!readOnlyMountedTargets(service).includes(caPath)) {
+      issues.push(`${serviceName} Supabase CA path is not covered by an exact read-only mount`);
+    }
+
+    if (!serviceNetworkNames(service).includes("database_egress")) {
+      issues.push(`${serviceName} has no external Supabase database egress network`);
+    }
+  }
+  return issues;
+}
+
 function healthcheckEnabled(service) {
   if (!plainObject(service?.healthcheck) || service.healthcheck.disable === true) return false;
   const test = service.healthcheck.test;
@@ -497,10 +613,19 @@ export function inspectComposeConfiguration(configuration, expectations) {
     return Object.freeze({ ok: false, issues: ["Compose JSON has no services object."], facts: {} });
   }
   const services = configuration.services;
-  for (const name of REQUIRED_RUNTIME_SERVICES) {
-    if (!plainObject(services[name])) issues.push(`required service ${name} is missing`);
+  if (Object.hasOwn(services, "postgres")) {
+    issues.push("self-hosted postgres service is forbidden by the Supabase-only deployment contract");
   }
-  if (issues.length > 0) return Object.freeze({ ok: false, issues, facts: {} });
+  const missingServices = [];
+  for (const name of REQUIRED_RUNTIME_SERVICES) {
+    if (!plainObject(services[name])) {
+      missingServices.push(name);
+      issues.push(`required service ${name} is missing`);
+    }
+  }
+  if (missingServices.length > 0) {
+    return Object.freeze({ ok: false, issues, facts: {} });
+  }
 
   for (const name of WORKER_SERVICES) {
     if (services[name].restart !== "unless-stopped") {
@@ -510,7 +635,7 @@ export function inspectComposeConfiguration(configuration, expectations) {
   for (const name of CONFIG_HEALTHCHECKED_SERVICES) {
     if (!healthcheckEnabled(services[name])) issues.push(`${name} has no enabled healthcheck`);
   }
-  for (const name of ["caddy", "postgres", "clamav"]) {
+  for (const name of ["caddy", "clamav"]) {
     if (!immutableImageReference(services[name])) {
       issues.push(`${name} must use an immutable sha256 image reference`);
     }
@@ -540,6 +665,9 @@ export function inspectComposeConfiguration(configuration, expectations) {
   if (!plainObject(configuration.networks)) {
     issues.push("Compose JSON has no networks object");
   } else {
+    if (Object.hasOwn(configuration.networks, "database")) {
+      issues.push("retired internal database network must not be declared");
+    }
     for (const name of REQUIRED_INTERNAL_NETWORKS) {
       if (!plainObject(configuration.networks[name]) || configuration.networks[name].internal !== true) {
         issues.push(`${name} must be an internal network`);
@@ -548,6 +676,13 @@ export function inspectComposeConfiguration(configuration, expectations) {
     for (const name of REQUIRED_EGRESS_NETWORKS) {
       if (!plainObject(configuration.networks[name]) || configuration.networks[name].internal === true) {
         issues.push(`${name} must be a declared non-internal network`);
+      }
+    }
+  }
+  if (plainObject(configuration.volumes)) {
+    for (const name of FORBIDDEN_SELF_HOSTED_DATABASE_VOLUMES) {
+      if (Object.hasOwn(configuration.volumes, name)) {
+        issues.push(`retired self-hosted database volume ${name} must not be declared`);
       }
     }
   }
@@ -578,13 +713,11 @@ export function inspectComposeConfiguration(configuration, expectations) {
   if (webEnvironment.PAPERPILOT_ALLOW_INSECURE_ORIGIN === "true") {
     issues.push("web permits an insecure origin");
   }
-  if (webEnvironment.PAPERPILOT_ALLOW_LOCAL_PRISMA_DEV === "1") {
-    issues.push("web permits local Prisma development mode");
-  }
   if (!strongSecret(webEnvironment.BETTER_AUTH_SECRET)) {
     issues.push("web BETTER_AUTH_SECRET is missing, weak, or a placeholder");
   }
-  if (!webEnvironment.DATABASE_URL) issues.push("web DATABASE_URL is missing");
+  const supabaseDatabaseIssues = configuredSupabaseDatabaseIssues(services);
+  issues.push(...supabaseDatabaseIssues);
 
   const readinessContracts = [
     {
@@ -638,6 +771,7 @@ export function inspectComposeConfiguration(configuration, expectations) {
       requiredServiceCount: REQUIRED_RUNTIME_SERVICES.length,
       configuredSharedVolume: commonSources.length > 0,
       configuredSharedVolumeBehaviorProven: false,
+      configuredSupabaseDatabaseContract: supabaseDatabaseIssues.length === 0,
     }),
   });
 }
@@ -667,6 +801,9 @@ function runtimeRowHealth(row) {
 
 export function inspectComposeRuntime(rows) {
   const issues = [];
+  if (rows.some((row) => runtimeRowService(row) === "postgres")) {
+    issues.push("a retired self-hosted postgres runtime container is still present");
+  }
   for (const service of REQUIRED_RUNTIME_SERVICES) {
     const matches = rows.filter((row) => runtimeRowService(row) === service);
     if (matches.length !== 1) {
@@ -1000,7 +1137,7 @@ export async function runDemoPreflight(options, dependencies = {}) {
         });
         results.push(
           inspection.ok
-            ? pass("compose.configuration", "Compose declares the required private topology, supervised workers, health checks, aligned PDF limits, and Caddy-only public ports.")
+            ? pass("compose.configuration", "Compose declares the exact Supabase runtime profile and CA mounts, database egress, required private topology, supervised workers, health checks, aligned PDF limits, and Caddy-only public ports.")
             : fail("compose.configuration", `Compose contract failed: ${formatIssues(inspection.issues)}.`, "Correct the deployment configuration; path or volume-name equality alone is not operational proof."),
         );
         if (inspection.facts.configuredSharedVolume) {

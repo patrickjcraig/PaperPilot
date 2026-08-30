@@ -10,8 +10,10 @@ FROM ${NODE_IMAGE} AS dependencies
 WORKDIR /build
 
 # Prisma's postinstall generator reads the datasource URL but does not connect
-# to it. This build-only loopback value keeps credentials out of image layers.
-ENV DATABASE_URL=postgresql://paperpilot_runtime:build-only@127.0.0.1:5432/paperpilot_build?sslmode=disable
+# to it. Use the approved public Supabase authority with a non-secret build
+# placeholder so no image stage can silently revive a loopback database.
+ENV DATABASE_URL=postgresql://paperpilot_runtime:not-configured@db.avmcmmayvnjxrhrmgsdx.supabase.co:5432/postgres?sslmode=verify-full \
+    PAPERPILOT_DATABASE_PROFILE=supabase-avmcmmayvnjxrhrmgsdx-direct-v1
 
 COPY package.json package-lock.json prisma.config.ts ./
 COPY prisma ./prisma
@@ -19,11 +21,14 @@ RUN npm ci
 
 FROM dependencies AS build
 
+RUN node --input-type=module -e "import { writeFileSync } from 'node:fs'; import { rootCertificates } from 'node:tls'; writeFileSync('/tmp/paperpilot-build-ca.pem', rootCertificates[0], { encoding: 'utf8', flag: 'wx' });"
+
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
     BETTER_AUTH_URL=https://build.paperpilot.invalid \
     BETTER_AUTH_SECRET=build-only-secret-with-more-than-thirty-two-characters \
     PAPERPILOT_RELEASE_ID=container-build \
+    PAPERPILOT_DATABASE_CA_CERT_PATH=/tmp/paperpilot-build-ca.pem \
     PAPERPILOT_ALLOW_LOCAL_PRISMA_DEV=0 \
     PAPERPILOT_ALLOW_INSECURE_ORIGIN=0
 

@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { Client } from "pg";
 
 import { validatedPostgresConnectionUrl } from "../../src/lib/postgres-connection-url.mjs";
+import { assertApprovedSupabaseDatabaseTarget } from "./deployment-connection.mjs";
 import { loadRuntimeAccessManifest } from "./role-contract.mjs";
 
 const AUDIT_URL_ENV = "PAPERPILOT_ROLE_AUDIT_DATABASE_URL";
@@ -12,11 +13,12 @@ const MINIMUM_POSTGRES_VERSION = 150000;
 export const AUTHORITY_SNAPSHOT_VERSION = 3;
 
 export function validatedAuditUrl(rawValue) {
-  return validatedPostgresConnectionUrl(rawValue, {
+  const parsed = validatedPostgresConnectionUrl(rawValue, {
     label: AUDIT_URL_ENV,
     requireTlsForNonLoopback: true,
     requiredUsername: "paperpilot_runtime",
-  }).connectionString;
+  });
+  return assertApprovedSupabaseDatabaseTarget(parsed, AUDIT_URL_ENV).connectionString;
 }
 
 function exactSet(actual, expected) {

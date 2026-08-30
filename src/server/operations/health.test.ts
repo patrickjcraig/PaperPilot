@@ -19,6 +19,8 @@ import {
 const PRODUCTION_ENVIRONMENT = Object.freeze({
   NODE_ENV: "production",
   PAPERPILOT_RELEASE_ID: "paperpilot-2026.08.29+abcdef1",
+  PAPERPILOT_DATABASE_PROFILE:
+    "supabase-avmcmmayvnjxrhrmgsdx-direct-v1",
   BETTER_AUTH_URL: "https://paperpilot.example",
   BETTER_AUTH_SECRET: "2bN7!rQ9#xL4@vC8$kM5%tP1&wD6*zH3",
 });
@@ -71,6 +73,8 @@ test("production release configuration requires a bounded release, HTTPS origin,
     { BETTER_AUTH_SECRET: "a".repeat(64) },
     { PAPERPILOT_ALLOW_INSECURE_ORIGIN: "true" },
     { PAPERPILOT_ALLOW_LOCAL_PRISMA_DEV: "1" },
+    { PAPERPILOT_DATABASE_PROFILE: "" },
+    { PAPERPILOT_DATABASE_PROFILE: "generic-managed-postgres" },
   ]) {
     assert.deepEqual(
       runtimeReleaseContractFromEnvironment({ ...PRODUCTION_ENVIRONMENT, ...changed }),
@@ -79,13 +83,22 @@ test("production release configuration requires a bounded release, HTTPS origin,
   }
 });
 
-test("non-production readiness uses a bounded development release identity", () => {
+test("non-production readiness still requires the Supabase-only database profile", () => {
   assert.deepEqual(runtimeReleaseContractFromEnvironment({ NODE_ENV: "development" }), {
+    ok: false,
+  });
+  assert.deepEqual(runtimeReleaseContractFromEnvironment({
+    NODE_ENV: "development",
+    PAPERPILOT_DATABASE_PROFILE:
+      "supabase-avmcmmayvnjxrhrmgsdx-direct-v1",
+  }), {
     ok: true,
     value: { production: false, releaseId: "development" },
   });
   assert.deepEqual(runtimeReleaseContractFromEnvironment({
     NODE_ENV: "test",
+    PAPERPILOT_DATABASE_PROFILE:
+      "supabase-avmcmmayvnjxrhrmgsdx-direct-v1",
     PAPERPILOT_RELEASE_ID: "invalid release",
   }), { ok: false });
 });
@@ -124,6 +137,30 @@ test("invalid configuration fails before a database probe", async () => {
   assert.equal(response.status, 503);
   assertCommonHeaders(response);
   assert.equal(response.headers.get("retry-after"), "5");
+  assert.deepEqual(await body(response), {
+    status: "not_ready",
+    reason: "configuration_invalid",
+  });
+});
+
+test("local database compatibility flags cannot reach a readiness probe", async () => {
+  let called = false;
+  const response = await readinessResponse({
+    method: "GET",
+    environment: {
+      ...PRODUCTION_ENVIRONMENT,
+      PAPERPILOT_DATABASE_PROFILE: "",
+      PAPERPILOT_ALLOW_LOCAL_PRISMA_DEV: "1",
+      DATABASE_URL:
+        "postgresql://postgres:postgres@127.0.0.1:51218/template1?sslmode=disable",
+    },
+    databaseProbe: async () => {
+      called = true;
+      return { status: "ready" };
+    },
+  });
+  assert.equal(called, false);
+  assert.equal(response.status, 503);
   assert.deepEqual(await body(response), {
     status: "not_ready",
     reason: "configuration_invalid",

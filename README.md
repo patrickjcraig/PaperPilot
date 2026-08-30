@@ -50,14 +50,14 @@ The split is deliberate. Authenticated features never silently fall back to brow
 
 The UI labels live, demo, preview, and upcoming states explicitly. A metadata result is never presented as processed full text.
 
-## Run locally without Docker
+## Develop locally with Supabase
 
 Requirements:
 
 - Node.js 24 or another version supported by Prisma 7
 - npm
-- pgAdmin 4 for the supported Windows local-database inspection workflow
-- approximately 1 GB of free space for the first Prisma local-database runtime download
+- access to the approved Supabase project
+- the project database CA and a restricted `paperpilot_runtime` credential
 
 Install the application:
 
@@ -66,86 +66,66 @@ npm install
 Copy-Item .env.example .env
 ```
 
-Start Prisma's local PGlite-backed PostgreSQL service:
+PaperPilot has a **Supabase-only database policy**. The retained
+`E:\PaperPilot-Prisma-Dev` directory is an offline archive and must never be
+started, queried, migrated, opened in pgAdmin, or used by tests. Confirm the
+freeze without connecting to any database:
 
 ```powershell
-npm run db:dev
+npm run db:local:freeze-check
 ```
 
-On Windows, PaperPilot's launcher stores the Prisma Dev runtime at `<checkout-drive>:\PaperPilot-Prisma-Dev` rather than silently filling the system drive; set `PAPERPILOT_PRISMA_DEV_ROOT` in `.env` to choose another absolute location. On other platforms, the default is `.paperpilot-prisma-dev` inside the checkout. The repository pins the named local instance to control port `51213`, direct database port `51218`, and migration shadow port `51219` so pgAdmin can retain one stable registration. Override the three `PAPERPILOT_PRISMA_DEV_*_PORT` variables only when those ports are unavailable, then update the two PostgreSQL URLs and the password-free pgAdmin profile together. Keep `PAPERPILOT_ALLOW_LOCAL_PRISMA_DEV=1` only for this non-production template database.
-
-On Windows, use `npm run db:dev` or `node scripts/prisma-dev.mjs ...` for Prisma Dev lifecycle commands. Running `npx prisma dev` directly bypasses PaperPilot's drive-scoped environment and can recreate a database under the system drive's local application-data directory.
-
-The same launcher can inspect or stop the drive-scoped instance without falling back to the system drive:
+If a retired Prisma Dev daemon is ever observed, the only permitted lifecycle
+operation is the idempotent stop command:
 
 ```powershell
-node scripts/prisma-dev.mjs dev ls
-node scripts/prisma-dev.mjs dev stop paperpilot
+npm run db:local:stop
 ```
 
-Create or update the local database, regenerate the client, and run Next.js:
+Direct Prisma CLI use is technically restricted to offline `prisma generate`.
+The supported lifecycle, migration, Studio, SQL-execution, database role,
+database deployment, authority-inspection, and `test:integration` commands
+intentionally fail until remote, isolated Supabase equivalents are reviewed.
+Offline client generation remains available:
 
 ```powershell
-npm run db:migrate
 npm run db:generate
-npm run dev:local
 ```
 
-Then open:
+After the exact Supabase URL, downloaded CA, runtime role, migrations, and
+readiness checks are installed, `npm run dev:local` starts only the web process
+on loopback while all durable database traffic goes to the approved Supabase
+project. Until then it fails before spawning Next.js.
+
+Once configured, open:
 
 - [http://127.0.0.1:3000/](http://127.0.0.1:3000/) for the browser-local demo;
 - [http://127.0.0.1:3000/sign-up](http://127.0.0.1:3000/sign-up) to create a live workspace;
 - [http://127.0.0.1:3000/app](http://127.0.0.1:3000/app) to return to an authenticated workspace.
 
-### Inspect the local database with pgAdmin
+### Retired local database archive
 
-pgAdmin is a client for the existing PaperPilot database; it does not create or relocate a second database. The supported local topology is:
+The old E-drive Prisma Dev database is retained only as an offline archive. It
+is not an active rollback database: even a nominally read-only PostgreSQL
+startup may update control, lock, statistics, or WAL state. The original
+archive therefore stays stopped and is not a supported pgAdmin target.
 
 ```text
-PaperPilot http://127.0.0.1:3000
-  -> Prisma Dev PostgreSQL protocol at 127.0.0.1:51218
-       -> persistent data under <checkout-drive>:\PaperPilot-Prisma-Dev
-
-pgAdmin Desktop
-  -> the same 127.0.0.1:51218 database
+E:\PaperPilot-Prisma-Dev
+  -> retained offline
+  -> no listeners on standard PostgreSQL 5432 or retired 51213/51218/51219
+  -> no application, worker, test, migration, Studio, or pgAdmin access
 ```
 
-On Windows, install the current pgAdmin package if needed:
+Run `npm run db:local:freeze-check` to verify the process and configuration
+boundary without opening the archive. See
+[`deploy/local/README.md`](deploy/local/README.md) for the frozen-archive
+contract and recovery cautions.
 
-```powershell
-winget install --id PostgreSQL.pgAdmin --exact `
-  --accept-package-agreements `
-  --accept-source-agreements
-```
-
-Import [`deploy/local/pgadmin-servers.json`](deploy/local/pgadmin-servers.json) through pgAdmin's server import command, or register the same values manually:
-
-| pgAdmin field | Local value |
-| --- | --- |
-| Name | `PaperPilot Local` |
-| Host name/address | `127.0.0.1` |
-| Port | `51218` |
-| Maintenance database | `template1` |
-| Username | Read from the local `.env` `DATABASE_URL` |
-| Password | Read privately from the same ignored `.env`; never commit or screenshot it |
-| SSL mode | `Disable` |
-
-Do not register the `51219` shadow database for ordinary browsing or edits. pgAdmin may keep its own desktop preferences under the Windows user profile on `C:`; that small client configuration is not the PaperPilot database. The application database and Prisma runtime remain under the configured `E:` root.
-
-With the database, app, and pgAdmin installed, verify the complete local contract without printing a password:
-
-```powershell
-npm run local:check
-```
-
-See [`deploy/local/README.md`](deploy/local/README.md) for lifecycle, verification, and recovery details.
-
-`prisma dev` is a development database, not a production database. Production must use managed PostgreSQL with backups, monitoring, TLS, an appropriate connection pool, and the reviewed non-login migration-owner/runtime-role split in [docs/POSTGRES-ROLES.md](docs/POSTGRES-ROLES.md).
-
-### Supabase project staging
+### Supabase project connection
 
 The repository is pinned to the supplied Supabase project reference
-`avmcmmayvnjxrhrmgsdx` through an opt-in, provider-specific database profile.
+`avmcmmayvnjxrhrmgsdx` through a mandatory provider-specific database profile.
 The public endpoint check is safe to run without credentials:
 
 ```powershell
@@ -154,8 +134,9 @@ npm run supabase:check
 
 That command verifies the exact REST and Storage gateway identities, database
 DNS, and TCP route. It deliberately does **not** claim database authentication,
-role setup, migrations, or Storage readiness. Keep the E-drive local database
-active until all four have passed. The exact profile, server-only CA
+role setup, migrations, or Storage readiness. The E-drive database remains
+offline even while those checks are incomplete; PaperPilot remains unavailable
+rather than falling back locally. The exact profile, server-only CA
 requirement, secret placement, and managed-provider migration boundary are
 documented in
 [`deploy/supabase/README.md`](deploy/supabase/README.md).
@@ -166,17 +147,16 @@ The Prisma CLI reads `.env`; Next.js also loads it. The file is ignored by Git.
 
 | Variable | Local development | Production requirement |
 | --- | --- | --- |
-| `DATABASE_URL` | Direct local PostgreSQL URL with explicit user, port, and database | Managed PostgreSQL application URL authenticating exactly as `paperpilot_runtime`, with an explicit port/database and exactly `sslmode=verify-full`; ambient `PGUSER`/`PGPORT`/`PGDATABASE`, query-level host/service, and duplicate-parameter fallbacks are rejected |
-| `PAPERPILOT_DATABASE_PROFILE` | Empty for the E-drive Prisma Dev database | Use only a reviewed provider profile; the supplied project uses `supabase-avmcmmayvnjxrhrmgsdx-direct-v1` |
-| `PAPERPILOT_DATABASE_CA_CERT_PATH` | Empty for loopback PostgreSQL | Absolute path to the provider CA certificate when required by the selected profile; never weaken `verify-full` to bypass a missing CA |
-| `PAPERPILOT_ALLOW_LOCAL_PRISMA_DEV` | `1` permits only loopback `postgres` → `template1` with `sslmode=disable` outside production | Omit; even localhost database proxies must authenticate as `paperpilot_runtime` |
-| `SHADOW_DATABASE_URL` | Local shadow database URL | Needed only for `migrate dev`; not for `migrate deploy` |
-| `PAPERPILOT_PRISMA_DEV_ROOT` | Absolute runtime root; defaults to the checkout drive on Windows | Not used by the production database |
-| `PAPERPILOT_PRISMA_DEV_PORT` | Prisma Dev control port; repository default `51213` | Not used in production |
-| `PAPERPILOT_PRISMA_DEV_DB_PORT` | Stable pgAdmin/application port; repository default `51218` | Not used in production |
-| `PAPERPILOT_PRISMA_DEV_SHADOW_DB_PORT` | Migration-only shadow port; repository default `51219` | Not used in production |
-| `PAPERPILOT_PGADMIN_EXE` | Optional absolute override for `npm run local:check` | Not used in production |
-| `DATABASE_POOL_MAX` | Optional; local Prisma DB defaults to `1` | Tune for the provider and deployment concurrency |
+| `DATABASE_URL` | Empty until the remote role exists; local URLs are forbidden | Exact Supabase direct URL authenticating as `paperpilot_runtime` on project `avmcmmayvnjxrhrmgsdx`, port `5432`, database `postgres`, and exactly `sslmode=verify-full` |
+| `PAPERPILOT_DATABASE_PROFILE` | Required exact value `supabase-avmcmmayvnjxrhrmgsdx-direct-v1` | Same exact reviewed profile; empty, generic, and alternate-project values fail closed |
+| `PAPERPILOT_DATABASE_CA_CERT_PATH` | Absolute E-drive path to the downloaded provider CA once configured | Required absolute provider CA path; never weaken `verify-full` to bypass a missing CA |
+| `PAPERPILOT_ALLOW_LOCAL_PRISMA_DEV` | Must be `0`; `1` is rejected | Must be `0`; there is no local runtime exception |
+| `SHADOW_DATABASE_URL` | Must be empty | Must remain empty; `migrate dev` is disabled |
+| `PAPERPILOT_PRISMA_DEV_ROOT` | Optional location of the stopped archive for freeze verification | Not used by the application |
+| `PAPERPILOT_PRISMA_DEV_PORT` | Retired control port checked for absence; default `51213` | Not used by the application |
+| `PAPERPILOT_PRISMA_DEV_DB_PORT` | Retired database port checked for absence; default `51218` | Not used by the application |
+| `PAPERPILOT_PRISMA_DEV_SHADOW_DB_PORT` | Retired shadow port checked for absence; default `51219` | Not used by the application |
+| `DATABASE_POOL_MAX` | Optional Supabase connection ceiling; defaults to `5` | Tune conservatively for the provider and deployment concurrency |
 | `BETTER_AUTH_SECRET` | At least 32 characters | Independent high-entropy secret from a secret manager |
 | `BETTER_AUTH_URL` | `http://127.0.0.1:3000` | Canonical HTTPS origin |
 | `PAPERPILOT_RELEASE_ID` | Optional; readiness uses `development` when omitted | Required immutable commit/image release identity shared by the web deployment |
@@ -464,19 +444,24 @@ The web routes enqueue durable work. `npm run worker:zotero` performs metadata s
 
 ## Verification
 
-Run the complete local gate while the named Prisma development database is running:
+Run the credential-free repository gate. These commands do not require or start
+a database:
 
 ```powershell
+npm run db:local:freeze-check
+npm run supabase:check
 npm test
-npm run test:integration
 npm run lint
 npm run typecheck
-npm run db:deploy
-npx prisma validate
-npx prisma migrate status
-npx prisma migrate diff --from-migrations prisma/migrations --to-schema prisma/schema.prisma --exit-code
+npm run db:generate
 npm run build
 ```
+
+`test:integration`, database deployment/role commands, Prisma lifecycle and
+migration commands, Studio, validation, and direct SQL execution are currently
+blocked. They return only after an isolated remote Supabase test target and a
+provider-specific role/migration workflow are implemented and reviewed. The
+original E-drive archive is never a test target.
 
 Current automated coverage includes:
 
@@ -502,7 +487,9 @@ The service slice has also been exercised in the browser through sign-up, live d
 
 For a production-shaped deployment:
 
-1. Provision managed PostgreSQL and secrets.
+1. Provision only the approved Supabase project, exact runtime role, provider
+   CA, and server-side secrets. Do not create a local or Compose PostgreSQL
+   fallback.
 2. Set an HTTPS `BETTER_AUTH_URL` and immutable `PAPERPILOT_RELEASE_ID`; do not set `PAPERPILOT_ALLOW_INSECURE_ORIGIN`.
 3. Set a unique `BETTER_AUTH_SECRET` and provider credentials through the platform's secret manager.
 4. Configure the rate-limit secret, Reader cursor secret, Reader user/workspace/IP budgets, and the host's exact trusted-proxy/IP-header topology. Every web node must share the cursor key.
@@ -512,7 +499,11 @@ For a production-shaped deployment:
 8. Build and deploy the standalone validator using the reference topology in `deploy/document-validator/`: deny validator egress, keep Clam TCP private, persist/update signatures separately, and enforce CPU, memory, process, byte, and wall-clock ceilings. Configure its exact private HTTPS endpoint, independent bearer secret, policy version, attested toolchain provenance, signature freshness, and clock boundaries.
 9. Build, scan, and provenance-bind the standalone extractor using `deploy/document-extractor/`. The reference Compose service is single-use, concurrency-one, and restart-always, but production must replace each admitted request with a fresh disposable container or microVM using distinct mount, PID, and user namespaces. Deny egress; preserve the non-root/read-only filesystem and bounded temporary storage; use private HTTPS with workload identity; and configure an independent bearer secret, extraction policy, expected Poppler toolchain digest, and clock boundaries. Treat the service's digest as drift detection, not binary proof.
 10. Run `npm ci` and `npm run db:generate` during the build.
-11. Complete the mandatory [PostgreSQL role deployment runbook](docs/POSTGRES-ROLES.md) before sending traffic: offline contract test → provider-admin bootstrap → transient deploy login and preflighted `db:deploy` → authority snapshot/review → migration/live-schema verification → runtime-grant reconciliation → deploy-login/session retirement → runtime catalog audit and rollback-only write smoke. Do not substitute a direct `prisma migrate deploy`, leave a deploy pool alive, or start workloads after only the ledger check.
+11. Keep traffic closed until the Supabase-specific replacement for the
+    [retained PostgreSQL authority design](docs/POSTGRES-ROLES.md) provisions the
+    exact role and migrations, verifies the live schema/sentinel and grants,
+    and passes authenticated readiness. The old dedicated-cluster commands and
+    direct Prisma migration alternatives are intentionally blocked.
 12. Run `npm run build`, then `npm start` or the platform's Next.js runtime, plus `npm run worker:validation`, `npm run worker:extraction`, `npm run worker:zotero`, `npm run worker:zotero-attachments`, and `npm run worker:crawler` as independently supervised processes. Route traffic only after `/livez` and `/readyz` pass; monitor workers independently. Both Zotero workers need the same database and credential-keyring versions as the web nodes; the crawler, attachment, validation, and extraction workers also need the same private storage view until object storage replaces the local adapter.
 13. Exercise signup verification, password recovery, quotas, PDF reservation → quarantine → validation → explicit paper link → processing/extracted/no-text Reader, worker deferral/retry/dead-letter recovery, Zotero connect → discover → select → sync → tombstone/backoff, explicit Zotero PDF → checksum-bound quarantine → validation → extraction, and one deployment-approved crawler URL through robots → pinned fetch → receipt → quarantine → validation → confirmed custody retirement behavior end to end. Include redirect, DNS rebinding/private-address, rate exhaustion, timeout, oversize, malformed PDF, stale-lease, a writer paused across deletion, wrong storage-generation/root reconciliation, retry-cleanup, reload recovery, post-`DELETED` mutation attempts, and unknown-POST-outcome drills; then confirm backups, restore drills, database/worker alerts, structured request IDs, HTTPS cookies, key rotation, private-volume durability, and provider budgets before public access.
 
@@ -530,7 +521,9 @@ The application boundaries for transactional email, required verification, passw
 - Zotero connection alone does not import metadata or files: an owner/admin must discover and explicitly select readable libraries, request or await a scheduled metadata run, and keep the metadata worker online. Stored PDFs require a second owner/admin policy decision, one explicit file command, a deployment-reviewed redirect allowlist, and the separate attachment worker. Cursored metadata sync, sanitized attachment projection, fenced download/quarantine handoff, validation/extraction lifecycle projection, tombstones, provider backoff, and provenance are implemented; notes/annotation bodies, streaming notifications, and conflict-aware write-back are not.
 - PaperPilot does not directly scrape Google Scholar. Scholar-origin discoveries can enter through user-reviewed Zotero records, identifier/file intake, or the metadata-only WebMCP proposal route. The live crawler is an explicit one-PDF custody command, not a search-results scraper or autonomous discovery spider.
 - The crawler first mode and user-directed local custody retirement are implemented, but production enablement must remain allowlisted, policy-aware, rate-limited, separately supervised, and separate from Zotero attachment ingestion. It still requires reviewed deployment values, a durable version-addressable private storage backend, explicit storage-authority generation management, public-origin and deletion-race adversarial drills, monitoring, alerts, backups/retention policy, and recovery runbooks.
-- The local Prisma database exposes one physical connection. PaperPilot uses a single local pool connection and sequential consistent bootstrap reads; this constraint does not define the production pool size.
+- The application has no local-database mode. The approved Supabase profile
+  defaults each web/worker process to a conservative five-connection ceiling;
+  reconcile the aggregate against the project limit before tuning it.
 - Prisma 7.10.0 currently pins an advisory-affected `deepmerge-ts` release in its trusted CLI/config loader. PaperPilot temporarily overrides that transitive package to `8.0.2`, scoped only to `@prisma/config@7.10.0`; remove the override once `@prisma/config` publishes an 8.x dependency, then regenerate the lockfile and rerun the full schema, build, integration, and audit gates. Do not replace this with npm's proposed forced Prisma downgrade.
 - PaperPilot has its own repository boundary. Keep credentials, retained documents, local database state, generated clients, dependencies, and build output outside committed history as enforced by the checked-in ignore and build-context policies.
 

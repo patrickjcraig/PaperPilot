@@ -6,6 +6,18 @@ import { dirname, isAbsolute, join, parse, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const prismaArguments = process.argv.slice(2);
+if (
+  prismaArguments.length !== 3
+  || prismaArguments[0] !== "dev"
+  || prismaArguments[1] !== "stop"
+  || prismaArguments[2] !== "paperpilot"
+) {
+  throw new Error(
+    "Local Prisma Dev start, restart, inspection, and mutation are disabled. "
+      + "Only `npm run db:local:stop` is permitted so the retained archive stays offline.",
+  );
+}
 const configuredRoot = process.env.PAPERPILOT_PRISMA_DEV_ROOT?.trim();
 if (configuredRoot && !isAbsolute(configuredRoot)) {
   throw new Error("PAPERPILOT_PRISMA_DEV_ROOT must be an absolute path.");
@@ -53,20 +65,6 @@ for (const directory of [localAppData, temporaryDirectory, npmCache]) {
 }
 
 const prismaCli = join(repositoryRoot, "node_modules", "prisma", "build", "index.js");
-const prismaArguments = process.argv.length > 2
-  ? process.argv.slice(2)
-  : [
-      "dev",
-      "--detach",
-      "--name",
-      "paperpilot",
-      "--port",
-      controlPort,
-      "--db-port",
-      databasePort,
-      "--shadow-db-port",
-      shadowDatabasePort,
-    ];
 const child = spawn(process.execPath, [prismaCli, ...prismaArguments], {
   cwd: repositoryRoot,
   env: {

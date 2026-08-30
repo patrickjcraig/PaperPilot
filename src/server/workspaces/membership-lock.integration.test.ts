@@ -4,6 +4,7 @@ import { after, test } from "node:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 
 import { PrismaClient } from "@/generated/prisma/client";
+import { validatedPaperPilotApplicationDatabaseUrl } from "@/lib/postgres-connection-url.mjs";
 import type { CreateProjectCommand } from "@/lib/workspace";
 import { HttpProblem } from "@/server/http/problem";
 
@@ -18,9 +19,8 @@ const ASYNC_DEADLINE_MS = 5_000;
 
 function supportsConcurrentDatabaseConnections(): boolean {
   const configuredPoolSize = Number(process.env.DATABASE_POOL_MAX);
-  // The local Prisma Dev profile deliberately exposes one serialized
-  // connection. Do not infer concurrency from the URL; run this blocking-lock
-  // proof only where the integration environment explicitly provisions it.
+  // Do not infer concurrency from a URL; run this blocking-lock proof only in
+  // an isolated remote environment that explicitly provisions it.
   return Number.isSafeInteger(configuredPoolSize) && configuredPoolSize >= 2;
 }
 
@@ -65,9 +65,13 @@ async function bounded<T>(promise: Promise<T>, label: string): Promise<T> {
 }
 
 function isolatedDatabase(connectionString: string): PrismaClient {
+  const approvedConnectionString = validatedPaperPilotApplicationDatabaseUrl(
+    connectionString,
+    { databaseProfile: process.env.PAPERPILOT_DATABASE_PROFILE },
+  ).connectionString;
   return new PrismaClient({
     adapter: new PrismaPg({
-      connectionString,
+      connectionString: approvedConnectionString,
       connectionTimeoutMillis: ASYNC_DEADLINE_MS,
       max: 1,
     }),

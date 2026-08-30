@@ -269,10 +269,10 @@ test("manifest parsing fails closed on drift and unsafe identifiers", () => {
   );
 });
 
-test("the production deployment path preflights exact authority without putting a URL on argv", () => {
+test("the retired dedicated-cluster deployment implementation remains reviewable but unreachable", () => {
   assert.equal(
     packageJson.scripts["db:deploy"],
-    "node scripts/postgres/deploy-migrations.mjs",
+    "node scripts/database/local-write-command-disabled.mjs db:deploy",
   );
   assert.match(deployWrapperSource, /migration-preflight\.sql/);
   assert.match(deployWrapperSource, /DATABASE_URL: connectionString/);
@@ -296,12 +296,16 @@ test("the production deployment path preflights exact authority without putting 
   assert.match(verifierSource, /role_setting\.setdatabase <> 0/);
 });
 
-test("authority review and runtime smoke commands are reproducible and bounded", () => {
+test("retired authority tools remain reviewable but cannot be run through package commands", () => {
   assert.match(snapshotSource, /BEGIN TRANSACTION READ ONLY/);
   assert.match(snapshotSource, /includeInventory: true/);
   assert.equal(
     packageJson.scripts["db:authority:snapshot"],
-    "node scripts/postgres/snapshot-authority.mjs",
+    "node scripts/database/local-write-command-disabled.mjs db:authority:snapshot",
+  );
+  assert.equal(
+    packageJson.scripts["db:roles:smoke"],
+    "node scripts/database/local-write-command-disabled.mjs db:roles:smoke",
   );
   assert.match(runtimeSmokeSource, /BEGIN/);
   assert.match(runtimeSmokeSource, /ROLLBACK/);
@@ -330,7 +334,7 @@ test("SQL deparse canonicalization changes only whitespace outside quoted tokens
   );
 });
 
-test("the audit URL is explicit and requires transport security off loopback", () => {
+test("the audit URL is explicit and pinned to the approved Supabase project", () => {
   assert.throws(() => validatedAuditUrl(""), /is required/);
   assert.throws(
     () => validatedAuditUrl("postgresql://paperpilot_runtime@example.test:5432/paperpilot"),
@@ -356,12 +360,14 @@ test("the audit URL is explicit and requires transport security off loopback", (
     () => validatedAuditUrl("postgresql://ambient_admin@example.test:5432/paperpilot?sslmode=verify-full"),
     /authenticate as paperpilot_runtime/,
   );
-  assert.equal(
-    validatedAuditUrl("postgresql://paperpilot_runtime@127.0.0.1:5432/paperpilot?sslmode=disable"),
-    "postgresql://paperpilot_runtime@127.0.0.1:5432/paperpilot?sslmode=disable",
+  assert.throws(
+    () => validatedAuditUrl(
+      "postgresql://paperpilot_runtime@127.0.0.1:5432/postgres?sslmode=disable",
+    ),
+    /approved PaperPilot Supabase direct database/,
   );
   assert.equal(
-    validatedAuditUrl("postgresql://paperpilot_runtime@example.test:5432/paperpilot?sslmode=verify-full"),
-    "postgresql://paperpilot_runtime@example.test:5432/paperpilot?sslmode=verify-full",
+    validatedAuditUrl("postgresql://paperpilot_runtime@db.avmcmmayvnjxrhrmgsdx.supabase.co:5432/postgres?sslmode=verify-full"),
+    "postgresql://paperpilot_runtime@db.avmcmmayvnjxrhrmgsdx.supabase.co:5432/postgres?sslmode=verify-full",
   );
 });

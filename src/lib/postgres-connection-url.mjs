@@ -117,67 +117,44 @@ export function validatedPostgresConnectionUrl(rawValue, options = {}) {
   });
 }
 
-/**
- * Application/worker policy: every live connection authenticates as the fixed
- * runtime role, including localhost proxies. The one exception is an explicit
- * non-production Prisma Dev template1 connection using the local postgres
- * account and disabled loopback TLS.
- */
+/** Application/worker policy: one exact managed project and runtime role. */
 export function validatedPaperPilotApplicationDatabaseUrl(rawValue, options = {}) {
   const configuredProfile = options.databaseProfile;
   if (configuredProfile !== undefined && typeof configuredProfile !== "string") {
     throw new Error("PAPERPILOT_DATABASE_PROFILE must be a string when configured.");
   }
   const databaseProfile = configuredProfile?.trim() ?? "";
-  if (
-    databaseProfile
-    && databaseProfile !== PAPERPILOT_SUPABASE_DIRECT_DATABASE_PROFILE
-  ) {
-    throw new Error("PAPERPILOT_DATABASE_PROFILE is not an approved database profile.");
+  if (databaseProfile !== PAPERPILOT_SUPABASE_DIRECT_DATABASE_PROFILE) {
+    throw new Error(
+      "PAPERPILOT_DATABASE_PROFILE must select the approved PaperPilot Supabase profile.",
+    );
   }
 
-  const parsed = validatedPostgresConnectionUrl(rawValue, {
-    label: "DATABASE_URL",
-    requireTlsForNonLoopback: true,
-  });
-  const isLocalPrismaDev =
-    databaseProfile === ""
-    && options.allowLocalPrismaDev === true
-    && options.nodeEnvironment !== "production"
-    && parsed.isLoopback
-    && parsed.username === "postgres"
-    && parsed.pathname === "/template1"
-    && parsed.sslMode === "disable";
-  if (isLocalPrismaDev) {
-    return Object.freeze({ ...parsed, isLocalPrismaDev: true });
-  }
   const runtime = validatedPostgresConnectionUrl(rawValue, {
     label: "DATABASE_URL",
     requireTlsForNonLoopback: true,
     requiredUsername: "paperpilot_runtime",
   });
 
-  if (databaseProfile === PAPERPILOT_SUPABASE_DIRECT_DATABASE_PROFILE) {
-    if (runtime.hostname !== PAPERPILOT_SUPABASE_DIRECT_DATABASE_HOST) {
-      throw new Error(
-        "DATABASE_URL must target the approved PaperPilot Supabase direct database host.",
-      );
-    }
-    if (runtime.port !== 5432) {
-      throw new Error(
-        "DATABASE_URL must use port 5432 for the approved PaperPilot Supabase direct profile.",
-      );
-    }
-    if (runtime.databaseName !== "postgres") {
-      throw new Error(
-        "DATABASE_URL must target the postgres database for the approved PaperPilot Supabase profile.",
-      );
-    }
-    if (!new URL(runtime.connectionString).password) {
-      throw new Error(
-        "DATABASE_URL must contain an explicit password for the approved PaperPilot Supabase profile.",
-      );
-    }
+  if (runtime.hostname !== PAPERPILOT_SUPABASE_DIRECT_DATABASE_HOST) {
+    throw new Error(
+      "DATABASE_URL must target the approved PaperPilot Supabase direct database host.",
+    );
+  }
+  if (runtime.port !== 5432) {
+    throw new Error(
+      "DATABASE_URL must use port 5432 for the approved PaperPilot Supabase direct profile.",
+    );
+  }
+  if (runtime.databaseName !== "postgres") {
+    throw new Error(
+      "DATABASE_URL must target the postgres database for the approved PaperPilot Supabase profile.",
+    );
+  }
+  if (!new URL(runtime.connectionString).password) {
+    throw new Error(
+      "DATABASE_URL must contain an explicit password for the approved PaperPilot Supabase profile.",
+    );
   }
   return Object.freeze({ ...runtime, isLocalPrismaDev: false });
 }

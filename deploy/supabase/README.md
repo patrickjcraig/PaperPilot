@@ -23,8 +23,9 @@ above matches. A different Supabase project, arbitrary `*.supabase.co` host,
 shared-pooler hostname, port `6543`, default `postgres` login, missing password,
 missing/invalid CA bundle, query-level host/service/CA override, or weaker TLS
 mode fails before network I/O.
-Leaving `PAPERPILOT_DATABASE_PROFILE` empty preserves the existing generic and
-local PostgreSQL contract.
+The profile is mandatory for every application, worker, and readiness process.
+Empty, generic, alternate-project, and loopback profiles fail before network
+I/O. There is no writable local-database fallback.
 
 ## Credential-free endpoint preflight
 
@@ -52,7 +53,7 @@ PAPERPILOT_DATABASE_PROFILE="supabase-avmcmmayvnjxrhrmgsdx-direct-v1"
 PAPERPILOT_DATABASE_CA_CERT_PATH="E:/PaperPilot-Secrets/supabase-prod-ca.pem"
 DATABASE_URL="postgresql://paperpilot_runtime:URL_ENCODED_DATABASE_PASSWORD@db.avmcmmayvnjxrhrmgsdx.supabase.co:5432/postgres?sslmode=verify-full"
 DATABASE_POOL_MAX="5"
-PAPERPILOT_ALLOW_LOCAL_PRISMA_DEV=""
+PAPERPILOT_ALLOW_LOCAL_PRISMA_DEV="0"
 ```
 
 `URL_ENCODED_DATABASE_PASSWORD` is intentionally a placeholder. Do not run the
@@ -81,8 +82,7 @@ current persistent Prisma/worker topology.
 ## Deliberate migration boundary
 
 This profile only closes and activates runtime URL validation. It does not
-claim that the database is provisioned. Before changing the working local
-database:
+claim that the database is provisioned. PaperPilot remains unavailable until:
 
 1. create the `paperpilot_runtime` role using a Supabase-reviewed role setup;
 2. reconcile the existing migrations and ownership/grant contract against
@@ -92,8 +92,8 @@ database:
    `PAPERPILOT_DATABASE_CA_CERT_PATH` only in server-side configuration;
 4. run the focused URL test, then the schema, role, integration, and readiness
    gates; and
-5. keep the E-drive local database as rollback until a complete arbitrary-PDF
-   workflow and provenance trail pass against Supabase.
+5. pass a complete arbitrary-PDF workflow and provenance trail against
+   Supabase. The E-drive database stays offline and is not a runtime rollback.
 
 Do not run the generic dedicated-cluster bootstrap blindly against Supabase.
 It requires a true PostgreSQL superuser and a dedicated non-default application

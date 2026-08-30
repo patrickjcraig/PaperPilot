@@ -33,8 +33,6 @@ export function validatedPostgresConnectionUrl(
 export function validatedPaperPilotApplicationDatabaseUrl(
   rawValue: string | undefined,
   options?: {
-    allowLocalPrismaDev?: boolean;
     databaseProfile?: string;
-    nodeEnvironment?: string;
   },
 ): ValidatedApplicationDatabaseUrl;

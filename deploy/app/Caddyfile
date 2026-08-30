@@ -41,11 +41,3 @@ https://extractor.paperpilot.internal:8443 {
 	tls internal
 	reverse_proxy http://extractor:4020
 }
-
-# Caddy proactively issues this internal leaf certificate. The one-shot
-# internal-tls-export service copies it into a database-only volume; this HTTP
-# listener is not published and never proxies PostgreSQL traffic.
-https://postgres.paperpilot.internal:8445 {
-	tls internal
-	respond 404
-}

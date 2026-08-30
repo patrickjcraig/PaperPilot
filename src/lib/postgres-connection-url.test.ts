@@ -70,32 +70,28 @@ test("PostgreSQL URLs bind validation and driver connection to one closed destin
   }
 });
 
-test("application connections require the runtime role even through loopback proxies", () => {
-  const runtimeLoopback = validatedPaperPilotApplicationDatabaseUrl(
-    "postgresql://paperpilot_runtime@127.0.0.1:5432/paperpilot?sslmode=disable",
-  );
-  assert.equal(runtimeLoopback.username, "paperpilot_runtime");
-  assert.equal(runtimeLoopback.isLocalPrismaDev, false);
-
-  assert.throws(
-    () => validatedPaperPilotApplicationDatabaseUrl(
-      "postgresql://cluster_admin@127.0.0.1:5432/paperpilot?sslmode=disable",
-    ),
-    /authenticate as paperpilot_runtime/,
-  );
-  assert.throws(
-    () => validatedPaperPilotApplicationDatabaseUrl(
-      "postgresql://postgres:postgres@127.0.0.1:5432/template1?sslmode=disable",
-      { allowLocalPrismaDev: true, nodeEnvironment: "production" },
-    ),
-    /authenticate as paperpilot_runtime/,
-  );
-
-  const localDevelopment = validatedPaperPilotApplicationDatabaseUrl(
-    "postgresql://postgres:postgres@[::1]:5432/template1?sslmode=disable",
-    { allowLocalPrismaDev: true, nodeEnvironment: "development" },
-  );
-  assert.equal(localDevelopment.isLocalPrismaDev, true);
+test("application connections require the exact Supabase profile before parsing a target", () => {
+  for (const options of [
+    undefined,
+    {},
+    { databaseProfile: "" },
+    { databaseProfile: "supabase-unreviewed-project-direct-v1" },
+    // The removed local escape-hatch keys must not revive loopback access even
+    // when supplied dynamically by stale deployment code.
+    {
+      allowLocalPrismaDev: true,
+      databaseProfile: "",
+      nodeEnvironment: "development",
+    },
+  ]) {
+    assert.throws(
+      () => validatedPaperPilotApplicationDatabaseUrl(
+        "postgresql://postgres:postgres@127.0.0.1:51218/template1?sslmode=disable",
+        options,
+      ),
+      /must select the approved PaperPilot Supabase profile/,
+    );
+  }
 });
 
 test("the approved Supabase direct profile is bound to one project and endpoint", () => {
@@ -160,15 +156,13 @@ test("the approved Supabase direct profile is bound to one project and endpoint"
       "postgresql://paperpilot_runtime:unit@db.avmcmmayvnjxrhrmgsdx.supabase.co:5432/postgres?sslmode=verify-full",
       { databaseProfile: "supabase-unreviewed-project-direct-v1" },
     ),
-    /not an approved database profile/,
+    /must select the approved PaperPilot Supabase profile/,
   );
   assert.throws(
     () => validatedPaperPilotApplicationDatabaseUrl(
       "postgresql://postgres:postgres@127.0.0.1:51218/template1?sslmode=disable",
       {
-        allowLocalPrismaDev: true,
         databaseProfile: PAPERPILOT_SUPABASE_DIRECT_DATABASE_PROFILE,
-        nodeEnvironment: "development",
       },
     ),
     /authenticate as paperpilot_runtime/,

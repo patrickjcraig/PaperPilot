@@ -2,10 +2,27 @@ import { readFileSync } from "node:fs";
 
 import { Client } from "pg";
 
-import { validatedPostgresConnectionUrl } from "../../src/lib/postgres-connection-url.mjs";
+import {
+  PAPERPILOT_SUPABASE_DIRECT_DATABASE_HOST,
+  validatedPostgresConnectionUrl,
+} from "../../src/lib/postgres-connection-url.mjs";
 
 export const ADMIN_URL_ENV = "PAPERPILOT_ADMIN_DATABASE_URL";
 export const DEPLOY_URL_ENV = "PAPERPILOT_DEPLOY_DATABASE_URL";
+
+export function assertApprovedSupabaseDatabaseTarget(parsed, label) {
+  if (
+    parsed.isLoopback
+    || parsed.hostname !== PAPERPILOT_SUPABASE_DIRECT_DATABASE_HOST
+    || parsed.port !== 5_432
+    || parsed.databaseName !== "postgres"
+  ) {
+    throw new Error(
+      `${label} may target only the approved PaperPilot Supabase direct database.`,
+    );
+  }
+  return parsed;
+}
 
 function withoutPsqlDirectives(source) {
   return source.replace(/^\\set\s+ON_ERROR_STOP\s+on\s*$/mu, "");
@@ -19,7 +36,7 @@ export function validatedAdminConnectionUrl(rawValue) {
   if (parsed.username === "paperpilot_runtime") {
     throw new Error(`${ADMIN_URL_ENV} must not authenticate as paperpilot_runtime.`);
   }
-  return parsed.connectionString;
+  return assertApprovedSupabaseDatabaseTarget(parsed, ADMIN_URL_ENV).connectionString;
 }
 
 export function validatedDeployConnectionUrl(rawValue, { label = DEPLOY_URL_ENV } = {}) {
@@ -33,9 +50,7 @@ export function validatedDeployConnectionUrl(rawValue, { label = DEPLOY_URL_ENV 
   ) {
     throw new Error(`${label} must authenticate as a short-lived deploy login, not a fixed PaperPilot role.`);
   }
-  if (parsed.databaseName === "postgres" || parsed.databaseName.startsWith("template")) {
-    throw new Error(`${label} must target the dedicated PaperPilot database.`);
-  }
+  assertApprovedSupabaseDatabaseTarget(parsed, label);
 
   const migrationUrl = new URL(parsed.connectionString);
   migrationUrl.searchParams.set(

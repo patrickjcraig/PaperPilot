@@ -4,6 +4,7 @@ import { after, test } from "node:test";
 import { Client } from "pg";
 
 import { Prisma } from "@/generated/prisma/client";
+import { validatedPaperPilotApplicationDatabaseUrl } from "@/lib/postgres-connection-url.mjs";
 import { prisma } from "@/lib/prisma";
 
 const VALIDATION_POLICY = "paperpilot-document-validation-v1";
@@ -548,7 +549,9 @@ async function createGroundedNote(
 function databaseUrl(): string {
   const value = process.env.DATABASE_URL;
   assert.ok(value, "DATABASE_URL must be configured for integration tests");
-  return value;
+  return validatedPaperPilotApplicationDatabaseUrl(value, {
+    databaseProfile: process.env.PAPERPILOT_DATABASE_PROFILE,
+  }).connectionString;
 }
 
 async function rejectsSplitUtf8Boundary(fixture: GroundedFixture): Promise<void> {

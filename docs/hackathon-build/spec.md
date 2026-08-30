@@ -1,5 +1,16 @@
 # PaperPilot Technical Specification
 
+> **Approved database architecture amendment — 2026-08-29:** The project owner
+> superseded every conflicting writable-local-PostgreSQL instruction with a
+> Supabase-only invariant. Project `avmcmmayvnjxrhrmgsdx` is the sole approved
+> application database authority. The retained E-drive Prisma Dev state stays
+> offline and receives no application, worker, test, migration, Studio, or
+> pgAdmin traffic. Until authenticated Supabase roles, migrations, CA trust,
+> and readiness pass, PaperPilot fails closed instead of using a local or
+> generic database. The active Compose topology has now removed self-hosted
+> PostgreSQL and requires the provider-specific runtime profile, CA mount, and
+> egress; authenticated provider authority remains a red Gate 0 prerequisite.
+
 **Status:** Approved; implementation-ready  
 **Date:** 2026-08-29  
 **Target:** Feature-complete candidate by Tuesday, 2026-09-01  

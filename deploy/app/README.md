@@ -1,197 +1,250 @@
-# Single-host HTTPS deployment
+# Supabase-only single-host HTTPS deployment
 
-This directory is PaperPilot's Gate 0 deployment skeleton for one dedicated
-Linux VPS. It does not deploy anything by itself and is not evidence that the
-public upload, PDF.js, WebMCP, or accessibility gates passed.
+This directory is PaperPilot's Gate 0 deployment skeleton for one Linux host.
+It runs the web application, Caddy, the validator/extractor services, their
+workers, and private document custody. Durable application records live only in
+the approved Supabase project `avmcmmayvnjxrhrmgsdx`.
+
+This Compose project does **not** create, start, mount, initialize, migrate, or
+back up a local PostgreSQL database. It contains no PostgreSQL service, database
+volume, database TLS leaf, or local database operations profile.
 
 The long-lived topology is:
 
-    Internet -> Caddy :80/:443 -> web :3000
-                                  -> PostgreSQL (runtime role, private TLS)
+```text
+Internet -> Caddy :80/:443 -> web :3000
+                                  -> Supabase PostgreSQL direct endpoint
 
-    validation-worker -> Caddy private TLS -> validator -> ClamAV
-    extraction-worker -> Caddy private TLS -> extractor
+validation-worker -> Caddy private TLS -> validator -> ClamAV
+        |                     |
+        +---- Supabase -------+
 
-    web + both workers -> private_data at /private/paperpilot
+extraction-worker -> Caddy private TLS -> extractor
+        |
+        +---- Supabase
 
-Only Caddy publishes host ports. PostgreSQL, validator, extractor, and ClamAV
-stay on internal Compose networks. ClamAV alone also joins the
-signature_updates network so FreshClam can update its persistent signatures.
-The workers have no ordinary outbound network in this Gate 0 topology. Web has
-an outbound network only for its configured transactional-email HTTPS webhook;
-do not treat that network boundary as a destination allowlist. ClamAV alone
-also has outbound access for signature updates.
+web + both workers -> private_data at /private/paperpilot
+```
+
+Only Caddy publishes host ports. Validator, extractor, and ClamAV remain on
+internal Compose networks. Web and the two database-backed workers join the
+external `database_egress` network so they can resolve and reach
+`db.avmcmmayvnjxrhrmgsdx.supabase.co:5432`. Compose network membership is an
+intent boundary, not a hostname allowlist; use a reviewed host firewall or
+egress proxy if the deployment platform can restrict outbound destinations.
+Web separately joins `web_egress` for configured transactional email. ClamAV
+alone joins `signature_updates` for FreshClam updates.
 
 ## What this skeleton does not prove
 
-- A green /livez proves only that the web process is alive.
-- A green /readyz proves release configuration, the runtime database role, and
-  the migration sentinel expected by the current image. It does not prove the
-  workers or shared storage.
-- Matching path strings are not shared-storage evidence. Only a real upload
-  processed by both workers proves the custody path.
+- A green `/livez` proves only that the web process is alive.
+- A green `/readyz` proves that the exact runtime configuration can reach the
+  expected migrated schema as `paperpilot_runtime`. It does not prove workers,
+  private storage, upload admission, or PDF rendering.
+- A green `npm run supabase:check` proves only public endpoint identity, DNS,
+  and TCP reachability. It does not prove authentication, roles, migrations, or
+  Storage configuration.
+- Matching private-volume paths are not shared-storage evidence. Only a real
+  upload processed by both workers proves the custody path.
+- Compose does not provision Supabase roles or run migrations. Those operations
+  remain blocked until the provider-specific role/migration runbook is reviewed
+  and completed outside this runtime topology.
 - Compose does not operate ChatGPT desktop, prove WebMCP callbacks, render a
   PDF.js page, or complete an NVDA walkthrough.
-- The internal Caddy leaf used for PostgreSQL is a time-bounded single-host
-  convenience. Regenerate it and restart PostgreSQL before it expires.
 
-## Host prerequisites
+## Host and provider prerequisites
 
-- A dedicated Linux VPS with Docker Engine and current Compose v2.
+- A Linux host with Docker Engine and current Compose v2.
 - At least 6 GiB of available memory; the ClamAV reference reserves 4 GiB.
-- DNS A/AAAA records for the exact public hostname pointing at the VPS.
-- Inbound TCP 80/443 and, if HTTP/3 is retained, UDP 443. Do not open database,
-  validator, extractor, or ClamAV ports.
-- A fresh dedicated PostgreSQL cluster/volume. The checked-in bootstrap refuses
-  a shared application cluster or legacy schema.
-- A release commit and reviewed immutable registry digests for Caddy and
-  PostgreSQL. Resolve and scan images on the target architecture; never invent
-  a digest merely to satisfy configuration.
+- DNS A/AAAA records for the exact public hostname pointing at the host.
+- Inbound TCP 80/443 and, if HTTP/3 is retained, UDP 443. Do not publish any
+  database, validator, extractor, or ClamAV port.
+- Outbound DNS and TCP `5432` reachability from Docker containers to
+  `db.avmcmmayvnjxrhrmgsdx.supabase.co`.
+- IPv6 support on the deployment host and Docker path. The approved direct
+  Supabase endpoint currently resolves to IPv6. If the eventual host is
+  IPv4-only, stop: do not substitute a pooler hostname or port. Add a separate
+  reviewed provider profile first.
+- A Supabase `paperpilot_runtime` login for project
+  `avmcmmayvnjxrhrmgsdx`, with the checked-in migrations and exact grants
+  already applied through a reviewed provider-specific process.
+- The current Supabase database CA downloaded from the project's Connect or
+  database SSL settings and stored outside the repository as one regular file.
+- A release commit and reviewed immutable image digests. Resolve and scan
+  images on the target architecture; never invent a digest to satisfy config.
 - Production email delivery or an already provisioned, verified demo identity.
-  A fresh database has no sign-in path without delivery; PaperPilot
-  intentionally fails closed for production signup when delivery is absent.
+  A fresh database has no sign-in path without delivery; production signup
+  intentionally fails closed when delivery is absent.
 
 ## 1. Configure without exposing secrets
 
 From this directory:
 
-    cp compose.env.example .env
-    chmod 600 .env
+```sh
+cp compose.env.example .env
+chmod 600 .env
+```
 
-Fill every blank. Use independent base64url secrets so passwords are safe
-inside the repository's closed PostgreSQL URLs.
+Fill every required blank. The populated `.env` is ignored by Git, but it is
+not a secret manager. Restrict the host account and Docker socket, keep the file
+out of logs and ordinary backups, and rotate credentials after suspected
+disclosure.
 
-- PAPERPILOT_PUBLIC_ORIGIN is exactly https://host.example, with no path,
+Database configuration is deliberately narrow:
+
+- `PAPERPILOT_SUPABASE_DATABASE_URL` must have exactly this authority and shape:
+
+  ```text
+  postgresql://paperpilot_runtime:URL_ENCODED_PASSWORD@db.avmcmmayvnjxrhrmgsdx.supabase.co:5432/postgres?sslmode=verify-full
+  ```
+
+- Percent-encode the password for the URL user-info component. Do not paste the
+  populated URL into source, documentation, command-line arguments, shell
+  history, screenshots, logs, or support messages.
+- `PAPERPILOT_SUPABASE_DATABASE_CA_CERT_HOST_PATH` must be an absolute host path
+  to the downloaded CA file. Compose mounts that single file read-only at
+  `/etc/paperpilot/supabase/database-ca.pem` in web and both workers.
+- Compose pins `PAPERPILOT_DATABASE_PROFILE` to
+  `supabase-avmcmmayvnjxrhrmgsdx-direct-v1`, pins the in-container CA path, and
+  sets `PAPERPILOT_ALLOW_LOCAL_PRISMA_DEV=0`. Do not override those values.
+- Keep `PAPERPILOT_DATABASE_POOL_MAX` conservative across the three long-lived
+  processes. The example starts at `5` connections per process; reconcile the
+  aggregate against the Supabase project limit before increasing it.
+
+The Supabase database CA is separate from Caddy's private CA. Caddy's CA trusts
+only the internal validator/extractor HTTPS listeners and is exported into the
+`internal_ca` volume. It is not used to authenticate Supabase.
+
+Also verify:
+
+- `PAPERPILOT_PUBLIC_ORIGIN` is exactly `https://host.example`, with no path,
   trailing slash, query, fragment, or credentials.
-- PAPERPILOT_RELEASE_ID identifies the release commit/image and is not a
+- `PAPERPILOT_RELEASE_ID` identifies the release commit/image and is not a
   placeholder.
-- Caddy and PostgreSQL image values contain approved immutable digests.
-- Admin, runtime, deploy, Better Auth, rate-limit, Reader cursor, validator,
-  and extractor secrets are all different.
-- On a fresh database, all three PAPERPILOT_EMAIL_* values are configured
-  together. The webhook is exact HTTPS, its bearer secret is independent, and
-  the sender address is valid. Leave all three empty only when an audited,
-  verified demo identity already exists.
+- Caddy and application/service images use approved immutable digests.
+- Better Auth, rate-limit, Reader cursor, validator, and extractor secrets are
+  independent.
+- All three `PAPERPILOT_EMAIL_*` values are configured together on a fresh
+  database. Leave all three empty only when an audited verified demo identity
+  already exists.
 - Validator/extractor toolchain values are real lowercase nonzero SHA-256
   digests of retained provenance manifests, not random startup tokens.
 - Upload bytes and extractor page limits match the UI and release metadata.
 
-The populated .env is ignored by Git, but it is not a secret manager. Restrict
-the VPS account and Docker socket, keep the file out of logs and ordinary
-backups, and rotate credentials after suspected disclosure. Admin/deploy
-credentials are injected only into explicit operations-profile containers;
-web and workers receive only the runtime database credential.
-
-If 172.30.241.0/24 overlaps a host or VPN network, choose an unused private
-subnet and update PAPERPILOT_APP_NETWORK_CIDR,
-PAPERPILOT_CADDY_APP_ADDRESS, and
-PAPERPILOT_CADDY_TRUSTED_PROXY_CIDR together.
+If `172.30.241.0/24` overlaps a host or VPN network, choose an unused private
+subnet and update `PAPERPILOT_APP_NETWORK_CIDR`,
+`PAPERPILOT_CADDY_APP_ADDRESS`, and
+`PAPERPILOT_CADDY_TRUSTED_PROXY_CIDR` together.
 
 Validate interpolation and topology:
 
-    docker compose --env-file .env config --quiet
-    docker compose --env-file .env config
+```sh
+docker compose --env-file .env config --quiet
+docker compose --env-file .env config
+```
 
-Inspect the rendered configuration. Only caddy may publish ports. Web and both
-workers must mount the same private_data volume. Privileged database URLs must
-occur only on operations-profile services.
+Inspect the rendered configuration without copying it into logs or a ticket;
+it contains the database URL. Confirm all of the following:
 
-## 2. Build and initialize private trust and storage
+- Services contain no `postgres` service or local database volume.
+- Only Caddy publishes ports.
+- Web and both workers receive the exact pinned database profile, CA path,
+  local-database prohibition, and supplied Supabase URL.
+- Web and both workers mount the same provider CA file read-only.
+- Web and both workers join `database_egress`.
+- Web and both workers mount the same `private_data` volume.
+- No admin, deploy, service-role, or Supabase API key appears in the rendered
+  runtime environment.
+
+## 2. Build and initialize internal trust and private storage
 
 Build the three repository images:
 
-    docker compose --env-file .env build web validator extractor
+```sh
+docker compose --env-file .env build web validator extractor
+```
 
-Start Caddy, export only its public internal CA plus the PostgreSQL leaf/key,
-initialize private-volume permissions, and start the dedicated database:
+Start Caddy, export its public internal-service CA, and initialize private
+volume permissions:
 
-    docker compose --env-file .env up -d caddy
-    docker compose --env-file .env up internal-tls-export
-    docker compose --env-file .env up storage-init
-    docker compose --env-file .env up -d postgres
-    docker compose --env-file .env ps
+```sh
+docker compose --env-file .env up -d caddy
+docker compose --env-file .env up internal-ca-export
+docker compose --env-file .env up storage-init
+docker compose --env-file .env ps
+```
 
-internal-tls-export never copies Caddy's CA private key into application trust.
-It copies the public root to internal_ca and only the PostgreSQL leaf
-certificate/private key to postgres_tls. Web and workers trust the public root
-through NODE_EXTRA_CA_CERTS. The PostgreSQL image UID/GID must match the values
-reviewed in .env; a mismatch fails startup rather than loosening key
-permissions.
+`internal-ca-export` copies only Caddy's public internal root into
+`internal_ca`; it never copies the CA private key or any database certificate.
+Web and both workers trust that root through `NODE_EXTRA_CA_CERTS` for their
+validator/extractor calls.
 
-## 3. Bootstrap roles, migrate, and close deployment authority
+There is intentionally no database initialization command here. Do not run the
+generic dedicated-cluster bootstrap against Supabase: it assumes a true
+superuser and a dedicated non-default database, neither of which matches this
+managed profile.
 
-These commands intentionally remain separate. Stop at the first failure. Never
-replace this path with Prisma db push, broad grants, or a runtime-owner
-credential.
+## 3. Verify Supabase before starting application traffic
 
-On the first dedicated database, and whenever a retired deploy login must be
-reopened with a newly rotated password:
+From the repository root, the credential-free public preflight is safe:
 
-    docker compose --env-file .env --profile operations run --rm db-bootstrap
-    docker compose --env-file .env --profile operations run --rm db-role-provision
+```sh
+npm run supabase:check
+```
 
-db-bootstrap runs the checked-in provider-admin role contract.
-db-role-provision sets the fixed runtime credential and creates or reopens the
-short-lived paperpilot_deploy login with direct database CONNECT plus
-non-admin, non-inheriting, SET-capable membership in the NOLOGIN migration
-owner. PostgreSQL 16 or newer is required for that exact membership contract.
-This self-hosted bootstrap uses the dedicated image's true superuser and must
-never target a shared cluster.
+Before starting PaperPilot, separately verify through the reviewed provider
+process that:
 
-Deploy the checked-in migration ledger, verify it, and reconcile exact runtime
-grants:
+1. `paperpilot_runtime` exists and has only the intended runtime grants;
+2. the complete migration ledger is installed;
+3. the current release migration sentinel exists;
+4. row security and `search_path` match the application contract; and
+5. an authenticated readiness probe succeeds with the downloaded CA.
 
-    docker compose --env-file .env --profile operations run --rm db-release
-
-Then remove the deploy login's ability to authenticate, revoke its owner
-membership/direct database privilege, terminate its sessions, and verify the
-runtime role:
-
-    docker compose --env-file .env --profile operations run --rm db-retire-deployer
-    docker compose --env-file .env --profile operations run --rm db-verify
-
-Do not start web traffic unless all five operations completed for the exact
-release artifact. Repeat role-provision, release, retire, and verify for later
-migrations with a newly rotated deploy password.
+Do not point the runtime at Supabase while roles or migrations are incomplete.
+Do not fall back to a local database to keep the UI running.
 
 ## 4. Start the supervised topology
 
-    docker compose --env-file .env up -d --build
-    docker compose --env-file .env ps
-    docker compose --env-file .env logs --no-log-prefix --tail=100 web validation-worker extraction-worker
+```sh
+docker compose --env-file .env up -d --build
+docker compose --env-file .env ps
+docker compose --env-file .env logs --no-log-prefix --tail=100 web validation-worker extraction-worker
+```
 
-Expected long-lived services are caddy, web, postgres, clamav, validator,
+Expected long-lived services are Caddy, web, ClamAV, validator,
 validation-worker, extractor, and extraction-worker. The two initialization
-services exit successfully; the database operations profile remains stopped.
-Both workers use restart: unless-stopped and stable IDs. The extractor service
-is single-use and restarts after each admitted extraction by design.
-The worker commands invoke the pinned local tsx binary directly; production
-does not copy or load a developer .env file. ClamAV is healthy only after an
-actual clamd PING succeeds, with a six-minute signature-load start period.
+services exit successfully. There is no PostgreSQL container. Both workers use
+`restart: unless-stopped` and stable IDs. The extractor is single-use and
+restarts after each admitted extraction by design. Worker commands invoke the
+pinned local `tsx` binary directly; production does not load a developer
+`.env` file.
 
 Health surfaces:
 
-    https://PUBLIC_HOST/livez
-    https://PUBLIC_HOST/readyz
-    http://web:3000/livez
-    http://web:3000/readyz
-    https://validator.paperpilot.internal:8443/readyz
-    https://extractor.paperpilot.internal:8443/readyz
+```text
+https://PUBLIC_HOST/livez
+https://PUBLIC_HOST/readyz
+http://web:3000/livez
+http://web:3000/readyz
+https://validator.paperpilot.internal:8443/readyz
+https://extractor.paperpilot.internal:8443/readyz
+```
 
 The last four are Compose-internal. Validator/extractor readiness requires its
-dedicated bearer token; liveness is not a substitute. PostgreSQL pg_isready is
-only a process/startup dependency. PaperPilot /readyz performs the runtime-role
-and migration-sentinel check.
+dedicated bearer token; liveness is not a substitute. PaperPilot `/readyz`
+performs the runtime-role and migration-sentinel check against Supabase.
 
 ## 5. Gate 0 verification
 
-From the repository root, run the checklist commands. Keep the deployment
-environment explicit so Compose does not accidentally read a developer root
-`.env` instead of `deploy/app/.env`:
+From the repository root, keep the deployment environment explicit so Compose
+does not read a developer root `.env`:
 
-    docker compose --env-file deploy/app/.env -f deploy/app/compose.yaml config
-    npm run build
-    npm run demo:preflight -- --phase infrastructure
+```sh
+docker compose --env-file deploy/app/.env -f deploy/app/compose.yaml config
+npm run build
+npm run demo:preflight -- --phase infrastructure
+```
 
 Then, on the exact public HTTPS origin, sign in and upload a previously unseen
 valid bounded PDF. Record:
@@ -205,7 +258,7 @@ valid bounded PDF. Record:
 
 Also exercise a non-PDF, encrypted PDF, oversized file, and unavailable worker.
 None may become Ready, expose another paper, reveal a private path, or
-substitute fixture content. This slice supplies only topology; public
+substitute fixture content. This skeleton supplies only topology; public
 upload/PDF.js behavior and evidence must come from the corresponding
 application and preflight work.
 
@@ -213,25 +266,28 @@ application and preflight work.
 
 Before the first upload and before every release:
 
-- take a tested PostgreSQL physical or custom-format logical backup;
-- take a crash-consistent snapshot of private_data;
+- use Supabase's supported backup/export and restore path for the managed
+  database; do not create a local PaperPilot runtime database as a backup;
+- take a crash-consistent snapshot of `private_data`;
 - retain exact image digests, release commit, environment variable names but
-  not values, Caddy state, and the matching migration ledger; and
-- restore database and private volume together in an isolated candidate
-  environment and run role/migration/runtime verification there.
+  not values, Supabase project/profile identity, CA fingerprint, Caddy state,
+  and the matching migration ledger; and
+- restore the managed-database backup and private-volume snapshot together in
+  an isolated candidate environment, then run migration/runtime verification.
 
 For an application-only rollback whose database contract is explicitly
-backward-compatible, restore the previous immutable PAPERPILOT_APP_IMAGE and
+backward-compatible, restore the previous immutable `PAPERPILOT_APP_IMAGE` and
 release ID, then run:
 
-    docker compose --env-file .env up -d --no-deps web validation-worker extraction-worker
+```sh
+docker compose --env-file .env up -d --no-deps web validation-worker extraction-worker
+```
 
 For a schema-incompatible rollback, stop web/workers, restore the paired
-pre-release PostgreSQL and private_data snapshots, restore matching image
-digests and configuration, re-run exact role/readiness verification, then
-reopen traffic. Never run an ad-hoc down migration against retained evidence
-and never delete a named volume as a rollback technique.
+Supabase and `private_data` snapshots, restore matching image digests and
+configuration, re-run exact role/readiness verification, then reopen traffic.
+Never run an ad-hoc down migration against retained evidence.
 
-Destructive commands such as docker compose down --volumes are intentionally
-absent because they would remove database, uploaded-document, certificate, and
-scanner state.
+Destructive commands such as `docker compose down --volumes` are intentionally
+absent because they would remove uploaded-document, certificate, cache, and
+scanner state even though the managed database is external.

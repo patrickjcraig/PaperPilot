@@ -3,6 +3,7 @@ import "server-only";
 import { Client } from "pg";
 
 import { configuredPaperPilotPostgresConnection } from "@/lib/postgres-client-config.mjs";
+import { PAPERPILOT_SUPABASE_DIRECT_DATABASE_PROFILE } from "@/lib/postgres-connection-url.mjs";
 
 /**
  * The newest migration whose atomic schema effects this release requires.
@@ -121,12 +122,19 @@ export function runtimeReleaseContractFromEnvironment(
   if (!RELEASE_ID_PATTERN.test(releaseId)) return { ok: false };
 
   if (
+    environment.PAPERPILOT_DATABASE_PROFILE
+      !== PAPERPILOT_SUPABASE_DIRECT_DATABASE_PROFILE
+    || environment.PAPERPILOT_ALLOW_LOCAL_PRISMA_DEV === "1"
+  ) {
+    return { ok: false };
+  }
+
+  if (
     production
     && (
       !validProductionOrigin(environment.BETTER_AUTH_URL)
       || !validProductionSecret(environment.BETTER_AUTH_SECRET)
       || environment.PAPERPILOT_ALLOW_INSECURE_ORIGIN === "true"
-      || environment.PAPERPILOT_ALLOW_LOCAL_PRISMA_DEV === "1"
     )
   ) {
     return { ok: false };
@@ -171,11 +179,8 @@ export function createPaperPilotDatabaseReadinessClient(
   const configuredConnection = configuredPaperPilotPostgresConnection(
     environment.DATABASE_URL,
     {
-      allowLocalPrismaDev:
-        environment.PAPERPILOT_ALLOW_LOCAL_PRISMA_DEV === "1",
       caCertificatePath: environment.PAPERPILOT_DATABASE_CA_CERT_PATH,
       databaseProfile: environment.PAPERPILOT_DATABASE_PROFILE,
-      nodeEnvironment: environment.NODE_ENV,
     },
   );
   return new Client({

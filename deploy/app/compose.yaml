@@ -9,10 +9,12 @@ x-paperpilot-build: &paperpilot-build
     TINI_DEBIAN_VERSION: "${PAPERPILOT_APP_TINI_DEBIAN_VERSION:-0.19.0-3+b7}"
 
 x-runtime-database: &runtime-database
-  DATABASE_URL: "postgresql://paperpilot_runtime:${PAPERPILOT_RUNTIME_DATABASE_PASSWORD:?Set a base64url runtime database password}@postgres.paperpilot.internal:5432/${PAPERPILOT_POSTGRES_DB:-paperpilot}?sslmode=verify-full"
-  DATABASE_POOL_MAX: "${PAPERPILOT_DATABASE_POOL_MAX:-10}"
+  DATABASE_URL: "${PAPERPILOT_SUPABASE_DATABASE_URL:?Set the exact approved Supabase direct database URL}"
+  DATABASE_POOL_MAX: "${PAPERPILOT_DATABASE_POOL_MAX:-5}"
   NODE_EXTRA_CA_CERTS: "/etc/paperpilot/trust/internal-root.crt"
   PAPERPILOT_ALLOW_LOCAL_PRISMA_DEV: "0"
+  PAPERPILOT_DATABASE_CA_CERT_PATH: "/etc/paperpilot/supabase/database-ca.pem"
+  PAPERPILOT_DATABASE_PROFILE: "supabase-avmcmmayvnjxrhrmgsdx-direct-v1"
 
 x-private-storage: &private-storage
   PAPERPILOT_UPLOAD_QUARANTINE_ROOT: "/private/paperpilot/quarantine"
@@ -81,11 +83,11 @@ services:
     restart: unless-stopped
     logging: *bounded-logs
 
-  # Caddy's private issuer supplies one CA for service HTTPS and a leaf
-  # certificate for PostgreSQL. This one-shot copies only the public CA into
-  # application trust and the database leaf/key into a database-only volume;
-  # workers never receive the CA private key.
-  internal-tls-export:
+  # Caddy's private issuer supplies one public CA for the internal validator
+  # and extractor HTTPS listeners. This one-shot copies only that public CA
+  # into application trust; it never exports the CA private key or any
+  # database certificate material.
+  internal-ca-export:
     image: "${PAPERPILOT_CADDY_IMAGE:?Set an approved immutable Caddy image reference}"
     depends_on:
       caddy:
@@ -97,79 +99,24 @@ services:
         counter=0
         while [ "$$counter" -lt 60 ]; do
           ca=/caddy-data/caddy/pki/authorities/local/root.crt
-          cert=$$(find /caddy-data/caddy/certificates/local -type f -name 'postgres.paperpilot.internal.crt' -print -quit 2>/dev/null || true)
-          key=$$(find /caddy-data/caddy/certificates/local -type f -name 'postgres.paperpilot.internal.key' -print -quit 2>/dev/null || true)
-          if [ -s "$$ca" ] && [ -n "$$cert" ] && [ -s "$$cert" ] && [ -n "$$key" ] && [ -s "$$key" ]; then
+          if [ -s "$$ca" ]; then
             break
           fi
           counter=$$((counter + 1))
           sleep 1
         done
         test -s "$$ca"
-        test -n "$$cert"
-        test -s "$$cert"
-        test -n "$$key"
-        test -s "$$key"
-        mkdir -p /trust /postgres-tls
+        mkdir -p /trust
         cp "$$ca" /trust/internal-root.crt
-        cp "$$ca" /postgres-tls/internal-root.crt
-        cp "$$cert" /postgres-tls/server.crt
-        cp "$$key" /postgres-tls/server.key
-        chmod 0444 /trust/internal-root.crt /postgres-tls/internal-root.crt
-        chmod 0644 /postgres-tls/server.crt
-        chmod 0600 /postgres-tls/server.key
-        chown "${PAPERPILOT_POSTGRES_UID:-999}:${PAPERPILOT_POSTGRES_GID:-999}" /postgres-tls/server.crt /postgres-tls/server.key /postgres-tls/internal-root.crt
+        chmod 0444 /trust/internal-root.crt
     volumes:
       - caddy_data:/caddy-data:ro
       - internal_ca:/trust
-      - postgres_tls:/postgres-tls
     network_mode: none
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=8m,mode=1777
     restart: "no"
-    logging: *bounded-logs
-
-  postgres:
-    image: "${PAPERPILOT_POSTGRES_IMAGE:?Set an approved immutable PostgreSQL 16+ image reference}"
-    depends_on:
-      internal-tls-export:
-        condition: service_completed_successfully
-    environment:
-      POSTGRES_DB: "${PAPERPILOT_POSTGRES_DB:-paperpilot}"
-      POSTGRES_USER: "${PAPERPILOT_POSTGRES_ADMIN_USER:-paperpilot_admin}"
-      POSTGRES_PASSWORD: "${PAPERPILOT_POSTGRES_ADMIN_PASSWORD:?Set the dedicated-cluster administrator password}"
-      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256 --auth-local=peer"
-      PGDATA: "/var/lib/postgresql/data/pgdata"
-    command:
-      - postgres
-      - -c
-      - ssl=on
-      - -c
-      - ssl_cert_file=/run/paperpilot-postgres-tls/server.crt
-      - -c
-      - ssl_key_file=/run/paperpilot-postgres-tls/server.key
-      - -c
-      - ssl_ca_file=/run/paperpilot-postgres-tls/internal-root.crt
-      - -c
-      - password_encryption=scram-sha-256
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - postgres_tls:/run/paperpilot-postgres-tls:ro
-    networks:
-      database:
-        aliases:
-          - postgres.paperpilot.internal
-    shm_size: 256m
-    security_opt:
-      - no-new-privileges:true
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready --host=127.0.0.1 --port=5432 --username=\"$$POSTGRES_USER\" --dbname=\"$$POSTGRES_DB\""]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 20s
-    restart: unless-stopped
     logging: *bounded-logs
 
   storage-init:
@@ -194,11 +141,9 @@ services:
     image: "${PAPERPILOT_APP_IMAGE:-paperpilot/app:local}"
     build: *paperpilot-build
     depends_on:
-      postgres:
-        condition: service_healthy
       storage-init:
         condition: service_completed_successfully
-      internal-tls-export:
+      internal-ca-export:
         condition: service_completed_successfully
     environment:
       <<:
@@ -229,9 +174,10 @@ services:
       - private_data:/private/paperpilot
       - next_cache:/srv/paperpilot/.next/cache
       - internal_ca:/etc/paperpilot/trust:ro
+      - "${PAPERPILOT_SUPABASE_DATABASE_CA_CERT_HOST_PATH:?Set the absolute host path to the Supabase database CA}:/etc/paperpilot/supabase/database-ca.pem:ro"
     networks:
       - app
-      - database
+      - database_egress
       - web_egress
     <<: *app-hardening
     pids_limit: 256
@@ -350,14 +296,12 @@ services:
       - --conditions=react-server
       - src/workers/document-validation-worker.ts
     depends_on:
-      postgres:
-        condition: service_healthy
       validator:
         condition: service_healthy
         restart: true
       storage-init:
         condition: service_completed_successfully
-      internal-tls-export:
+      internal-ca-export:
         condition: service_completed_successfully
     environment:
       <<:
@@ -377,8 +321,9 @@ services:
     volumes:
       - private_data:/private/paperpilot
       - internal_ca:/etc/paperpilot/trust:ro
+      - "${PAPERPILOT_SUPABASE_DATABASE_CA_CERT_HOST_PATH:?Set the absolute host path to the Supabase database CA}:/etc/paperpilot/supabase/database-ca.pem:ro"
     networks:
-      - database
+      - database_egress
       - validation
     <<: *app-hardening
     healthcheck:
@@ -468,14 +413,12 @@ services:
       - --conditions=react-server
       - src/workers/document-extraction-worker.ts
     depends_on:
-      postgres:
-        condition: service_healthy
       extractor:
         condition: service_healthy
         restart: true
       storage-init:
         condition: service_completed_successfully
-      internal-tls-export:
+      internal-ca-export:
         condition: service_completed_successfully
     environment:
       <<:
@@ -495,8 +438,9 @@ services:
     volumes:
       - private_data:/private/paperpilot
       - internal_ca:/etc/paperpilot/trust:ro
+      - "${PAPERPILOT_SUPABASE_DATABASE_CA_CERT_HOST_PATH:?Set the absolute host path to the Supabase database CA}:/etc/paperpilot/supabase/database-ca.pem:ro"
     networks:
-      - database
+      - database_egress
       - extraction
     <<: *app-hardening
     healthcheck:
@@ -512,157 +456,6 @@ services:
     restart: unless-stopped
     logging: *bounded-logs
 
-  # Operations are explicit, short-lived profile services. Their privileged
-  # URLs never enter web or worker environments.
-  db-bootstrap:
-    profiles: ["operations"]
-    image: "${PAPERPILOT_APP_IMAGE:-paperpilot/app:local}"
-    build: *paperpilot-build
-    depends_on:
-      postgres:
-        condition: service_healthy
-      internal-tls-export:
-        condition: service_completed_successfully
-    environment:
-      NODE_ENV: production
-      NODE_EXTRA_CA_CERTS: /etc/paperpilot/trust/internal-root.crt
-      PAPERPILOT_ADMIN_DATABASE_URL: "postgresql://${PAPERPILOT_POSTGRES_ADMIN_USER:-paperpilot_admin}:${PAPERPILOT_POSTGRES_ADMIN_PASSWORD:?Set the dedicated-cluster administrator password}@postgres.paperpilot.internal:5432/${PAPERPILOT_POSTGRES_DB:-paperpilot}?sslmode=verify-full"
-    command: ["npm", "run", "db:roles:bootstrap"]
-    volumes:
-      - internal_ca:/etc/paperpilot/trust:ro
-    networks:
-      - database
-    <<: *app-hardening
-    healthcheck:
-      disable: true
-    restart: "no"
-    logging: *bounded-logs
-
-  db-role-provision:
-    profiles: ["operations"]
-    image: "${PAPERPILOT_POSTGRES_IMAGE:?Set an approved immutable PostgreSQL 16+ image reference}"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      internal-tls-export:
-        condition: service_completed_successfully
-    environment:
-      PGHOST: postgres.paperpilot.internal
-      PGPORT: "5432"
-      PGDATABASE: "${PAPERPILOT_POSTGRES_DB:-paperpilot}"
-      PGUSER: "${PAPERPILOT_POSTGRES_ADMIN_USER:-paperpilot_admin}"
-      PGPASSWORD: "${PAPERPILOT_POSTGRES_ADMIN_PASSWORD:?Set the dedicated-cluster administrator password}"
-      PGSSLMODE: verify-full
-      PGSSLROOTCERT: /etc/paperpilot/trust/internal-root.crt
-      PAPERPILOT_RUNTIME_DATABASE_PASSWORD: "${PAPERPILOT_RUNTIME_DATABASE_PASSWORD:?Set a base64url runtime database password}"
-      PAPERPILOT_DEPLOY_DATABASE_PASSWORD: "${PAPERPILOT_DEPLOY_DATABASE_PASSWORD:?Set a base64url short-lived deploy password}"
-    entrypoint: ["/bin/sh", "-ec"]
-    command:
-      - |
-        if ! psql --tuples-only --no-align --command="SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'paperpilot_deploy'" | grep -qx 1; then
-          psql --set=ON_ERROR_STOP=1 --command="CREATE ROLE paperpilot_deploy LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS"
-        fi
-        psql --set=ON_ERROR_STOP=1 \
-          --set=runtime_password="$$PAPERPILOT_RUNTIME_DATABASE_PASSWORD" \
-          --set=deploy_password="$$PAPERPILOT_DEPLOY_DATABASE_PASSWORD" \
-          --set=database_name="$$PGDATABASE" <<'SQL'
-        ALTER ROLE paperpilot_runtime LOGIN PASSWORD :'runtime_password';
-        ALTER ROLE paperpilot_deploy LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD :'deploy_password';
-        GRANT CONNECT ON DATABASE :"database_name" TO paperpilot_deploy;
-        GRANT paperpilot_migration_owner TO paperpilot_deploy WITH INHERIT FALSE, SET TRUE, ADMIN FALSE;
-        SQL
-    volumes:
-      - internal_ca:/etc/paperpilot/trust:ro
-    networks:
-      - database
-    read_only: true
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-    tmpfs:
-      - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
-    restart: "no"
-    logging: *bounded-logs
-
-  db-release:
-    profiles: ["operations"]
-    image: "${PAPERPILOT_APP_IMAGE:-paperpilot/app:local}"
-    build: *paperpilot-build
-    depends_on:
-      postgres:
-        condition: service_healthy
-      internal-tls-export:
-        condition: service_completed_successfully
-    environment:
-      NODE_ENV: production
-      NODE_EXTRA_CA_CERTS: /etc/paperpilot/trust/internal-root.crt
-      PAPERPILOT_DEPLOY_DATABASE_URL: "postgresql://paperpilot_deploy:${PAPERPILOT_DEPLOY_DATABASE_PASSWORD:?Set a base64url short-lived deploy password}@postgres.paperpilot.internal:5432/${PAPERPILOT_POSTGRES_DB:-paperpilot}?sslmode=verify-full"
-      PAPERPILOT_MIGRATION_AUDIT_DATABASE_URL: "postgresql://paperpilot_deploy:${PAPERPILOT_DEPLOY_DATABASE_PASSWORD:?Set a base64url short-lived deploy password}@postgres.paperpilot.internal:5432/${PAPERPILOT_POSTGRES_DB:-paperpilot}?sslmode=verify-full"
-    entrypoint: ["/usr/bin/tini", "--", "/bin/sh", "-ec"]
-    command:
-      - npm run db:deploy && npm run db:migrations:verify && npm run db:roles:reconcile
-    volumes:
-      - internal_ca:/etc/paperpilot/trust:ro
-    networks:
-      - database
-    <<: *app-hardening
-    healthcheck:
-      disable: true
-    restart: "no"
-    logging: *bounded-logs
-
-  db-retire-deployer:
-    profiles: ["operations"]
-    image: "${PAPERPILOT_APP_IMAGE:-paperpilot/app:local}"
-    build: *paperpilot-build
-    depends_on:
-      postgres:
-        condition: service_healthy
-      internal-tls-export:
-        condition: service_completed_successfully
-    environment:
-      NODE_ENV: production
-      NODE_EXTRA_CA_CERTS: /etc/paperpilot/trust/internal-root.crt
-      PAPERPILOT_ADMIN_DATABASE_URL: "postgresql://${PAPERPILOT_POSTGRES_ADMIN_USER:-paperpilot_admin}:${PAPERPILOT_POSTGRES_ADMIN_PASSWORD:?Set the dedicated-cluster administrator password}@postgres.paperpilot.internal:5432/${PAPERPILOT_POSTGRES_DB:-paperpilot}?sslmode=verify-full"
-      PAPERPILOT_DEPLOY_LOGIN_ROLE: paperpilot_deploy
-    command: ["npm", "run", "db:roles:retire-deployer"]
-    volumes:
-      - internal_ca:/etc/paperpilot/trust:ro
-    networks:
-      - database
-    <<: *app-hardening
-    healthcheck:
-      disable: true
-    restart: "no"
-    logging: *bounded-logs
-
-  db-verify:
-    profiles: ["operations"]
-    image: "${PAPERPILOT_APP_IMAGE:-paperpilot/app:local}"
-    build: *paperpilot-build
-    depends_on:
-      postgres:
-        condition: service_healthy
-      internal-tls-export:
-        condition: service_completed_successfully
-    environment:
-      NODE_ENV: production
-      NODE_EXTRA_CA_CERTS: /etc/paperpilot/trust/internal-root.crt
-      PAPERPILOT_ROLE_AUDIT_DATABASE_URL: "postgresql://paperpilot_runtime:${PAPERPILOT_RUNTIME_DATABASE_PASSWORD:?Set a base64url runtime database password}@postgres.paperpilot.internal:5432/${PAPERPILOT_POSTGRES_DB:-paperpilot}?sslmode=verify-full"
-    entrypoint: ["/usr/bin/tini", "--", "/bin/sh", "-ec"]
-    command:
-      - npm run db:roles:verify && npm run db:roles:smoke
-    volumes:
-      - internal_ca:/etc/paperpilot/trust:ro
-    networks:
-      - database
-    <<: *app-hardening
-    healthcheck:
-      disable: true
-    restart: "no"
-    logging: *bounded-logs
-
 networks:
   edge: {}
   app:
@@ -670,16 +463,18 @@ networks:
     ipam:
       config:
         - subnet: "${PAPERPILOT_APP_NETWORK_CIDR:-172.30.241.0/24}"
-  database:
-    internal: true
+  # Web and the two database-backed workers need outbound DNS/TCP reachability
+  # to db.avmcmmayvnjxrhrmgsdx.supabase.co:5432. A Compose network expresses
+  # that intent but is not a destination allowlist; enforce one at the host or
+  # egress-proxy boundary when the deployment platform supports it.
+  database_egress: {}
   validation:
     internal: true
   extraction:
     internal: true
   scan:
     internal: true
-  # Only web may need controlled HTTPS egress for the configured transactional
-  # email webhook. Workers remain restricted to their internal networks.
+  # Web may separately need controlled HTTPS egress for transactional email.
   web_egress: {}
   signature_updates: {}
 
@@ -687,8 +482,6 @@ volumes:
   caddy_data: {}
   caddy_config: {}
   internal_ca: {}
-  postgres_tls: {}
-  postgres_data: {}
   private_data: {}
   next_cache: {}
   clamav_signatures: {}

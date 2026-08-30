@@ -1,5 +1,14 @@
 # PostgreSQL least-privilege deployment
 
+> **Superseded execution path (2026-08-29):** this document preserves the
+> reviewed dedicated-cluster authority design as architecture evidence. The
+> approved live target is now only Supabase project `avmcmmayvnjxrhrmgsdx`.
+> Every `db:deploy`, `db:roles:*`, `db:migrations:verify`, and
+> `db:authority:snapshot` package command is intentionally disabled until an
+> equivalent Supabase-specific role, CA, migration, and verification workflow
+> is implemented and reviewed. None of the commands below may be run against
+> the stopped local archive.
+
 PaperPilot's production database contract uses two fixed roles in one dedicated
 PostgreSQL cluster per environment:
 
@@ -197,12 +206,14 @@ checked-in Node wrappers validate destinations before I/O and do not print URLs.
    managed IAM/proxy identity cannot be retired through PostgreSQL, disable it
    in the provider control plane and use provider-admin catalog/session controls
    to prove the same zero-session result before continuing.
-7. Provision runtime authentication through the provider secret/IAM control
+7. After the Supabase-specific replacement is implemented and reviewed,
+   provision runtime authentication through the provider secret/IAM control
    plane. Prefer short-lived IAM/certificates; otherwise use a unique high-
    entropy password. Inject `PAPERPILOT_ROLE_AUDIT_DATABASE_URL` as an explicit
    `paperpilot_runtime` URL and run:
 
    ```powershell
+   # Future reviewed Supabase workflow; these commands currently fail closed.
    npm run db:roles:verify
    npm run db:roles:smoke
    ```
@@ -216,10 +227,10 @@ checked-in Node wrappers validate destinations before I/O and do not print URLs.
    pseudonymization, and all six helper calls inside a transaction that is
    always rolled back.
 8. Configure every web process and worker with `DATABASE_URL` authenticating
-   exactly as `paperpilot_runtime`, even when PostgreSQL is reached through a
-   localhost proxy/sidecar. The only non-runtime exception is the explicit
-   non-production local Prisma Dev template database opt-in. Start workloads
-   only after both runtime proofs pass.
+   exactly as `paperpilot_runtime` against the approved direct Supabase host.
+   Loopback proxies, sidecars, generic PostgreSQL targets, and local Prisma Dev
+   are not application modes. Start workloads only after both runtime proofs
+   pass.
 
 Repeat the release-candidate snapshot and production steps for every schema
 release. A new object has no runtime authority until the exact manifest and
@@ -229,7 +240,8 @@ the Prisma ledger itself is unchanged.
 Runtime, deploy, admin, and audit URLs require an explicit user, port, and
 database. The closed parsers prevent ambient `PGUSER`/`PGPORT`/`PGDATABASE`,
 host/service redirects, duplicate parameters, and query overrides from changing
-the reviewed destination. Non-loopback URLs require `sslmode=verify-full`.
+the reviewed destination. The active application and administration boundaries
+require the exact approved Supabase direct host and `sslmode=verify-full`.
 
 Some managed products do not expose the powers this bootstrap needs: a true
 superuser for generic PostgreSQL 16+ role creation and idempotent reruns, role

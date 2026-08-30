@@ -8,11 +8,11 @@ import {
 
 test("deployment URLs are closed and add only the exact owner startup policy", () => {
   const connectionString = validatedDeployConnectionUrl(
-    "postgresql://ephemeral_deployer:secret@db.example.test:5432/paperpilot?sslmode=verify-full",
+    "postgresql://ephemeral_deployer:secret@db.avmcmmayvnjxrhrmgsdx.supabase.co:5432/postgres?sslmode=verify-full",
   );
   const parsed = new URL(connectionString);
   assert.equal(parsed.username, "ephemeral_deployer");
-  assert.equal(parsed.pathname, "/paperpilot");
+  assert.equal(parsed.pathname, "/postgres");
   assert.equal(parsed.searchParams.get("sslmode"), "verify-full");
   assert.equal(
     parsed.searchParams.get("options"),
@@ -35,11 +35,11 @@ test("deployment URLs are closed and add only the exact owner startup policy", (
     () => validatedDeployConnectionUrl(
       "postgresql://ephemeral_deployer@127.0.0.1:5432/postgres?sslmode=disable",
     ),
-    /dedicated PaperPilot database/,
+    /approved PaperPilot Supabase direct database/,
   );
   assert.throws(
     () => validatedDeployConnectionUrl(
-      "postgresql://ephemeral_deployer@db.example.test:5432/paperpilot?sslmode=verify-full&options=-c%20role%3Dadmin",
+      "postgresql://ephemeral_deployer@db.avmcmmayvnjxrhrmgsdx.supabase.co:5432/postgres?sslmode=verify-full&options=-c%20role%3Dadmin",
     ),
     /unsupported connection parameter/,
   );
@@ -48,14 +48,20 @@ test("deployment URLs are closed and add only the exact owner startup policy", (
 test("admin URLs reject runtime credentials and unsafe destinations before I/O", () => {
   assert.equal(
     validatedAdminConnectionUrl(
-      "postgresql://provider_admin@db.example.test:5432/paperpilot?sslmode=verify-full",
+      "postgresql://provider_admin@db.avmcmmayvnjxrhrmgsdx.supabase.co:5432/postgres?sslmode=verify-full",
     ),
-    "postgresql://provider_admin@db.example.test:5432/paperpilot?sslmode=verify-full",
+    "postgresql://provider_admin@db.avmcmmayvnjxrhrmgsdx.supabase.co:5432/postgres?sslmode=verify-full",
   );
   assert.throws(
     () => validatedAdminConnectionUrl(
       "postgresql://paperpilot_runtime@127.0.0.1:5432/paperpilot?sslmode=disable",
     ),
     /must not authenticate as paperpilot_runtime/,
+  );
+  assert.throws(
+    () => validatedAdminConnectionUrl(
+      "postgresql://provider_admin@db.example.test:5432/postgres?sslmode=verify-full",
+    ),
+    /approved PaperPilot Supabase direct database/,
   );
 });

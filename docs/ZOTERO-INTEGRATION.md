@@ -153,13 +153,17 @@ Local or production-shaped setup requires a registered Zotero OAuth 1.0a applica
 - `PAPERPILOT_ZOTERO_ATTACHMENT_BLOB_ALLOWLIST`, a required non-empty JSON list for the attachment worker; use either an exact default-port public HTTPS origin or a path-style S3 origin plus one exact bucket
 - optional `PAPERPILOT_ZOTERO_ATTACHMENT_WORKER_ID` for a stable, bounded attachment-worker identity
 
-Apply/generate the database artifacts and start the application:
+After the reviewed Supabase workflow has provisioned the exact runtime role and
+migrations, generate the offline client and start the application through the
+Supabase-only preflight:
 
 ```powershell
-npm run db:deploy
 npm run db:generate
 npm run dev -- --hostname 127.0.0.1
 ```
+
+Until that remote workflow exists, the web and worker commands fail before
+spawning. Do not use the retired local archive to bring the connector online.
 
 In a separate supervised process, using the same database and credential keyring configuration, run:
 
@@ -205,18 +209,25 @@ Zotero `/fulltext` is useful for fast search/bootstrap, but it is not citation-g
 
 ## Metadata and attachment verification
 
-The implemented connector paths have unit and PostgreSQL integration coverage for provider contracts, discovery/selection authorization and replay, stable atomic metadata commits, coalescing, persistent backoff, tombstones that preserve canonical evidence, attachment policy/command admission, terminal-attempt retries, exact download authority, redirect/credential stripping, checksum/size/PDF identity, database clock skew, cancellation, cleanup dead-lettering/eventual quota release, and shared validation/extraction lifecycle projection. Run the complete project gate with the configured development database available:
+The implemented connector paths have unit and retained PostgreSQL integration
+contracts for provider behavior, discovery/selection authorization and replay,
+stable atomic metadata commits, coalescing, persistent backoff, tombstones that
+preserve canonical evidence, attachment admission, retries, download authority,
+checksum/size/PDF identity, cancellation, cleanup, and shared validation and
+extraction lifecycle projection. Run the credential-free repository gate:
 
 ```powershell
+npm run db:local:freeze-check
 npm test
-npm run test:integration
 npm run lint
 npm run typecheck
-npx prisma validate
-npx prisma migrate status
-npx prisma migrate diff --from-migrations prisma/migrations --to-schema prisma/schema.prisma --exit-code
+npm run db:generate
 npm run build
 ```
+
+Database integration tests and Prisma/database administration commands remain
+disabled until they target an isolated remote Supabase test environment through
+the reviewed provider workflow.
 
 The following remain production release gates, not claims made by the local implementation:
 

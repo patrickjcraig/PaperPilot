@@ -104,7 +104,7 @@ test("the Supabase CA loader accepts only bounded regular CA-only PEM files", ()
   });
 });
 
-test("CA trust cannot be omitted from Supabase or attached to another profile", () => {
+test("CA trust and the approved profile are mandatory for every application client", () => {
   const supabaseUrl =
     "postgresql://paperpilot_runtime:unit@db.avmcmmayvnjxrhrmgsdx.supabase.co:5432/postgres?sslmode=verify-full";
   assert.throws(
@@ -118,12 +118,13 @@ test("CA trust cannot be omitted from Supabase or attached to another profile", 
       "postgresql://paperpilot_runtime:unit@db.example.test:5432/paperpilot?sslmode=verify-full",
       { caCertificatePath: "C:\\private\\supabase-ca.pem" },
     ),
-    /allowed only with the approved Supabase profile/,
+    /must select the approved PaperPilot Supabase profile/,
   );
-
-  const generic = configuredPaperPilotPostgresConnection(
-    "postgresql://paperpilot_runtime:unit@db.example.test:5432/paperpilot?sslmode=verify-full",
+  assert.throws(
+    () => configuredPaperPilotPostgresConnection(
+      "postgresql://postgres:postgres@127.0.0.1:51218/template1?sslmode=disable",
+      { databaseProfile: "" },
+    ),
+    /must select the approved PaperPilot Supabase profile/,
   );
-  assert.equal(generic.clientConfig.connectionString.endsWith("sslmode=verify-full"), true);
-  assert.equal(generic.clientConfig.ssl, undefined);
 });
