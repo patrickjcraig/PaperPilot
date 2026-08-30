@@ -59,6 +59,7 @@ These capabilities may provide context for the demo, but they must not be repres
 - Verification performed: JavaScript syntax; lint; TypeScript; root tests **701/701**; production build; `npm audit` with zero known vulnerabilities; anonymous HTTP 200 checks; successful Pages workflow; and public WebMCP read/stage callback receipts.
 - Public implementation commit: [`c99a42dba2c4fb1c746c1146e335e665d6624c93`](https://github.com/patrickjcraig/PaperPilot/commit/c99a42dba2c4fb1c746c1146e335e665d6624c93).
 - Public release-evidence commit: [`503cfee0ee714428dc466ce29b6a2dff85881ad8`](https://github.com/patrickjcraig/PaperPilot/commit/503cfee0ee714428dc466ce29b6a2dff85881ad8).
+- Successful GitHub Pages deployment: [workflow run 33326383034](https://github.com/patrickjcraig/PaperPilot/actions/runs/33326383034).
 
 ## Entry template
 

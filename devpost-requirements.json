@@ -18,7 +18,10 @@
   "publicArtifacts": {
     "liveUrl": "https://patrickjcraig.github.io/PaperPilot/webmcp/",
     "repositoryUrl": "https://github.com/patrickjcraig/PaperPilot",
-    "demoVideoUrl": ""
+    "demoVideoUrl": "",
+    "releaseCommit": "c99a42dba2c4fb1c746c1146e335e665d6624c93",
+    "releaseProofPath": "docs/release/WEBMCP-LIVE-PROOF.md",
+    "demoVideoPlanPath": "docs/DEMO-VIDEO-PLAN.md"
   },
   "judgeExperience": {
     "instructionsPath": "docs/DEVPOST-JUDGE-GUIDE.md",
@@ -39,7 +42,7 @@
       "stage-structured-mentor-explanation"
     ],
     "testedClients": [
-      "OpenAI Codex desktop 26.820.10647.0 — in-app browser WebMCP capability on Windows (tested 2026-08-30)"
+      "OpenAI Codex desktop 26.820.10647.0 — in-app browser WebMCP capability, Chromium 151.0.7922.170, on Windows (tested 2026-08-30)"
     ]
   },
   "manualVerifications": {

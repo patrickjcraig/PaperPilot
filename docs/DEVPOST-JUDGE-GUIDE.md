@@ -22,7 +22,7 @@ A paper may be rehearsed for timing, but the same implementation must work with 
 
 ## Supported WebMCP clients
 
-Only clients and versions recorded under `judgeExperience.testedClients` in [devpost-requirements.json](../devpost-requirements.json) are claimed as tested. The current released exact-text flow was tested in **OpenAI Codex desktop 26.820.10647.0**, using its in-app browser WebMCP capability on Windows, on 2026-08-30. No other client is implied.
+Only clients and versions recorded under `judgeExperience.testedClients` in [devpost-requirements.json](../devpost-requirements.json) are claimed as tested. The current released exact-text flow was tested in **OpenAI Codex desktop 26.820.10647.0**, using its in-app browser WebMCP capability with Chromium 151.0.7922.170 on Windows, on 2026-08-30. No other client is implied.
 
 ## Current public flow under three minutes
 
@@ -108,7 +108,7 @@ Before submission, add the following values here and to the requirements manifes
 - Public YouTube demo: **pending**
 - Release commit SHA: `c99a42dba2c4fb1c746c1146e335e665d6624c93`
 - Release tag: **pending**
-- Tested WebMCP client(s) and versions: **OpenAI Codex desktop 26.820.10647.0 in-app browser WebMCP capability on Windows, 2026-08-30**
-- Tested PDF corpus and outcomes: **pending**
+- Tested WebMCP client(s) and versions: **OpenAI Codex desktop 26.820.10647.0 in-app browser WebMCP capability, Chromium 151.0.7922.170, on Windows, 2026-08-30**
+- Tested PDF corpus and outcomes: **one unrelated 15-page born-digital paper completed page-1 render, 212-word freeze, live read, and live stage; the required multi-PDF/visual/unsupported matrix remains pending**
 - Keyboard and screen-reader verification: **pending**
 - Last incognito judge-flow verification (UTC): **pending**
