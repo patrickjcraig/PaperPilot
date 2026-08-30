@@ -6,7 +6,7 @@ The canonical product contract is the guided [Scope](hackathon-build/scope.md) a
 
 ## Readiness note
 
-This is the release target, not a claim that every step is implemented today. PaperPilot already has secure PDF intake, an authenticated Reader foundation, provenance and review primitives, and an earlier capability-detected WebMCP adapter. The final scientific-mentor Reader tools, text-and-figure selection experience, and hosted end-to-end judge flow still require implementation and release verification. [DEVPOST-COMPLIANCE.md](DEVPOST-COMPLIANCE.md) and the fail-closed `npm run devpost:check` verdict are authoritative for readiness.
+The public exact-text vertical slice is implemented at <https://patrickjcraig.github.io/PaperPilot/webmcp/>. It loads an arbitrary born-digital PDF in the browser, freezes a bounded passage, registers `paperpilot.read_sources` and `paperpilot.stage_explanation`, stages an unsaved mentor proposal, and shows page-observed callback provenance. The credentialed Supabase service, figure/region/synthesis modes, complete failure matrix, screen-reader verification, and final submission evidence still require implementation or verification. [DEVPOST-COMPLIANCE.md](DEVPOST-COMPLIANCE.md) and the fail-closed `npm run devpost:check` verdict remain authoritative.
 
 ## Supported PDF contract
 
@@ -22,27 +22,27 @@ A paper may be rehearsed for timing, but the same implementation must work with 
 
 ## Supported WebMCP clients
 
-Only clients and versions recorded under `judgeExperience.testedClients` in [devpost-requirements.json](../devpost-requirements.json) are claimed as tested. That list remains empty until the released public HTTPS build completes the real judge flow in each declared client.
+Only clients and versions recorded under `judgeExperience.testedClients` in [devpost-requirements.json](../devpost-requirements.json) are claimed as tested. The current released exact-text flow was tested in **OpenAI Codex desktop 26.820.10647.0**, using its in-app browser WebMCP capability on Windows, on 2026-08-30. No other client is implied.
 
-## Target flow under three minutes
+## Current public flow under three minutes
 
-1. Sign in to the public HTTPS app and upload a real PDF that is not bundled with or preconfigured in PaperPilot.
-2. Open Reader, highlight a difficult term, equation, or short passage, and inspect the sharing preview. The preview identifies the paper, page, exact or derived authority, and bounded context before anything is shared.
-3. Ask the browser agent to explain the selection at an undergraduate level. Show **Tools ready for your browser mentor**, then the PaperPilot-observed **Selection read through WebMCP** and **Explanation received through WebMCP** events.
-4. Review the structured mentor response beside the frozen source. Open the evidence trail and distinguish what came from the paper, what was derived from the page image, what the mentor added as background, and any declared external citations.
-5. On a figure-rich page, select a whole figure and then a region. Request a screen-reader-friendly description and an explanation of what the selected visual detail means.
-6. Choose **Save to notes**, refresh, and reopen the note at its original text or visual source. The mentor response remains unchanged; an optional **My takeaway** remains separately labeled as reader-authored.
+1. Open the anonymous HTTPS demo and upload a real born-digital PDF that is not bundled with or preconfigured in PaperPilot.
+2. Highlight a difficult word, equation, or passage—or use the generic first-readable-passage shortcut—and freeze the source. Inspect the page, quote digest, word count, and bounded sharing prompt before any tool reads it.
+3. Ask the browser agent to use PaperPilot. Show **2 tools ready for your mentor**, then the PaperPilot-observed **WebMCP read callback observed** and **WebMCP stage callback observed** events.
+4. Review the structured mentor response beside the frozen paper source. Distinguish the paper connection, mentor background knowledge, external sources, and limitations.
+5. Show that WebMCP exposes no Save, Discard, Approve, or Verify action. The reader may add a separately labeled **My takeaway** and use the ordinary **Save to this browser** or **Discard proposal** UI.
+6. Download the JSON provenance receipt and close on the public repository, MIT license, release URL, and the next slice.
 
-The extended proof also exercises **Connect ideas** with at least two visible selections from the same paper. A successful result explains a real relationship among the frozen items or says that the supplied evidence does not support one. It is never presented as whole-paper or cross-paper synthesis.
+The extended product target still includes whole-figure and rectangular-region explanations, bounded same-paper synthesis, durable authenticated notes, refresh/reopen proof, and nonvisual figure access. Those modes must not be shown or described as released until their separate evidence gates pass.
 
 ## Required WebMCP behavior
 
-The signed-in Reader registers actual tools through `document.modelContext.registerTool`. Final names and schemas are governed by the technical Spec, but the release must provide two closed capabilities:
+The public Reader registers actual tools through `document.modelContext.registerTool`. The released names are `paperpilot.read_sources` and `paperpilot.stage_explanation`, with two closed capabilities:
 
 - **Read the bounded active PDF source** — return only the frozen text selection, rendered page/figure/region, or visible same-paper source set and its provenance. Do not expose the rest of the library or another user's content.
 - **Stage one structured mentor explanation** — accept one validated response with the approved explanation sections, authority declarations, citations, uncertainty, and source binding for private human review.
 
-No browser-agent tool may save, accept, discard, approve, or verify a response. Only the authenticated reader's visible **Save to notes** or **Discard** action records that human decision.
+No browser-agent tool may save, accept, discard, approve, or verify a response. Only the reader's visible **Save to this browser** or **Discard proposal** action records that human decision in the current slice; durable authenticated decisions remain future service work.
 
 Registration is not invocation. **Tools ready** means PaperPilot made the tools available. **Selection read through WebMCP** appears only after PaperPilot observes the bounded read callback. **Explanation received through WebMCP** appears only after PaperPilot accepts a valid stage callback. PaperPilot does not claim access to the browser agent's private reasoning, discovery process, or model identity.
 
@@ -55,7 +55,7 @@ The trail is designed to show:
 - whether quoted wording was exact embedded text or derived from a page image;
 - which Reader WebMCP callbacks PaperPilot actually observed;
 - the unchanged structured mentor proposal and client-declared external citations;
-- the authenticated reader's separate **My takeaway**, when present; and
+- the reader's separate **My takeaway**, when present; and
 - the reader's explicit save or discard decision and PaperPilot receipt time.
 
 The trail does not prove that the explanation is true, that a citation is authoritative, that a digest establishes authorship, or that an agent used the returned context correctly. Those boundaries must remain visible in the interface and demo narration.
@@ -82,7 +82,7 @@ If a local review path is offered, its exact persistent label is **Local review�
 
 ## Judge access
 
-The final live URL must either work anonymously or include reliable judge credentials in Devpost's private testing-instructions field. Never place credentials, tokens, entrant residence, or other private form data in this repository. The public demonstration must not depend on the owner's existing browser session.
+The current live URL works anonymously at <https://patrickjcraig.github.io/PaperPilot/webmcp/> and requires no owner session or judge credentials. Never place credentials, tokens, entrant residence, or other private form data in this repository. Any later authenticated judge path must place credentials only in Devpost's private testing-instructions field.
 
 ## Local verification
 
@@ -97,18 +97,18 @@ npm run lint
 npm run build
 ```
 
-The browser-local demo at `/` is useful for exploring legacy product surfaces but is not the judged WebMCP proof path. The release proof uses the authenticated Reader and its durable PostgreSQL-backed source, proposal, evidence, and human-decision records.
+The browser-local demo at `/` is useful for exploring legacy product surfaces but is not the judged WebMCP proof path. The current proof path is the deployed `/webmcp/` slice and its recorded public callback receipts. The authenticated PostgreSQL/Supabase Reader remains the durable-service target.
 
 ## Final release record
 
 Before submission, add the following values here and to the requirements manifest:
 
-- Live URL: **pending**
-- Public repository: **pending**
+- Live URL: <https://patrickjcraig.github.io/PaperPilot/webmcp/>
+- Public repository: <https://github.com/patrickjcraig/PaperPilot>
 - Public YouTube demo: **pending**
-- Release commit SHA: **pending**
+- Release commit SHA: `c99a42dba2c4fb1c746c1146e335e665d6624c93`
 - Release tag: **pending**
-- Tested WebMCP client(s) and versions: **pending**
+- Tested WebMCP client(s) and versions: **OpenAI Codex desktop 26.820.10647.0 in-app browser WebMCP capability on Windows, 2026-08-30**
 - Tested PDF corpus and outcomes: **pending**
 - Keyboard and screen-reader verification: **pending**
 - Last incognito judge-flow verification (UTC): **pending**

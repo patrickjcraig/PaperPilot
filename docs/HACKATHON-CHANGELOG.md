@@ -49,6 +49,17 @@ These capabilities may provide context for the demo, but they must not be repres
 - Verification performed: JSON/syntax/lint/readiness audit recorded during the PRD handoff.
 - Public commit: [`fe56264831f9d4fc55c83e95d593b26937d4cfd1`](https://github.com/patrickjcraig/PaperPilot/commit/fe56264831f9d4fc55c83e95d593b26937d4cfd1) (initial public import).
 
+### 2026-08-30 — Public arbitrary-PDF WebMCP mentor slice
+
+- Added an anonymous browser-local Reader that accepts a replaceable born-digital PDF, renders page 1, extracts embedded text without paper-specific branching, and freezes one exact bounded passage with PDF, quote, and source-set SHA-256 digests.
+- Registered `paperpilot.read_sources` and `paperpilot.stage_explanation` through `document.modelContext.registerTool`. The former returns only the frozen source; the latter validates and stages one structured undergraduate-level mentor proposal. No agent-callable Save, Discard, Approve, or Verify capability exists.
+- Added a visible registration → source freeze → read callback → stage callback evidence trail, human-only review controls, browser-local note labeling, and downloadable JSON receipt.
+- Deployed the static slice to GitHub Pages with enforced HTTPS and witnessed an actual Codex desktop in-app browser agent call both tools over the public origin using a previously unseen 15-page scientific PDF. The proposal remained unsaved for human review.
+- Added a sanitized live-proof record and a timed 2:30 demo-video plan. The final YouTube recording, visual selection modes, full failure/accessibility matrix, and durable authenticated service are not claimed complete.
+- Verification performed: JavaScript syntax; lint; TypeScript; root tests **701/701**; production build; `npm audit` with zero known vulnerabilities; anonymous HTTP 200 checks; successful Pages workflow; and public WebMCP read/stage callback receipts.
+- Public implementation commit: [`c99a42dba2c4fb1c746c1146e335e665d6624c93`](https://github.com/patrickjcraig/PaperPilot/commit/c99a42dba2c4fb1c746c1146e335e665d6624c93).
+- Public release-evidence commit: [`503cfee0ee714428dc466ce29b6a2dff85881ad8`](https://github.com/patrickjcraig/PaperPilot/commit/503cfee0ee714428dc466ce29b6a2dff85881ad8).
+
 ## Entry template
 
 Copy this block for each material addition:

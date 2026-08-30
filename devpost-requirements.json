@@ -16,7 +16,7 @@
     "licenseSpdxId": "MIT"
   },
   "publicArtifacts": {
-    "liveUrl": "",
+    "liveUrl": "https://patrickjcraig.github.io/PaperPilot/webmcp/",
     "repositoryUrl": "https://github.com/patrickjcraig/PaperPilot",
     "demoVideoUrl": ""
   },
@@ -24,7 +24,7 @@
     "instructionsPath": "docs/DEVPOST-JUDGE-GUIDE.md",
     "productScopePath": "docs/hackathon-build/scope.md",
     "productRequirementsPath": "docs/hackathon-build/prd.md",
-    "paperPilotToolIntegrationPath": "src/components/live-paper-pilot-app.tsx",
+    "paperPilotToolIntegrationPath": "public/webmcp/paperpilot.js",
     "requiresPaperAgnosticPdfFlow": true,
     "prohibitsPaperSpecificDemoLogic": true,
     "requiredSelectionKinds": [
@@ -38,13 +38,15 @@
       "read-bounded-active-pdf-selection",
       "stage-structured-mentor-explanation"
     ],
-    "testedClients": []
+    "testedClients": [
+      "OpenAI Codex desktop 26.820.10647.0 — in-app browser WebMCP capability on Windows (tested 2026-08-30)"
+    ]
   },
   "manualVerifications": {
     "repositoryPublicIncognitoVerified": true,
     "licenseVisibleOnRepositoryHome": true,
-    "liveUrlAnonymousOrCredentialsVerified": false,
-    "liveUrlWebMcpVerified": false,
+    "liveUrlAnonymousOrCredentialsVerified": true,
+    "liveUrlWebMcpVerified": true,
     "paperAgnosticPdfFlowVerified": false,
     "requiredSelectionKindsVerified": false,
     "observableWebMcpActivityVerified": false,
@@ -59,7 +61,9 @@
     "aiTools": [
       "OpenAI Codex"
     ],
-    "webMcpClients": [],
+    "webMcpClients": [
+      "OpenAI Codex desktop 26.820.10647.0 in-app browser WebMCP capability"
+    ],
     "learningLevel": "",
     "careerValue": ""
   },
