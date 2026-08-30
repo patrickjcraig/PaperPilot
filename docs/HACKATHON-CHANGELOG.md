@@ -24,7 +24,7 @@ These capabilities may provide context for the demo, but they must not be repres
 - Required immutable staged mentor responses, a separate optional **My takeaway**, explicit save/discard authority, keyboard and screen-reader paths, and truthful local-review labeling.
 - Deferred new crawler, Zotero, networking, collaboration, and scale expansion until the WebMCP loop is demonstrably complete.
 - Added the canonical guided Scope and 30-story PRD; retained the earlier webpage-provenance scope only as a superseded architecture reference.
-- Public commit: **pending PaperPilot-local repository initialization**.
+- Public commit: [`fe56264831f9d4fc55c83e95d593b26937d4cfd1`](https://github.com/patrickjcraig/PaperPilot/commit/fe56264831f9d4fc55c83e95d593b26937d4cfd1) (initial public import).
 
 ### 2026-08-29 — Strict capture contract and browser adapter
 
@@ -32,13 +32,13 @@ These capabilities may provide context for the demo, but they must not be repres
 - Added capability-detected browser registration for `paperpilot.describe_capture_contract` and `paperpilot.stage_web_evidence`.
 - Added adversarial contract and adapter tests.
 - Important limitation: this earlier webpage-evidence adapter is not the canonical scientific-mentor Reader integration, is not mounted by the application UI, and cannot satisfy the final PDF read/stage judge proof.
-- Public commit: **pending PaperPilot-local repository initialization**.
+- Public commit: [`fe56264831f9d4fc55c83e95d593b26937d4cfd1`](https://github.com/patrickjcraig/PaperPilot/commit/fe56264831f9d4fc55c83e95d593b26937d4cfd1) (initial public import).
 
 ### 2026-08-29 — Devpost compliance controls
 
 - Added a machine-readable event requirements manifest, automated readiness audit, judge guide, this dated disclosure, and a release-freeze checklist.
 - Recorded the project as an existing application and made missing license, public repository, live URL, tested-client, demo-video, and final-submission evidence fail explicitly.
-- Public commit: **pending PaperPilot-local repository initialization**.
+- Public commit: [`fe56264831f9d4fc55c83e95d593b26937d4cfd1`](https://github.com/patrickjcraig/PaperPilot/commit/fe56264831f9d4fc55c83e95d593b26937d4cfd1) (initial public import).
 
 ### 2026-08-29 — Compliance gates aligned to the approved PDF mentor
 
@@ -47,7 +47,7 @@ These capabilities may provide context for the demo, but they must not be repres
 - Added fail-closed declarations and manual verification gates for the paper-agnostic admission contract, all five selection kinds, bounded source-read and structured mentor-stage callbacks, observable WebMCP activity, primary-flow accessibility, and truthful fallback labeling.
 - Rewrote the judge guide and README challenge section around replaceable real PDFs and the accessible text/figure mentor flow.
 - Verification performed: JSON/syntax/lint/readiness audit recorded during the PRD handoff.
-- Public commit: **pending PaperPilot-local repository initialization**.
+- Public commit: [`fe56264831f9d4fc55c83e95d593b26937d4cfd1`](https://github.com/patrickjcraig/PaperPilot/commit/fe56264831f9d4fc55c83e95d593b26937d4cfd1) (initial public import).
 
 ## Entry template
 
@@ -66,4 +66,4 @@ Copy this block for each material addition:
 
 ## Final disclosure check
 
-Before submission, replace every `pending PaperPilot-local repository initialization` marker with a public commit link or SHA. Confirm that the Devpost description and video make the same baseline/new-work distinction as this document.
+The initial entries are bound to the public import commit above. Every subsequent material capability must receive its own dated public commit and disclosure entry. Confirm that the Devpost description and video make the same baseline/new-work distinction as this document.

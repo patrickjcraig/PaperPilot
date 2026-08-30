@@ -17,7 +17,7 @@
   },
   "publicArtifacts": {
     "liveUrl": "",
-    "repositoryUrl": "",
+    "repositoryUrl": "https://github.com/patrickjcraig/PaperPilot",
     "demoVideoUrl": ""
   },
   "judgeExperience": {
@@ -41,7 +41,7 @@
     "testedClients": []
   },
   "manualVerifications": {
-    "repositoryPublicIncognitoVerified": false,
+    "repositoryPublicIncognitoVerified": true,
     "licenseVisibleOnRepositoryHome": false,
     "liveUrlAnonymousOrCredentialsVerified": false,
     "liveUrlWebMcpVerified": false,
