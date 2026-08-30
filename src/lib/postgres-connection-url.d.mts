@@ -19,6 +19,12 @@ export interface PostgresConnectionUrlOptions {
   requiredUsername?: string;
 }
 
+export const PAPERPILOT_SUPABASE_DIRECT_DATABASE_PROFILE:
+  "supabase-avmcmmayvnjxrhrmgsdx-direct-v1";
+export const PAPERPILOT_SUPABASE_PROJECT_REF: "avmcmmayvnjxrhrmgsdx";
+export const PAPERPILOT_SUPABASE_DIRECT_DATABASE_HOST:
+  "db.avmcmmayvnjxrhrmgsdx.supabase.co";
+
 export function isPostgresLoopbackHost(hostname: string): boolean;
 export function validatedPostgresConnectionUrl(
   rawValue: string | undefined,
@@ -28,6 +34,7 @@ export function validatedPaperPilotApplicationDatabaseUrl(
   rawValue: string | undefined,
   options?: {
     allowLocalPrismaDev?: boolean;
+    databaseProfile?: string;
     nodeEnvironment?: string;
   },
 ): ValidatedApplicationDatabaseUrl;

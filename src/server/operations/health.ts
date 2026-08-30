@@ -2,7 +2,7 @@ import "server-only";
 
 import { Client } from "pg";
 
-import { validatedPaperPilotApplicationDatabaseUrl } from "@/lib/postgres-connection-url.mjs";
+import { configuredPaperPilotPostgresConnection } from "@/lib/postgres-client-config.mjs";
 
 /**
  * The newest migration whose atomic schema effects this release requires.
@@ -157,6 +157,36 @@ interface DatabaseIdentityRow {
   searchPath: string;
 }
 
+export function createPaperPilotDatabaseReadinessClient(
+  environment: Readonly<Record<string, string | undefined>>,
+  perPhaseTimeoutMs: number,
+): Client {
+  if (
+    !Number.isSafeInteger(perPhaseTimeoutMs)
+    || perPhaseTimeoutMs < MIN_DATABASE_DEADLINE_MS
+    || perPhaseTimeoutMs > MAX_DATABASE_DEADLINE_MS
+  ) {
+    throw new Error("The database readiness client deadline is invalid.");
+  }
+  const configuredConnection = configuredPaperPilotPostgresConnection(
+    environment.DATABASE_URL,
+    {
+      allowLocalPrismaDev:
+        environment.PAPERPILOT_ALLOW_LOCAL_PRISMA_DEV === "1",
+      caCertificatePath: environment.PAPERPILOT_DATABASE_CA_CERT_PATH,
+      databaseProfile: environment.PAPERPILOT_DATABASE_PROFILE,
+      nodeEnvironment: environment.NODE_ENV,
+    },
+  );
+  return new Client({
+    ...configuredConnection.clientConfig,
+    application_name: "paperpilot-web-readiness",
+    connectionTimeoutMillis: perPhaseTimeoutMs,
+    query_timeout: perPhaseTimeoutMs,
+    statement_timeout: perPhaseTimeoutMs,
+  });
+}
+
 /**
  * Probe one fresh connection with its own connection/query/statement bounds.
  * No error text escapes this function.
@@ -167,31 +197,19 @@ export async function probePaperPilotDatabaseReadiness(
   const deadlineMs = boundedDatabaseDeadline(input.deadlineMs);
   if (deadlineMs === null) return { status: "configuration-invalid" };
 
-  let connection: ReturnType<typeof validatedPaperPilotApplicationDatabaseUrl>;
-  try {
-    connection = validatedPaperPilotApplicationDatabaseUrl(
-      input.environment.DATABASE_URL,
-      {
-        allowLocalPrismaDev:
-          input.environment.PAPERPILOT_ALLOW_LOCAL_PRISMA_DEV === "1",
-        nodeEnvironment: input.environment.NODE_ENV,
-      },
-    );
-  } catch {
-    return { status: "configuration-invalid" };
-  }
-
   const perPhaseTimeoutMs = Math.max(
     MIN_DATABASE_DEADLINE_MS,
     Math.floor(deadlineMs / 2),
   );
-  const client = new Client({
-    application_name: "paperpilot-web-readiness",
-    connectionString: connection.connectionString,
-    connectionTimeoutMillis: perPhaseTimeoutMs,
-    query_timeout: perPhaseTimeoutMs,
-    statement_timeout: perPhaseTimeoutMs,
-  });
+  let client: Client;
+  try {
+    client = createPaperPilotDatabaseReadinessClient(
+      input.environment,
+      perPhaseTimeoutMs,
+    );
+  } catch {
+    return { status: "configuration-invalid" };
+  }
   let connected = false;
 
   try {

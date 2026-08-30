@@ -8,6 +8,19 @@ const KNOWN_SSL_MODES = new Set([
   "verify-full",
 ]);
 
+/**
+ * Approved provider profile for the current PaperPilot Supabase project.
+ *
+ * The project reference and database endpoint are public routing metadata, not
+ * credentials. Keeping them fixed here makes opting into the profile narrower
+ * than merely accepting any host below supabase.co.
+ */
+export const PAPERPILOT_SUPABASE_DIRECT_DATABASE_PROFILE =
+  "supabase-avmcmmayvnjxrhrmgsdx-direct-v1";
+export const PAPERPILOT_SUPABASE_PROJECT_REF = "avmcmmayvnjxrhrmgsdx";
+export const PAPERPILOT_SUPABASE_DIRECT_DATABASE_HOST =
+  `db.${PAPERPILOT_SUPABASE_PROJECT_REF}.supabase.co`;
+
 export function isPostgresLoopbackHost(hostname) {
   const normalized = hostname.startsWith("[") && hostname.endsWith("]")
     ? hostname.slice(1, -1)
@@ -111,12 +124,25 @@ export function validatedPostgresConnectionUrl(rawValue, options = {}) {
  * account and disabled loopback TLS.
  */
 export function validatedPaperPilotApplicationDatabaseUrl(rawValue, options = {}) {
+  const configuredProfile = options.databaseProfile;
+  if (configuredProfile !== undefined && typeof configuredProfile !== "string") {
+    throw new Error("PAPERPILOT_DATABASE_PROFILE must be a string when configured.");
+  }
+  const databaseProfile = configuredProfile?.trim() ?? "";
+  if (
+    databaseProfile
+    && databaseProfile !== PAPERPILOT_SUPABASE_DIRECT_DATABASE_PROFILE
+  ) {
+    throw new Error("PAPERPILOT_DATABASE_PROFILE is not an approved database profile.");
+  }
+
   const parsed = validatedPostgresConnectionUrl(rawValue, {
     label: "DATABASE_URL",
     requireTlsForNonLoopback: true,
   });
   const isLocalPrismaDev =
-    options.allowLocalPrismaDev === true
+    databaseProfile === ""
+    && options.allowLocalPrismaDev === true
     && options.nodeEnvironment !== "production"
     && parsed.isLoopback
     && parsed.username === "postgres"
@@ -130,5 +156,28 @@ export function validatedPaperPilotApplicationDatabaseUrl(rawValue, options = {}
     requireTlsForNonLoopback: true,
     requiredUsername: "paperpilot_runtime",
   });
+
+  if (databaseProfile === PAPERPILOT_SUPABASE_DIRECT_DATABASE_PROFILE) {
+    if (runtime.hostname !== PAPERPILOT_SUPABASE_DIRECT_DATABASE_HOST) {
+      throw new Error(
+        "DATABASE_URL must target the approved PaperPilot Supabase direct database host.",
+      );
+    }
+    if (runtime.port !== 5432) {
+      throw new Error(
+        "DATABASE_URL must use port 5432 for the approved PaperPilot Supabase direct profile.",
+      );
+    }
+    if (runtime.databaseName !== "postgres") {
+      throw new Error(
+        "DATABASE_URL must target the postgres database for the approved PaperPilot Supabase profile.",
+      );
+    }
+    if (!new URL(runtime.connectionString).password) {
+      throw new Error(
+        "DATABASE_URL must contain an explicit password for the approved PaperPilot Supabase profile.",
+      );
+    }
+  }
   return Object.freeze({ ...runtime, isLocalPrismaDev: false });
 }

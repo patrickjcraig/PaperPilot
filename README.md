@@ -142,6 +142,24 @@ See [`deploy/local/README.md`](deploy/local/README.md) for lifecycle, verificati
 
 `prisma dev` is a development database, not a production database. Production must use managed PostgreSQL with backups, monitoring, TLS, an appropriate connection pool, and the reviewed non-login migration-owner/runtime-role split in [docs/POSTGRES-ROLES.md](docs/POSTGRES-ROLES.md).
 
+### Supabase project staging
+
+The repository is pinned to the supplied Supabase project reference
+`avmcmmayvnjxrhrmgsdx` through an opt-in, provider-specific database profile.
+The public endpoint check is safe to run without credentials:
+
+```powershell
+npm run supabase:check
+```
+
+That command verifies the exact REST and Storage gateway identities, database
+DNS, and TCP route. It deliberately does **not** claim database authentication,
+role setup, migrations, or Storage readiness. Keep the E-drive local database
+active until all four have passed. The exact profile, server-only CA
+requirement, secret placement, and managed-provider migration boundary are
+documented in
+[`deploy/supabase/README.md`](deploy/supabase/README.md).
+
 ## Environment configuration
 
 The Prisma CLI reads `.env`; Next.js also loads it. The file is ignored by Git.
@@ -149,6 +167,8 @@ The Prisma CLI reads `.env`; Next.js also loads it. The file is ignored by Git.
 | Variable | Local development | Production requirement |
 | --- | --- | --- |
 | `DATABASE_URL` | Direct local PostgreSQL URL with explicit user, port, and database | Managed PostgreSQL application URL authenticating exactly as `paperpilot_runtime`, with an explicit port/database and exactly `sslmode=verify-full`; ambient `PGUSER`/`PGPORT`/`PGDATABASE`, query-level host/service, and duplicate-parameter fallbacks are rejected |
+| `PAPERPILOT_DATABASE_PROFILE` | Empty for the E-drive Prisma Dev database | Use only a reviewed provider profile; the supplied project uses `supabase-avmcmmayvnjxrhrmgsdx-direct-v1` |
+| `PAPERPILOT_DATABASE_CA_CERT_PATH` | Empty for loopback PostgreSQL | Absolute path to the provider CA certificate when required by the selected profile; never weaken `verify-full` to bypass a missing CA |
 | `PAPERPILOT_ALLOW_LOCAL_PRISMA_DEV` | `1` permits only loopback `postgres` → `template1` with `sslmode=disable` outside production | Omit; even localhost database proxies must authenticate as `paperpilot_runtime` |
 | `SHADOW_DATABASE_URL` | Local shadow database URL | Needed only for `migrate dev`; not for `migrate deploy` |
 | `PAPERPILOT_PRISMA_DEV_ROOT` | Absolute runtime root; defaults to the checkout drive on Windows | Not used by the production database |

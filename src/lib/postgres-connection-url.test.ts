@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  PAPERPILOT_SUPABASE_DIRECT_DATABASE_HOST,
+  PAPERPILOT_SUPABASE_DIRECT_DATABASE_PROFILE,
+  PAPERPILOT_SUPABASE_PROJECT_REF,
   validatedPaperPilotApplicationDatabaseUrl,
   validatedPostgresConnectionUrl,
 } from "./postgres-connection-url.mjs";
@@ -93,6 +96,83 @@ test("application connections require the runtime role even through loopback pro
     { allowLocalPrismaDev: true, nodeEnvironment: "development" },
   );
   assert.equal(localDevelopment.isLocalPrismaDev, true);
+});
+
+test("the approved Supabase direct profile is bound to one project and endpoint", () => {
+  assert.equal(PAPERPILOT_SUPABASE_PROJECT_REF, "avmcmmayvnjxrhrmgsdx");
+  assert.equal(
+    PAPERPILOT_SUPABASE_DIRECT_DATABASE_HOST,
+    "db.avmcmmayvnjxrhrmgsdx.supabase.co",
+  );
+
+  const accepted = validatedPaperPilotApplicationDatabaseUrl(
+    "postgresql://paperpilot_runtime:unit%2Ftest@db.avmcmmayvnjxrhrmgsdx.supabase.co:5432/postgres?sslmode=verify-full",
+    { databaseProfile: PAPERPILOT_SUPABASE_DIRECT_DATABASE_PROFILE },
+  );
+  assert.equal(accepted.hostname, PAPERPILOT_SUPABASE_DIRECT_DATABASE_HOST);
+  assert.equal(accepted.username, "paperpilot_runtime");
+  assert.equal(accepted.databaseName, "postgres");
+  assert.equal(accepted.port, 5432);
+  assert.equal(accepted.sslMode, "verify-full");
+  assert.equal(accepted.isLocalPrismaDev, false);
+
+  const rejected = [
+    [
+      "postgresql://paperpilot_runtime:unit@db.otherprojectref.supabase.co:5432/postgres?sslmode=verify-full",
+      /approved PaperPilot Supabase direct database host/,
+    ],
+    [
+      "postgresql://paperpilot_runtime:unit@db.avmcmmayvnjxrhrmgsdx.supabase.co:6543/postgres?sslmode=verify-full",
+      /port 5432/,
+    ],
+    [
+      "postgresql://paperpilot_runtime:unit@db.avmcmmayvnjxrhrmgsdx.supabase.co:5432/paperpilot?sslmode=verify-full",
+      /target the postgres database/,
+    ],
+    [
+      "postgresql://paperpilot_runtime@db.avmcmmayvnjxrhrmgsdx.supabase.co:5432/postgres?sslmode=verify-full",
+      /explicit password/,
+    ],
+    [
+      "postgresql://postgres:unit@db.avmcmmayvnjxrhrmgsdx.supabase.co:5432/postgres?sslmode=verify-full",
+      /authenticate as paperpilot_runtime/,
+    ],
+    [
+      "postgresql://paperpilot_runtime.avmcmmayvnjxrhrmgsdx:unit@aws-0-example.pooler.supabase.com:5432/postgres?sslmode=verify-full",
+      /authenticate as paperpilot_runtime/,
+    ],
+    [
+      "postgresql://paperpilot_runtime:unit@db.avmcmmayvnjxrhrmgsdx.supabase.co:5432/postgres?sslmode=verify-full&sslrootcert=C%3A%2Funsafe.pem",
+      /unsupported connection parameter/,
+    ],
+  ] as const;
+  for (const [value, expected] of rejected) {
+    assert.throws(
+      () => validatedPaperPilotApplicationDatabaseUrl(value, {
+        databaseProfile: PAPERPILOT_SUPABASE_DIRECT_DATABASE_PROFILE,
+      }),
+      expected,
+    );
+  }
+
+  assert.throws(
+    () => validatedPaperPilotApplicationDatabaseUrl(
+      "postgresql://paperpilot_runtime:unit@db.avmcmmayvnjxrhrmgsdx.supabase.co:5432/postgres?sslmode=verify-full",
+      { databaseProfile: "supabase-unreviewed-project-direct-v1" },
+    ),
+    /not an approved database profile/,
+  );
+  assert.throws(
+    () => validatedPaperPilotApplicationDatabaseUrl(
+      "postgresql://postgres:postgres@127.0.0.1:51218/template1?sslmode=disable",
+      {
+        allowLocalPrismaDev: true,
+        databaseProfile: PAPERPILOT_SUPABASE_DIRECT_DATABASE_PROFILE,
+        nodeEnvironment: "development",
+      },
+    ),
+    /authenticate as paperpilot_runtime/,
+  );
 });
 
 test("ambient libpq variables cannot complete an incomplete authority URL", () => {

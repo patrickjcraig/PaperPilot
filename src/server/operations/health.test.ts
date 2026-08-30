@@ -1,10 +1,16 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { rootCertificates } from "node:tls";
 import test from "node:test";
 
 import {
   EXPECTED_LATEST_MIGRATION,
   MAX_HEALTH_RESPONSE_BYTES,
+  createPaperPilotDatabaseReadinessClient,
   livenessResponse,
+  probePaperPilotDatabaseReadiness,
   readinessResponse,
   runtimeReleaseContractFromEnvironment,
   type DatabaseReadinessProbe,
@@ -122,6 +128,47 @@ test("invalid configuration fails before a database probe", async () => {
     status: "not_ready",
     reason: "configuration_invalid",
   });
+});
+
+test("the Supabase readiness probe fails closed before I/O without its CA", async () => {
+  const result = await probePaperPilotDatabaseReadiness({
+    deadlineMs: 100,
+    environment: {
+      DATABASE_URL:
+        "postgresql://paperpilot_runtime:unit@db.avmcmmayvnjxrhrmgsdx.supabase.co:5432/postgres?sslmode=verify-full",
+      PAPERPILOT_DATABASE_PROFILE:
+        "supabase-avmcmmayvnjxrhrmgsdx-direct-v1",
+    },
+    runtime: { production: false, releaseId: "development" },
+  });
+  assert.deepEqual(result, { status: "configuration-invalid" });
+});
+
+test("the Supabase readiness client uses the configured verified CA", () => {
+  const ca = rootCertificates[0];
+  assert.ok(ca);
+  const directory = mkdtempSync(join(tmpdir(), "paperpilot-readiness-ca-"));
+  try {
+    const caPath = join(directory, "supabase-ca.pem");
+    writeFileSync(caPath, ca, { encoding: "utf8", flag: "wx" });
+    const client = createPaperPilotDatabaseReadinessClient({
+      DATABASE_URL:
+        "postgresql://paperpilot_runtime:unit@db.avmcmmayvnjxrhrmgsdx.supabase.co:5432/postgres?sslmode=verify-full",
+      PAPERPILOT_DATABASE_CA_CERT_PATH: caPath,
+      PAPERPILOT_DATABASE_PROFILE:
+        "supabase-avmcmmayvnjxrhrmgsdx-direct-v1",
+    }, 100);
+    const parameters = (client as unknown as {
+      connectionParameters: {
+        application_name: unknown;
+        ssl: unknown;
+      };
+    }).connectionParameters;
+    assert.equal(parameters.application_name, "paperpilot-web-readiness");
+    assert.deepEqual(parameters.ssl, { ca, rejectUnauthorized: true });
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
 });
 
 test("readiness returns only fixed safe dependency reason codes", async () => {
