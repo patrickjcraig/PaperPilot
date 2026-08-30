@@ -1,7 +1,6 @@
 # WebMCP live proof record
 
-Status: public-preview execution witnessed; durable release verification pending,
-2026-08-30.
+Status: durable public release and live WebMCP execution witnessed, 2026-08-30.
 
 ## Proof contract
 
@@ -66,14 +65,33 @@ site-tools recording required for the strongest Devpost autonomous-client claim.
   public HTTPS origin; the proposal appeared for human review and was not
   automatically saved.
 
-## Public verification fields
+## Durable public verification
 
-Complete after the GitHub Pages deployment and final rerun:
+- Public URL: `https://patrickjcraig.github.io/PaperPilot/webmcp/`.
+- Release commit:
+  `c99a42dba2c4fb1c746c1146e335e665d6624c93`.
+- Deployment: GitHub Pages workflow run `33326383034`, completed successfully
+  with enforced HTTPS.
+- Public read callback ID:
+  `webmcp-read:d3747210-3b74-4866-8107-f44a5e478d15`.
+- Public proposal ID:
+  `proposal:a6856552-36a9-43e0-af90-c57c7c633498`.
+- Public response digest:
+  `276f6e83e7b7ad2243e0b370b6677a6f254e82adc93a3716f88e1ee7110ad8de`.
+- Public source-set digest:
+  `171d2251a35a368158e614db311ac283ff1601a928996c8aaa84c4232c0f19a2`.
+- External HTTP check: the HTML returned `200` over HTTPS as `text/html`
+  (12,791 bytes), and the tool adapter returned `200` as JavaScript (34,178
+  bytes). The in-app browser independently loaded the GitHub Pages origin,
+  rendered the 15-page PDF's first page, and reported both tools at that origin.
+- Visible application proof: four events—registration, human source freeze,
+  `read_sources` callback, and `stage_explanation` callback—plus the unsaved
+  mentor card and human-only Save/Discard controls were present together in the
+  released UI.
+- Recording status: the released browser state was visually inspected and
+  captured during this run. The final Devpost video has not been recorded; the
+  timed shot plan and truthful-claims checklist are in `docs/DEMO-VIDEO-PLAN.md`.
 
-- Durable public URL: `https://patrickjcraig.github.io/PaperPilot/webmcp/`
-- Release commit: pending
-- Public read callback ID: pending
-- Public proposal ID: pending
-- Public response digest: pending
-- Cross-machine HTTP check: pending
-- Browser screenshot / demo recording: pending
+Nothing was automatically saved, approved, discarded, or scientifically
+verified during the agent execution. That pending human decision is an intended
+authority boundary, not a missing agent capability.

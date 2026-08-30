@@ -38,12 +38,13 @@ The command audits the canonical Scope/PRD, paper-agnostic PDF and selection req
 - [Superseded webpage-provenance architecture reference](docs/WEBMCP-PROVENANCE-SCOPE.md)
 - [Machine-readable readiness manifest](devpost-requirements.json)
 
-The repository now contains two intentionally separate product paths:
+The repository now contains three intentionally separate product paths:
 
+- `/webmcp/` is the deployed hackathon vertical slice. It accepts arbitrary born-digital PDFs in the browser, registers the two canonical Reader tools, stages a mentor proposal, and shows callback provenance without exposing an agent-callable Save/Discard action. This is the current judged proof path.
 - `/` is the legacy deterministic, browser-local product demo. It remains the fastest way to exercise Discover, Inbox, Reader, evidence, and collections without an account, but it is not the judged WebMCP Challenge proof path.
 - `/app` is the live-service path. It has verified email/password sessions, a PostgreSQL-backed workspace, live OpenAlex discovery, durable projects/imports/collections/evidence, credential-safe Zotero OAuth plus explicit library discovery/selection and background metadata synchronization, authenticated upload and governed one-PDF crawler custody through quarantine, validation, and user-directed custody retirement, explicit paper linking, a bounded Reader over authoritative embedded-text extraction, immutable manifest-bound passage capture, and explicit review/re-anchor successor revisions with a visible audit ledger. Start at `/sign-up` to use it.
 
-The split is deliberate. Authenticated features never silently fall back to browser persistence. The legacy browser-local demo remains runnable if the database or an external provider is unavailable, but only the authenticated Reader's real WebMCP callbacks and durable records can satisfy the challenge proof.
+The split is deliberate. Authenticated features never silently fall back to browser persistence. The `/webmcp/` slice supplies the immediate public registration/callback/core-flow proof with explicit browser-local boundaries; the authenticated Reader remains the target for durable account-synchronized records and the complete production service.
 
 ## Current service status
 
