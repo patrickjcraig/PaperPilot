@@ -515,3 +515,7 @@ The application boundaries for transactional email, required verification, passw
 - PaperPilot has its own repository boundary. Keep credentials, retained documents, local database state, generated clients, dependencies, and build output outside committed history as enforced by the checked-in ignore and build-context policies.
 
 The long-term development plan and exit criteria are in [docs/ROADMAP.md](docs/ROADMAP.md).
+
+## License
+
+PaperPilot is available under the [MIT License](LICENSE).
