@@ -181,6 +181,16 @@ function recordActivity(eventType, details = {}) {
   return record;
 }
 
+function mergeRestoredActivity(events) {
+  const knownEventIds = new Set(activity.map((event) => event.eventId).filter(Boolean));
+  for (const event of events || []) {
+    if (event.eventId && knownEventIds.has(event.eventId)) continue;
+    activity.push({ ...event });
+    if (event.eventId) knownEventIds.add(event.eventId);
+  }
+  activity.sort((left, right) => String(left.observedAt || "").localeCompare(String(right.observedAt || "")));
+}
+
 function humanReadable(value) {
   return String(value ?? "").replaceAll("_", " ");
 }
@@ -402,6 +412,7 @@ async function restoreBrowserWorkspace() {
   if (result.status === "restored") {
     savedExplanations = result.savedExplanations || [];
     annotationOrder = Object.freeze(result.presentation?.annotationOrder || []);
+    mergeRestoredActivity(state.events);
     snapshotEnabled = true;
     snapshotStored = true;
     snapshotDirty = false;
