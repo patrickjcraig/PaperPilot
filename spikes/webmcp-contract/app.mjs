@@ -13,6 +13,13 @@ import {
   undoLastHumanChange,
 } from "./contracts.mjs";
 import { initializePaperPdfViewer } from "./pdf-viewer.mjs";
+import {
+  clampGraphPosition,
+  moveAnnotation,
+  nudgeGraphPosition,
+  reconcileAnnotationOrder,
+  resolvePrimaryGraphNodeKey,
+} from "./presentation-layout.mjs";
 
 const byId = (id) => document.getElementById(id);
 
@@ -22,8 +29,14 @@ const elements = {
   focusStatus: byId("focus-status"),
   rendererStatus: byId("renderer-status"),
   sigmaContainer: byId("sigma-container"),
+  graphCanvasShell: byId("graph-canvas-shell"),
+  graphDropHint: byId("graph-drop-hint"),
+  graphLayoutStatus: byId("graph-layout-status"),
+  graphLayoutReset: byId("graph-layout-reset"),
+  graphNudgeButtons: [...document.querySelectorAll("[data-graph-nudge]")],
   graphOutline: byId("graph-outline"),
   annotationList: byId("annotation-list"),
+  annotationLayoutStatus: byId("annotation-layout-status"),
   activityList: byId("activity-list"),
   toolList: byId("tool-list"),
   lastResult: byId("last-result"),
@@ -81,6 +94,14 @@ let visualReplayQueue = Promise.resolve();
 let paperViewer = null;
 let pendingReaderCapture = null;
 let pendingReaderOverlayId = null;
+let annotationOrder = Object.freeze([]);
+let selectedGraphNodeKey = null;
+let draggedAnnotationId = null;
+let draggedAnnotationNodeKey = null;
+let draggedGraphNodeKey = null;
+let graphDragStartPosition = null;
+const initialGraphPositions = new Map();
+const graphLayoutPositions = new Map();
 
 const reducedMotionQuery = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)");
 
@@ -366,6 +387,164 @@ function renderFocus({ moveKeyboardFocus = false, scrollIntoView = moveKeyboardF
   }
 }
 
+function activeGraphNodeKeys() {
+  if (!state?.graph) return [];
+  return state.graph.nodes().filter((key) => state.graph.getNodeAttribute(key, "status") === "active");
+}
+
+function reconcileGraphPresentation() {
+  if (!state?.graph) return;
+  for (const key of [...graphLayoutPositions.keys()]) {
+    if (state.graph.hasNode(key)) continue;
+    graphLayoutPositions.delete(key);
+    initialGraphPositions.delete(key);
+  }
+  state.graph.forEachNode((key, attributes) => {
+    const current = clampGraphPosition({ x: attributes.x, y: attributes.y });
+    const preferred = graphLayoutPositions.get(key);
+    if (!preferred) {
+      graphLayoutPositions.set(key, current);
+      initialGraphPositions.set(key, current);
+      return;
+    }
+    if (current.x !== preferred.x || current.y !== preferred.y) {
+      state.graph.mergeNodeAttributes(key, preferred);
+    }
+  });
+}
+
+function graphNodeLabel(key) {
+  if (!key || !state?.graph?.hasNode(key)) return "graph node";
+  return state.graph.getNodeAttribute(key, "label") || key;
+}
+
+function linkedGraphNode(annotation) {
+  if (annotation?.status !== "active") return null;
+  return resolvePrimaryGraphNodeKey(annotation, activeGraphNodeKeys());
+}
+
+function updateGraphSelectionPresentation() {
+  const selectedIsActive = selectedGraphNodeKey &&
+    state?.graph?.hasNode(selectedGraphNodeKey) &&
+    state.graph.getNodeAttribute(selectedGraphNodeKey, "status") === "active";
+  if (!selectedIsActive) selectedGraphNodeKey = null;
+
+  for (const button of elements.graphNudgeButtons) button.disabled = !selectedGraphNodeKey;
+  elements.graphLayoutReset.disabled = initialGraphPositions.size === 0;
+  for (const item of document.querySelectorAll("[data-graph-node-key]")) {
+    const selected = item.dataset.graphNodeKey === selectedGraphNodeKey;
+    item.classList.toggle("is-selected", selected);
+    if (item.matches("button")) item.setAttribute("aria-pressed", String(selected));
+  }
+  sigmaRenderer?.scheduleRefresh();
+}
+
+function selectGraphNode(nodeKey, { announce = true } = {}) {
+  if (
+    !nodeKey ||
+    !state?.graph?.hasNode(nodeKey) ||
+    state.graph.getNodeAttribute(nodeKey, "status") !== "active"
+  ) {
+    return false;
+  }
+  selectedGraphNodeKey = nodeKey;
+  updateGraphSelectionPresentation();
+  if (announce) {
+    elements.graphLayoutStatus.textContent = `Selected “${graphNodeLabel(nodeKey)}.” Drag it in the map or use the arrow controls. Evidence stays fixed.`;
+  }
+  return true;
+}
+
+function setGraphNodePosition(nodeKey, position, { announce = true, record = true } = {}) {
+  if (
+    !nodeKey ||
+    !state?.graph?.hasNode(nodeKey) ||
+    state.graph.getNodeAttribute(nodeKey, "status") !== "active"
+  ) {
+    return false;
+  }
+  if (selectedGraphNodeKey !== nodeKey) selectGraphNode(nodeKey, { announce: false });
+  const next = clampGraphPosition(position);
+  const current = clampGraphPosition(state.graph.getNodeAttributes(nodeKey));
+  if (next.x === current.x && next.y === current.y) return false;
+  graphLayoutPositions.set(nodeKey, next);
+  state.graph.mergeNodeAttributes(nodeKey, next);
+  sigmaRenderer?.scheduleRefresh({ partialGraph: { nodes: [nodeKey] } });
+  if (announce) {
+    elements.graphLayoutStatus.textContent = `Moved “${graphNodeLabel(nodeKey)}.” Only its view position changed; provenance and WebMCP facts are unchanged.`;
+  }
+  if (record) {
+    recordActivity("graph_layout_changed", {
+      actor: "human",
+      status: `${nodeKey} · presentation only`,
+    });
+  }
+  return true;
+}
+
+function resetGraphLayout() {
+  reconcileGraphPresentation();
+  let restored = 0;
+  for (const [key, position] of initialGraphPositions) {
+    if (!state.graph.hasNode(key)) continue;
+    const current = clampGraphPosition(state.graph.getNodeAttributes(key));
+    if (current.x === position.x && current.y === position.y) continue;
+    graphLayoutPositions.set(key, position);
+    state.graph.mergeNodeAttributes(key, position);
+    restored += 1;
+  }
+  sigmaRenderer?.setCustomBBox(null);
+  sigmaRenderer?.refresh();
+  elements.graphLayoutStatus.textContent = restored
+    ? `Reset ${restored} ${restored === 1 ? "node" : "nodes"} to the initial view. Evidence and WebMCP facts were not changed.`
+    : "The graph is already in its initial view. Evidence and WebMCP facts were not changed.";
+  recordActivity("graph_layout_reset", { actor: "human", status: `${restored} presentation positions` });
+}
+
+function clearAnnotationDropIndicators() {
+  for (const item of elements.annotationList.querySelectorAll(".is-drop-before, .is-drop-after")) {
+    item.classList.remove("is-drop-before", "is-drop-after");
+  }
+}
+
+function finishAnnotationDrag() {
+  draggedAnnotationId = null;
+  draggedAnnotationNodeKey = null;
+  clearAnnotationDropIndicators();
+  elements.graphCanvasShell.classList.remove("is-drop-target");
+  for (const item of elements.annotationList.querySelectorAll(".is-dragging")) item.classList.remove("is-dragging");
+}
+
+function focusReorderButton(annotationId, direction) {
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      const item = [...elements.annotationList.querySelectorAll("[data-annotation-id]")]
+        .find((candidate) => candidate.dataset.annotationId === annotationId);
+      const preferred = item?.querySelector(`[data-reorder-direction="${direction}"]`);
+      const fallbackDirection = direction === "earlier" ? "later" : "earlier";
+      const fallback = item?.querySelector(`[data-reorder-direction="${fallbackDirection}"]`);
+      const target = preferred?.disabled ? fallback : preferred;
+      target?.focus({ preventScroll: true });
+    });
+  });
+}
+
+function reorderAnnotation(annotationId, targetId, placement, { direction = null } = {}) {
+  const nextOrder = moveAnnotation(annotationOrder, annotationId, targetId, placement);
+  if (nextOrder.every((key, index) => key === annotationOrder[index])) return false;
+  annotationOrder = nextOrder;
+  const annotation = state.annotations.get(annotationId);
+  const body = annotation?.body || annotation?.label || annotationId;
+  elements.annotationLayoutStatus.textContent = `Moved “${body}” ${placement} its neighbor. Paper anchors and graph identity are unchanged.`;
+  recordActivity("annotation_layout_reordered", {
+    actor: "human",
+    status: `${annotationId} · presentation only`,
+  });
+  renderAnnotations();
+  if (direction) focusReorderButton(annotationId, direction);
+  return true;
+}
+
 function renderGraphOutline() {
   elements.graphOutline.replaceChildren();
   state.graph.forEachNode((key, attributes) => {
@@ -376,6 +555,18 @@ function renderGraphOutline() {
       elements.graphOutline,
       `Node · ${attributes.label || key} · ${humanReadable(attributes.kind || "concept")} · ${humanReadable(attributes.authority || "unknown authority")} · ${humanReadable(attributes.origin || "unknown origin")} · source ${sources}`,
     );
+    item.dataset.graphNodeKey = key;
+    const actions = document.createElement("div");
+    actions.className = "graph-outline-actions";
+    if (attributes.status === "active") {
+      const arrangeButton = document.createElement("button");
+      arrangeButton.type = "button";
+      arrangeButton.dataset.graphNodeKey = key;
+      arrangeButton.textContent = "Arrange this node";
+      arrangeButton.setAttribute("aria-pressed", String(key === selectedGraphNodeKey));
+      arrangeButton.addEventListener("click", () => selectGraphNode(key));
+      actions.append(arrangeButton);
+    }
     const primaryAnchorId = attributes.sourceAnchorIds?.[0] || attributes.structuralCoverage?.[0]?.primaryAnchorId;
     if (primaryAnchorId && state.anchors.has(primaryAnchorId)) {
       const button = document.createElement("button");
@@ -386,8 +577,9 @@ function renderGraphOutline() {
         recordActivity("graph_source_focused", { actor: "human", status: key });
         await ensureAnchorVisible(primaryAnchorId, { moveKeyboardFocus: true, scrollIntoView: true });
       });
-      item.append(button);
+      actions.append(button);
     }
+    if (actions.childElementCount) item.append(actions);
   });
   state.graph.forEachEdge((key, attributes, source, target) => {
     const relation = attributes.relation || attributes.kind || "relates to";
@@ -397,6 +589,7 @@ function renderGraphOutline() {
       `Edge · ${source} → ${target} · ${humanReadable(relation)} · source ${sources}`,
     );
   });
+  updateGraphSelectionPresentation();
 }
 
 function renderAnnotations() {
@@ -425,16 +618,36 @@ function renderAnnotations() {
     `${activeAnnotationCount} active ${activeAnnotationCount === 1 ? "annotation" : "annotations"}`,
   );
   if (state.annotations.size === 0) {
+    annotationOrder = Object.freeze([]);
     appendTextListItem(elements.annotationList, "No annotations in this page session.");
     return;
   }
-  for (const [key, annotation] of state.annotations) {
+  annotationOrder = reconcileAnnotationOrder(annotationOrder, [...state.annotations.keys()]);
+  for (const [orderIndex, key] of annotationOrder.entries()) {
+    const annotation = state.annotations.get(key);
+    if (!annotation) continue;
     const anchor = annotationAnchorId(annotation) || "unknown anchor";
     const body = annotation.body || annotation.text || annotation.label || annotation.note || "Annotation";
     const isFixture = key.startsWith("annotation:fixture:");
+    const nodeKey = linkedGraphNode(annotation);
     const item = document.createElement("li");
     item.className = `annotation-item${annotation.authority === "agent" ? " is-agent" : annotation.authority === "reader" ? " is-reader" : ""}`;
+    item.dataset.annotationId = key;
+    if (nodeKey) item.dataset.graphNodeKey = nodeKey;
+    item.draggable = false;
+    item.title = nodeKey
+      ? "Drag to reorder, or drop on the graph to place the linked node."
+      : "Drag to reorder this annotation card.";
+    const head = document.createElement("div");
+    head.className = "annotation-card-head";
+    const dragHandle = document.createElement("span");
+    dragHandle.className = "annotation-drag-handle";
+    dragHandle.draggable = true;
+    dragHandle.title = item.title;
+    dragHandle.textContent = "⠿";
+    dragHandle.setAttribute("aria-hidden", "true");
     const summary = document.createElement("span");
+    summary.className = "annotation-card-summary";
     const provenance = isFixture
       ? "deterministic demo fixture"
       : annotation.authority === "agent"
@@ -443,7 +656,8 @@ function renderAnnotations() {
           ? "created by the reader and linked to the graph"
           : `${annotation.authority || "unknown"} origin`;
     summary.textContent = `${body} · ${humanReadable(annotation.kind)} · ${provenance} · ${annotation.status}`;
-    item.append(summary);
+    head.append(dragHandle, summary);
+    item.append(head);
     const issuedAnchor = state.anchors.get(anchor);
     if (issuedAnchor?.exactText) {
       const sourceSummary = document.createElement("small");
@@ -452,6 +666,8 @@ function renderAnnotations() {
       item.append(sourceSummary);
     }
 
+    const actions = document.createElement("div");
+    actions.className = "annotation-actions";
     if (state.anchors.has(anchor)) {
       const focusButton = document.createElement("button");
       focusButton.type = "button";
@@ -461,8 +677,67 @@ function renderAnnotations() {
         recordActivity("annotation_source_focused", { actor: "human", status: key });
         await ensureAnchorVisible(anchor, { moveKeyboardFocus: true, scrollIntoView: true });
       });
-      item.append(focusButton);
+      actions.append(focusButton);
     }
+    if (nodeKey) {
+      const arrangeButton = document.createElement("button");
+      arrangeButton.type = "button";
+      arrangeButton.dataset.graphNodeKey = nodeKey;
+      arrangeButton.textContent = "Arrange linked node";
+      arrangeButton.setAttribute("aria-pressed", String(nodeKey === selectedGraphNodeKey));
+      arrangeButton.addEventListener("click", () => selectGraphNode(nodeKey));
+      actions.append(arrangeButton);
+    }
+    const earlierButton = document.createElement("button");
+    earlierButton.type = "button";
+    earlierButton.dataset.reorderDirection = "earlier";
+    earlierButton.textContent = "Move earlier";
+    earlierButton.disabled = orderIndex === 0;
+    earlierButton.addEventListener("click", () => {
+      const targetId = annotationOrder[orderIndex - 1];
+      if (targetId) reorderAnnotation(key, targetId, "before", { direction: "earlier" });
+    });
+    const laterButton = document.createElement("button");
+    laterButton.type = "button";
+    laterButton.dataset.reorderDirection = "later";
+    laterButton.textContent = "Move later";
+    laterButton.disabled = orderIndex === annotationOrder.length - 1;
+    laterButton.addEventListener("click", () => {
+      const targetId = annotationOrder[orderIndex + 1];
+      if (targetId) reorderAnnotation(key, targetId, "after", { direction: "later" });
+    });
+    actions.append(earlierButton, laterButton);
+    item.append(actions);
+
+    item.addEventListener("dragstart", (event) => {
+      draggedAnnotationId = key;
+      draggedAnnotationNodeKey = nodeKey;
+      event.dataTransfer?.setData("text/plain", key);
+      if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+      item.classList.add("is-dragging");
+      if (nodeKey) selectGraphNode(nodeKey, { announce: false });
+      elements.annotationLayoutStatus.textContent = nodeKey
+        ? `Moving “${body}.” Drop on another card to reorder it, or on the graph to place “${graphNodeLabel(nodeKey)}.”`
+        : `Moving “${body}.” Drop on another card to reorder it.`;
+    });
+    item.addEventListener("dragover", (event) => {
+      if (!draggedAnnotationId || draggedAnnotationId === key) return;
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+      clearAnnotationDropIndicators();
+      const rect = item.getBoundingClientRect();
+      item.classList.add(event.clientY < rect.top + rect.height / 2 ? "is-drop-before" : "is-drop-after");
+    });
+    item.addEventListener("drop", (event) => {
+      if (!draggedAnnotationId || draggedAnnotationId === key) return;
+      event.preventDefault();
+      const rect = item.getBoundingClientRect();
+      const placement = event.clientY < rect.top + rect.height / 2 ? "before" : "after";
+      const movedId = draggedAnnotationId;
+      reorderAnnotation(movedId, key, placement);
+      finishAnnotationDrag();
+    });
+    item.addEventListener("dragend", finishAnnotationDrag);
     elements.annotationList.append(item);
 
     if (annotation.status !== "active" || !state.anchors.has(anchor)) continue;
@@ -477,9 +752,13 @@ function renderAnnotations() {
     if (target === elements.textSource) elements.paperAnnotationSummary.append(chip);
     else target.append(chip);
   }
+  updateGraphSelectionPresentation();
 }
 
 function disposeSigma() {
+  draggedGraphNodeKey = null;
+  graphDragStartPosition = null;
+  elements.graphCanvasShell.classList.remove("is-node-dragging", "is-node-hovered");
   if (!sigmaRenderer) return;
   try {
     sigmaRenderer.kill();
@@ -488,6 +767,53 @@ function disposeSigma() {
   }
   sigmaRenderer = null;
   sigmaGraph = null;
+}
+
+function finishGraphNodeDrag(renderer = sigmaRenderer) {
+  if (!draggedGraphNodeKey) return;
+  const nodeKey = draggedGraphNodeKey;
+  const start = graphDragStartPosition;
+  draggedGraphNodeKey = null;
+  graphDragStartPosition = null;
+  renderer?.getCamera().enable();
+  renderer?.setCustomBBox(null);
+  elements.graphCanvasShell.classList.remove("is-node-dragging");
+  const current = state.graph.hasNode(nodeKey)
+    ? clampGraphPosition(state.graph.getNodeAttributes(nodeKey))
+    : null;
+  const moved = current && start && (current.x !== start.x || current.y !== start.y);
+  if (moved) {
+    elements.graphLayoutStatus.textContent = `Placed “${graphNodeLabel(nodeKey)}.” Only its view position changed; provenance and WebMCP facts are unchanged.`;
+    recordActivity("graph_layout_changed", { actor: "human", status: `${nodeKey} · presentation only` });
+  }
+  renderer?.refresh();
+}
+
+function bindSigmaInteractions(renderer) {
+  renderer.on("clickNode", ({ node }) => selectGraphNode(node));
+  renderer.on("enterNode", () => elements.graphCanvasShell.classList.add("is-node-hovered"));
+  renderer.on("leaveNode", () => elements.graphCanvasShell.classList.remove("is-node-hovered"));
+  renderer.on("downNode", ({ node, event, preventSigmaDefault }) => {
+    if (!selectGraphNode(node, { announce: false })) return;
+    preventSigmaDefault();
+    event.original?.preventDefault?.();
+    draggedGraphNodeKey = node;
+    graphDragStartPosition = clampGraphPosition(state.graph.getNodeAttributes(node));
+    const bbox = renderer.getBBox();
+    renderer.setCustomBBox({ x: [...bbox.x], y: [...bbox.y] });
+    renderer.getCamera().disable();
+    elements.graphCanvasShell.classList.add("is-node-dragging");
+    elements.graphLayoutStatus.textContent = `Moving “${graphNodeLabel(node)}.” Its evidence anchor remains fixed in the paper.`;
+  });
+  renderer.on("moveBody", ({ event, preventSigmaDefault }) => {
+    if (!draggedGraphNodeKey || renderer !== sigmaRenderer) return;
+    preventSigmaDefault();
+    event.original?.preventDefault?.();
+    const position = renderer.viewportToGraph({ x: event.x, y: event.y });
+    setGraphNodePosition(draggedGraphNodeKey, position, { announce: false, record: false });
+  });
+  renderer.on("upNode", () => finishGraphNodeDrag(renderer));
+  renderer.on("upStage", () => finishGraphNodeDrag(renderer));
 }
 
 function renderSigma() {
@@ -518,8 +844,19 @@ function renderSigma() {
       labelFont: "Inter, ui-sans-serif, system-ui, sans-serif",
       labelRenderedSizeThreshold: 7,
       stagePadding: 28,
+      nodeReducer(node, data) {
+        if (node !== selectedGraphNodeKey) return data;
+        return {
+          ...data,
+          color: "#f06449",
+          highlighted: true,
+          size: Math.max(Number(data.size) || 8, 10),
+          zIndex: 2,
+        };
+      },
     });
     sigmaGraph = state.graph;
+    bindSigmaInteractions(sigmaRenderer);
     elements.rendererStatus.textContent = "Sigma active + outline";
     recordActivity("sigma_renderer_ready", { status: SPIKE_VERSIONS.sigma });
   } catch (error) {
@@ -530,6 +867,7 @@ function renderSigma() {
 }
 
 function renderState() {
+  reconcileGraphPresentation();
   elements.workspaceStatus.textContent = `Revision ${state.workspaceRevision} · ${state.workspaceDigest.slice(0, 10)}…`;
   elements.visualMode.textContent = `Evidence mode: ${state.visualEvidenceMode}`;
   elements.humanUndo.disabled = state.history.length === 0;
@@ -870,6 +1208,15 @@ function renderGraphSearch(query = elements.graphSearchQuery.value) {
     const summary = document.createElement("span");
     summary.textContent = `${attributes.label || key} · ${humanReadable(attributes.kind)} · ${humanReadable(attributes.authority)}`;
     item.append(summary);
+    const actions = document.createElement("div");
+    actions.className = "graph-outline-actions";
+    const arrangeButton = document.createElement("button");
+    arrangeButton.type = "button";
+    arrangeButton.dataset.graphNodeKey = key;
+    arrangeButton.textContent = "Arrange this node";
+    arrangeButton.setAttribute("aria-pressed", String(key === selectedGraphNodeKey));
+    arrangeButton.addEventListener("click", () => selectGraphNode(key));
+    actions.append(arrangeButton);
     const anchorId = attributes.sourceAnchorIds?.[0] || attributes.structuralCoverage?.[0]?.primaryAnchorId;
     if (anchorId && state.anchors.has(anchorId)) {
       const button = document.createElement("button");
@@ -880,10 +1227,47 @@ function renderGraphSearch(query = elements.graphSearchQuery.value) {
         recordActivity("graph_search_source_focused", { actor: "human", status: key });
         await ensureAnchorVisible(anchorId, { moveKeyboardFocus: true, scrollIntoView: true });
       });
-      item.append(button);
+      actions.append(button);
     }
+    item.append(actions);
     elements.graphSearchResults.append(item);
   }
+  updateGraphSelectionPresentation();
+}
+
+function nudgeSelectedGraphNode(direction) {
+  const nodeKey = selectedGraphNodeKey;
+  if (!nodeKey || !state.graph.hasNode(nodeKey)) {
+    selectedGraphNodeKey = null;
+    updateGraphSelectionPresentation();
+    elements.graphLayoutStatus.textContent = "Choose a current graph node before moving it.";
+    return;
+  }
+  const current = clampGraphPosition(state.graph.getNodeAttributes(nodeKey));
+  const viewportDelta = {
+    left: { x: -24, y: 0 },
+    up: { x: 0, y: -24 },
+    down: { x: 0, y: 24 },
+    right: { x: 24, y: 0 },
+  }[direction];
+  let next = nudgeGraphPosition(current, direction);
+  if (sigmaRenderer && viewportDelta) {
+    const viewport = sigmaRenderer.graphToViewport(current);
+    next = clampGraphPosition(sigmaRenderer.viewportToGraph({
+      x: viewport.x + viewportDelta.x,
+      y: viewport.y + viewportDelta.y,
+    }));
+  }
+  if (setGraphNodePosition(nodeKey, next)) {
+    elements.graphLayoutStatus.textContent = `Moved “${graphNodeLabel(nodeKey)}” ${direction}. Only the view changed; provenance and WebMCP facts are unchanged.`;
+  }
+}
+
+function currentDraggedAnnotationNode() {
+  if (!draggedAnnotationId || !draggedAnnotationNodeKey) return null;
+  const annotation = state.annotations.get(draggedAnnotationId);
+  const currentNodeKey = linkedGraphNode(annotation);
+  return currentNodeKey === draggedAnnotationNodeKey ? currentNodeKey : null;
 }
 
 function wireHumanControls() {
@@ -975,6 +1359,40 @@ function wireHumanControls() {
     elements.graphSearchQuery.value = "";
     renderGraphSearch("");
     elements.graphSearchQuery.focus();
+  });
+
+  for (const button of elements.graphNudgeButtons) {
+    button.addEventListener("click", () => nudgeSelectedGraphNode(button.dataset.graphNudge));
+  }
+  elements.graphLayoutReset.addEventListener("click", resetGraphLayout);
+
+  elements.graphCanvasShell.addEventListener("dragover", (event) => {
+    const nodeKey = currentDraggedAnnotationNode();
+    if (!nodeKey || !sigmaRenderer) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+    elements.graphDropHint.textContent = `Drop to place “${graphNodeLabel(nodeKey)}”`;
+    elements.graphCanvasShell.classList.add("is-drop-target");
+  });
+  elements.graphCanvasShell.addEventListener("dragleave", (event) => {
+    if (event.relatedTarget instanceof Node && elements.graphCanvasShell.contains(event.relatedTarget)) return;
+    elements.graphCanvasShell.classList.remove("is-drop-target");
+  });
+  elements.graphCanvasShell.addEventListener("drop", (event) => {
+    const nodeKey = currentDraggedAnnotationNode();
+    if (!nodeKey || !sigmaRenderer) return;
+    event.preventDefault();
+    const bounds = elements.sigmaContainer.getBoundingClientRect();
+    const position = sigmaRenderer.viewportToGraph({
+      x: event.clientX - bounds.left,
+      y: event.clientY - bounds.top,
+    });
+    const annotation = state.annotations.get(draggedAnnotationId);
+    const body = annotation?.body || annotation?.label || draggedAnnotationId;
+    selectGraphNode(nodeKey, { announce: false });
+    setGraphNodePosition(nodeKey, position);
+    elements.annotationLayoutStatus.textContent = `Placed the linked idea for “${body}” in the map. The PDF annotation itself did not move.`;
+    finishAnnotationDrag();
   });
 
   elements.humanUndo.addEventListener("click", async () => {

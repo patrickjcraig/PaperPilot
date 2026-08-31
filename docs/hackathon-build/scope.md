@@ -145,6 +145,8 @@ The voice is a patient, precise research mentor speaking to an undergraduate rea
 ### 7. Bidirectional paper ↔ graph navigation
 
 - Selecting an annotation focuses linked graph nodes.
+- Annotation cards can be reordered in the evidence rail, and a card can be dropped onto the graph to place one deterministically selected linked node. Card order and node coordinates are presentation preferences only; they never move the PDF anchor or change graph identity, provenance, revisions, or WebMCP reads.
+- Readers can reposition active graph nodes directly in Sigma or through equivalent outline selection and keyboard nudge controls.
 - Selecting a graph node highlights its source anchors and moves the paper to the primary one.
 - Selecting an edge shows the anchors that justify the relationship.
 - An explanation citation navigates to the matching annotation.
@@ -171,7 +173,7 @@ The trail does not claim that a digest proves truth, a graph relation is scienti
 - Born-digital papers use spatial text selection when the text layer can be reconciled honestly.
 - Weak-text and scanned papers retain page/figure/region anchors and a structural page map.
 - Corrupt, encrypted, oversized, or non-renderable inputs fail explicitly with no fixture substitution.
-- Keyboard users can upload, move pages, zoom, create supported anchors, navigate annotations, inspect/edit the graph outline, request mentor help, and use Undo/Redo.
+- Keyboard users can upload, move pages, zoom, create supported anchors, navigate and reorder annotations, select and nudge graph nodes through the outline, request mentor help, and use Undo/Redo.
 - Screen-reader users receive named regions, source summaries, graph structure, graph changes, status announcements, and source-navigation results.
 - Proposed, agent-applied, user-authored, system-derived, and tombstoned states differ by text/icon/pattern as well as color.
 - The full flow remains usable at 200% zoom, 320 CSS pixels, and with reduced motion.

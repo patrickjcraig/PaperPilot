@@ -745,6 +745,8 @@ This design deliberately follows Graphology's published [design choices](https:/
 
 - Render active semantic nodes/edges only.
 - Use derived labels, sizes, colors, shapes, and positions based on semantic attributes.
+- Let the reader drag an active node and drop a linked annotation card onto the map. Pointer positions are converted from viewport to graph coordinates, clamped, and retained in a presentation-only layout map that is reapplied when the canonical Graphology instance is replaced.
+- Keep drag/selection emphasis inside a Sigma `nodeReducer`; never write `highlighted`, selection, drag, or card-order fields into Graphology canonical attributes.
 - Highlight affected revision entities, active source neighborhood, and focus.
 - Support pointer exploration without being required for any task.
 - Use deterministic initial seed positions; optional ForceAtlas2 settles without mutating semantic records.
@@ -758,6 +760,7 @@ The DOM outline is a first-class alternate representation:
 - node type, label, summary, authority, origin, source count, revision state, and tombstone state;
 - incoming/outgoing relations with direction and evidence count;
 - actions: focus source, inspect relations, rename/edit when human UI supports it, and tombstone/restore;
+- arrangement actions: select a node for four-direction keyboard nudging, and reorder annotation cards with focus-preserving earlier/later controls;
 - update announcements after agent mutation, rollback, Undo, and Redo;
 - stable focus restoration when an entity disappears from the active projection.
 
@@ -1193,6 +1196,7 @@ CSS may place Mentor visually left. Each region has a heading and skip link.
 - No duplicate full-page transcript exists visually or as a hidden duplicate.
 - The page region announces page label, page count, text capability, zoom, and active annotation.
 - Annotation list exposes source kind, page, quote/description, authority, origin, state, and graph links.
+- Annotation cards expose a dedicated pointer drag grip plus **Move earlier** and **Move later** controls. Reordering changes only a module-owned presentation array; dropping a card on the map can place its current linked node but cannot edit source geometry.
 - Region selection has pointer and numeric/whole-page/labeled-item alternatives.
 - Focus source navigation announces the destination and never leaves keyboard focus inside an inert canvas.
 
@@ -1200,7 +1204,8 @@ CSS may place Mentor visually left. Each region has a heading and skip link.
 
 - Sigma canvas is supplemental.
 - DOM outline contains every visible semantic node and relation needed for the task.
-- Node/edge selection, source navigation, filters, search, and details are keyboard operable.
+- Node/edge selection, source navigation, filters, search, details, annotation-card ordering, and graph-node nudging are keyboard operable.
+- Direct Sigma drag and annotation-to-map drop have equivalent DOM controls and live status. Layout coordinates, order, selected state, and renderer highlights are excluded from semantic serialization and every WebMCP result.
 - System-derived, paper-grounded, mentor-background, reader-authored, agent-applied, and tombstoned states have textual/non-color cues.
 - An agent mutation announcement is concise: change summary + Undo availability, not every layout event.
 
@@ -1349,6 +1354,8 @@ The browser adapter can swap local command/persistence services for HTTP service
 - direct text highlight and region annotation;
 - structural map covers every page with honest states;
 - Sigma graph and equivalent DOM outline;
+- direct node drag, annotation-card-to-map drop, card reorder, keyboard nudge/reorder equivalents, and focus restoration;
+- invariant revision/digest/source geometry plus a successful `read_graph` and semantic WebMCP mutation after presentation rearrangement;
 - node → source and annotation → graph navigation;
 - controlled WebMCP adapter read/graph/focus/stage/apply flows;
 - agent graph add/update/tombstone;

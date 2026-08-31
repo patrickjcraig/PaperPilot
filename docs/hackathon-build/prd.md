@@ -272,6 +272,19 @@ Acceptance criteria:
 - A missing source shows **Source incomplete** and keeps the graph item visible for audit.
 - The same navigation actions exist in the accessible graph outline; the Sigma canvas is not required.
 
+#### US-5.3 — Arrange annotations and concepts without changing evidence
+
+- As a reader, I want to organize annotation cards and concept positions so that the map matches how I am thinking without rewriting what the paper says.
+
+Acceptance criteria:
+
+- An annotation card can be reordered by pointer and by **Move earlier** / **Move later** controls, with keyboard focus restored to the moved card.
+- Dropping an active annotation card onto the graph moves one deterministic current linked node; annotations with no valid linked node remain reorderable and external drag payloads are ignored.
+- Active Sigma nodes can be dragged directly. The accessible outline can select the same node, and four keyboard controls move it by a consistent visible increment.
+- The PDF overlay and its anchor digest, page, rotation, normalized bounds, PDF quads, quote, and graph links do not move when a card or node is arranged.
+- Card order, selected state, and graph coordinates stay outside canonical annotations, semantic graph projections, revisions, evidence events, workspace/graph/annotation digests, and `paperpilot.read_graph` results.
+- A semantic WebMCP graph or annotation command still succeeds after any arrangement, and surviving presentation positions reconcile across renderer/Graphology replacement and Human Undo.
+
 ### Epic 6: Give the browser mentor useful WebMCP tools
 
 #### US-6.1 — Know what tools are actually ready
@@ -480,7 +493,7 @@ Acceptance criteria:
 
 Acceptance criteria:
 
-- Upload, page navigation, zoom, supported text/region alternatives, annotation list, mentor request, graph outline, node/edge inspection, source navigation, Undo/Redo, evidence details, and explanation Save/Discard are keyboard operable.
+- Upload, page navigation, zoom, supported text/region alternatives, annotation-list reordering, mentor request, graph-outline node selection and nudging, node/edge inspection, source navigation, Undo/Redo, evidence details, and explanation Save/Discard are keyboard operable.
 - Focus is visible and follows a stable logical order independent of the wide-screen visual placement.
 - Graph canvas focus does not trap the user; every action exists in the DOM outline.
 - Cancel/Escape restores focus to the control that opened selection or a modal.

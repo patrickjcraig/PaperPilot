@@ -20,7 +20,7 @@
     "supabase:roles:reconcile": "node scripts/supabase/reconcile-runtime-grants.mjs",
     "test:supabase": "node --test scripts/database/no-local-database.test.mjs scripts/supabase/deploy-migrations.test.mjs scripts/supabase/preflight.test.mjs scripts/supabase/setup-contract.test.mjs scripts/supabase/storage-custody-migration.test.mjs scripts/supabase/storage-setup.test.mjs",
     "test:demo-preflight": "node --test scripts/demo-preflight.test.mjs",
-    "test:webmcp:contracts": "node --test spikes/webmcp-contract/contracts.test.mjs spikes/webmcp-contract/pdf-viewer.test.mjs",
+    "test:webmcp:contracts": "node --test spikes/webmcp-contract/contracts.test.mjs spikes/webmcp-contract/pdf-viewer.test.mjs spikes/webmcp-contract/presentation-layout.test.mjs spikes/webmcp-contract/presentation-webmcp.test.mjs",
     "spike:webmcp:serve": "node scripts/serve-webmcp-contract-spike.mjs",
     "spike:webmcp:paper:fetch": "node scripts/fetch-webmcp-paper-fixture.mjs",
     "spike:webmcp:paper:verify": "node scripts/fetch-webmcp-paper-fixture.mjs --verify-only",

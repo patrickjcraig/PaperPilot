@@ -227,7 +227,27 @@
             <p id="graph-search-status" role="status" aria-live="polite">Showing the whole map.</p>
             <ul id="graph-search-results" aria-label="Graph search results"></ul>
           </form>
-          <div id="sigma-container" class="sigma-container" aria-hidden="true"></div>
+          <section class="graph-arranger" aria-labelledby="graph-arranger-heading">
+            <div class="graph-arranger-copy">
+              <p class="eyebrow">Evidence desk</p>
+              <h3 id="graph-arranger-heading">Arrange the map</h3>
+              <p>Drag a node, or drop an annotation card onto the map to place its linked idea. Layout changes the view only—paper evidence and WebMCP facts stay fixed.</p>
+            </div>
+            <div class="graph-arranger-actions">
+              <p id="graph-layout-status" role="status" aria-live="polite">Choose a graph node or annotation to arrange it.</p>
+              <div class="graph-nudge-row" role="group" aria-label="Move the selected graph node">
+                <button type="button" data-graph-nudge="left" aria-label="Move selected graph node left" disabled>←</button>
+                <button type="button" data-graph-nudge="up" aria-label="Move selected graph node up" disabled>↑</button>
+                <button type="button" data-graph-nudge="down" aria-label="Move selected graph node down" disabled>↓</button>
+                <button type="button" data-graph-nudge="right" aria-label="Move selected graph node right" disabled>→</button>
+                <button id="graph-layout-reset" type="button">Reset graph</button>
+              </div>
+            </div>
+          </section>
+          <div id="graph-canvas-shell" class="graph-canvas-shell">
+            <div id="sigma-container" class="sigma-container" aria-hidden="true"></div>
+            <div id="graph-drop-hint" class="graph-drop-hint" aria-hidden="true">Drop to place the linked idea</div>
+          </div>
           <section aria-labelledby="outline-heading">
             <h3 id="outline-heading">Accessible graph outline</h3>
             <ul id="graph-outline"></ul>
@@ -238,6 +258,7 @@
               <span id="annotation-count" class="count-chip">0</span>
             </div>
             <p class="annotation-boundary">The demo fixture returns after reload. Live agent edits remain memory-only in this spike.</p>
+            <p id="annotation-layout-status" class="annotation-layout-status" role="status" aria-live="polite">Drag a card to reorder it, or drag it onto the map. Keyboard controls are inside each card.</p>
             <ul id="annotation-list"><li>Loading annotation fixture…</li></ul>
           </section>
         </aside>
