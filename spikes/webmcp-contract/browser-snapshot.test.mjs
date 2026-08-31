@@ -15,11 +15,19 @@ import {
 } from "./browser-snapshot.mjs";
 import {
   PAPER_FIXTURE,
+  SPIKE_VERSIONS,
   createSpikeState,
   createToolSuite,
   redoLastHumanChange,
   undoLastHumanChange,
 } from "./contracts.mjs";
+import {
+  computeSpatialAnchorDigest,
+  createSpatialAnchor,
+  createSpatialRendererRecipe,
+} from "./spatial-anchor.mjs";
+
+const CANONICAL_ANCHOR_ID = "anchor:reader:snapshot-canonical";
 
 function memoryStorage({ setError, getError, removeError } = {}) {
   const values = new Map();
@@ -115,6 +123,65 @@ function semanticSnapshotForHistory(state) {
   };
 }
 
+function canonicalSnapshotJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalSnapshotJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalSnapshotJson(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+async function sha256Text(value) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function canonicalTextAnchor(state) {
+  const seededPageAnchor = state.anchors.get("anchor:page:1");
+  const pageViewBox = seededPageAnchor.pageViewBox;
+  const rotation = seededPageAnchor.pageRotation;
+  return createSpatialAnchor({
+    anchorId: CANONICAL_ANCHOR_ID,
+    paperRef: state.paper.paperRef,
+    documentSha256: state.paper.documentSha256,
+    pageIndex: 0,
+    pageLabel: "1",
+    pageViewBox,
+    rotation,
+    rendererRecipe: createSpatialRendererRecipe({
+      rendererVersion: SPIKE_VERSIONS.pdfjs,
+      pageViewBox,
+      pageRotation: rotation,
+    }),
+    sourceKind: "exact_text",
+    geometryKind: "text",
+    normalizedBounds: [{ x: 0.12, y: 0.2, width: 0.3, height: 0.04 }],
+    quote: {
+      exact: "A canonical source passage persisted by the browser snapshot.",
+      prefix: "Before the passage.",
+      suffix: "After the passage.",
+    },
+    textItemRefs: ["page:1:text-item:7"],
+    createdBy: "human",
+    createdAt: "2026-08-31T08:00:00.000Z",
+  });
+}
+
+function currentStoredAnchor(envelope) {
+  return envelope.payload.workspace.current.anchors
+    .find(([anchorId]) => anchorId === CANONICAL_ANCHOR_ID)?.[1];
+}
+
+async function tamperCanonicalEnvelope(raw, mutate, { rehashAnchor = true } = {}) {
+  const envelope = JSON.parse(raw);
+  const anchor = currentStoredAnchor(envelope);
+  assert.ok(anchor, "the canonical anchor fixture must be present in the stored current workspace");
+  mutate(anchor);
+  if (rehashAnchor) anchor.anchorDigest = await computeSpatialAnchorDigest(anchor);
+  envelope.payloadChecksum = await sha256Text(canonicalSnapshotJson(envelope.payload));
+  return JSON.stringify(envelope);
+}
+
 test("versions and keys each browser snapshot by the lowercase PDF SHA-256 identity", () => {
   assert.equal(BROWSER_SNAPSHOT_SCHEMA_VERSION, 1);
   assert.equal(MAX_BROWSER_SNAPSHOT_BYTES, 4 * 1024 * 1024);
@@ -199,6 +266,134 @@ test("round-trips graph, annotations, audit trail, idempotency receipts, saved e
   assert.equal(restored.workspaceDigest, secondDigest);
   assert.equal(restored.history.length, 2);
   assert.equal(restored.redoHistory.length, 0);
+});
+
+test("validates canonical spatial anchors before saving and restores their deeply frozen canonical records", async () => {
+  const source = await fixture();
+  const canonicalAnchor = await canonicalTextAnchor(source);
+  source.anchors.set(canonicalAnchor.anchorId, canonicalAnchor);
+  const storage = memoryStorage();
+
+  const saved = await saveBrowserSnapshot({ storage, state: source });
+  assert.equal(saved.status, "saved");
+  assert.equal(storage.calls.set, 1);
+
+  const restored = await fixture();
+  const loaded = await loadBrowserSnapshot({ storage, state: restored });
+  assert.equal(loaded.status, "restored");
+  const restoredAnchor = restored.anchors.get(CANONICAL_ANCHOR_ID);
+  assert.deepEqual(restoredAnchor, canonicalAnchor);
+  assert.notEqual(restoredAnchor, canonicalAnchor);
+  assert.equal(Object.isFrozen(restoredAnchor), true);
+  assert.equal(Object.isFrozen(restoredAnchor.rendererRecipe), true);
+  assert.equal(Object.isFrozen(restoredAnchor.rendererRecipe.pageViewBox), true);
+  assert.equal(Object.isFrozen(restoredAnchor.normalizedBounds), true);
+  assert.equal(Object.isFrozen(restoredAnchor.normalizedBounds[0]), true);
+  assert.equal(Object.isFrozen(restoredAnchor.pdfQuads[0]), true);
+
+  const invalidSource = await fixture();
+  const invalidAnchor = structuredClone(await canonicalTextAnchor(invalidSource));
+  invalidAnchor.normalizedBounds[0].x = 0.9;
+  invalidAnchor.anchorDigest = await computeSpatialAnchorDigest(invalidAnchor);
+  invalidSource.anchors.set(invalidAnchor.anchorId, invalidAnchor);
+  const isolated = memoryStorage();
+  const rejected = await saveBrowserSnapshot({ storage: isolated, state: invalidSource });
+  assert.equal(rejected.status, "invalid_state");
+  assert.equal(rejected.reason, "anchor_invalid");
+  assert.equal(isolated.calls.set, 0);
+});
+
+test("rejects rechecksummed canonical spatial corruption without mutating live state", async (t) => {
+  const source = await fixture();
+  const canonicalAnchor = await canonicalTextAnchor(source);
+  source.anchors.set(canonicalAnchor.anchorId, canonicalAnchor);
+  const sourceStorage = memoryStorage();
+  const saved = await saveBrowserSnapshot({ storage: sourceStorage, state: source });
+  assert.equal(saved.status, "saved");
+  const raw = sourceStorage.values.get(saved.key);
+
+  const corruptions = [
+    {
+      name: "normalized bounds outside the page with a freshly computed anchor hash",
+      mutate(anchor) {
+        anchor.normalizedBounds[0].x = 0.9;
+      },
+      reason: "anchor_invalid",
+    },
+    {
+      name: "unsupported page rotation",
+      mutate(anchor) {
+        anchor.rotation = 45;
+      },
+      reason: "anchor_invalid",
+    },
+    {
+      name: "quote bytes that disagree with the embedded quote digest",
+      mutate(anchor) {
+        anchor.quote.exact += " Altered after capture.";
+      },
+      reason: "anchor_invalid",
+    },
+    {
+      name: "PDF-space geometry that no longer matches normalized geometry",
+      mutate(anchor) {
+        anchor.pdfQuads[0][0].x += 1;
+      },
+      reason: "anchor_invalid",
+    },
+    {
+      name: "renderer bytes that no longer match the renderer recipe digest",
+      mutate(anchor) {
+        anchor.rendererRecipe.rendererVersion = "999.0.0";
+      },
+      reason: "anchor_invalid",
+    },
+    {
+      name: "canonical anchor digest corruption",
+      mutate(anchor) {
+        anchor.anchorDigest = "0".repeat(64);
+      },
+      rehashAnchor: false,
+      reason: "anchor_invalid",
+    },
+    {
+      name: "wrong embedded document digest with a freshly computed anchor hash",
+      mutate(anchor) {
+        anchor.documentSha256 = "d".repeat(64);
+      },
+      reason: "anchor_invalid",
+    },
+  ];
+
+  for (const corruption of corruptions) {
+    await t.test(corruption.name, async () => {
+      const target = await fixture();
+      const baseline = fingerprint(target);
+      const storage = memoryStorage();
+      const tamperedRaw = await tamperCanonicalEnvelope(raw, corruption.mutate, {
+        rehashAnchor: corruption.rehashAnchor,
+      });
+      const envelope = JSON.parse(tamperedRaw);
+      assert.equal(
+        envelope.payloadChecksum,
+        await sha256Text(canonicalSnapshotJson(envelope.payload)),
+        "the outer snapshot checksum must be valid so canonical validation is exercised",
+      );
+      if (corruption.rehashAnchor !== false) {
+        const storedAnchor = currentStoredAnchor(envelope);
+        assert.equal(
+          storedAnchor.anchorDigest,
+          await computeSpatialAnchorDigest(storedAnchor),
+          "the generic anchor hash must be valid so semantic validation is exercised",
+        );
+      }
+      storage.values.set(saved.key, tamperedRaw);
+      const loaded = await loadBrowserSnapshot({ storage, state: target });
+      assert.equal(loaded.status, "invalid");
+      assert.equal(loaded.reason, corruption.reason);
+      assert.deepEqual(fingerprint(target), baseline, "a rejected restore must be atomic");
+    });
+  }
 });
 
 test("retains only the newest bounded recovery, audit, and idempotency records", async () => {

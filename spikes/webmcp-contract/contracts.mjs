@@ -1,3 +1,9 @@
+import {
+  createSpatialAnchor,
+  createSpatialRendererRecipe,
+  validateSpatialAnchor,
+} from "./spatial-anchor.mjs";
+
 const SHA256_PATTERN = "^[0-9a-f]{64}$";
 const ID_PATTERN = "^[a-z][a-z0-9:_-]{2,127}$";
 const IDEMPOTENCY_PATTERN = "^[A-Za-z0-9][A-Za-z0-9._:-]{7,63}$";
@@ -684,7 +690,26 @@ function validatePageViewBox(value, code = "reader_anchor_invalid") {
 export async function mintReaderAnchor(state, capture) {
   assertTrustedClosedObject(
     capture,
-    new Set(["pageIndex", "sourceKind", "normalizedBounds", "pageViewBox", "pageRotation", "exactText", "prefix", "suffix"]),
+    new Set([
+      "pageIndex",
+      "sourceKind",
+      "documentSha256",
+      "documentRevision",
+      "coordinateSpace",
+      "normalizedBounds",
+      "pdfQuads",
+      "textItemRefs",
+      "pageViewBox",
+      "pageRotation",
+      "exactText",
+      "exactTextSha256",
+      "prefix",
+      "suffix",
+      "rendererRecipe",
+      "regionDigest",
+      "regionDescription",
+      "resolvedFrom",
+    ]),
     ["pageIndex", "sourceKind", "normalizedBounds", "pageViewBox", "pageRotation"],
     "reader_anchor_invalid",
   );
@@ -694,69 +719,81 @@ export async function mintReaderAnchor(state, capture) {
   const pageViewBox = validatePageViewBox(capture.pageViewBox);
   const pageRotation = assertInteger(capture.pageRotation, { min: 0, max: 270 }, "reader_anchor_invalid");
   if (![0, 90, 180, 270].includes(pageRotation)) throw new ContractError("reader_anchor_invalid", "reader_anchor_invalid: unsupported page rotation");
-
-  const anchor = {
-    anchorId: state.id("anchor:reader"),
-    paperRef: state.paper.paperRef,
-    pageIndex,
-    pageLabel: String(pageIndex + 1),
-    sourceKind,
-    authority: sourceKind === "exact_text" ? "exact_document_text" : "client_rendered_pdf",
-    normalizedBounds,
+  if (capture.documentSha256 !== undefined && capture.documentSha256 !== state.paper.documentSha256) {
+    throw new ContractError("not_found_in_active_paper", "The reader selection belongs to different PDF bytes.");
+  }
+  if (capture.documentRevision !== undefined && capture.documentRevision !== 1) {
+    throw new ContractError("reader_anchor_invalid", "The reader selection uses an unsupported document revision.");
+  }
+  if (capture.coordinateSpace !== undefined && capture.coordinateSpace !== "pdf-crop-box") {
+    throw new ContractError("reader_anchor_invalid", "The reader selection uses an unsupported coordinate space.");
+  }
+  const textItemRefs = capture.textItemRefs === undefined
+    ? []
+    : assertArray(capture.textItemRefs, { max: 256, unique: true }, "reader_anchor_invalid")
+      .map((reference) => assertString(reference, { max: 128 }, "reader_anchor_invalid"));
+  const rendererRecipe = createSpatialRendererRecipe({
+    rendererVersion: SPIKE_VERSIONS.pdfjs,
     pageViewBox,
     pageRotation,
+  });
+  const spatialInput = {
+    anchorId: state.id("anchor:reader"),
+    paperRef: state.paper.paperRef,
+    documentSha256: state.paper.documentSha256,
+    pageIndex,
+    pageLabel: String(pageIndex + 1),
+    pageViewBox,
+    rotation: pageRotation,
+    rendererRecipe,
+    sourceKind,
+    geometryKind: sourceKind === "exact_text" ? "text" : "rectangle",
+    normalizedBounds,
+    textItemRefs,
+    createdBy: "human",
+    createdAt: state.now(),
   };
   if (sourceKind === "exact_text") {
     assertString(capture.exactText, { max: 1_200 }, "reader_anchor_invalid");
-    anchor.exactText = capture.exactText;
-    anchor.exactTextSha256 = await sha256Text(capture.exactText);
-    if (capture.prefix !== undefined) anchor.prefix = assertString(capture.prefix, { max: 500 }, "reader_anchor_invalid");
-    if (capture.suffix !== undefined) anchor.suffix = assertString(capture.suffix, { max: 500 }, "reader_anchor_invalid");
+    spatialInput.quote = {
+      exact: capture.exactText,
+      prefix: capture.prefix === undefined ? "" : assertString(capture.prefix, { min: 0, max: 500 }, "reader_anchor_invalid"),
+      suffix: capture.suffix === undefined ? "" : assertString(capture.suffix, { min: 0, max: 500 }, "reader_anchor_invalid"),
+      ...(capture.exactTextSha256 ? { sha256: assertDigest(capture.exactTextSha256, "reader_anchor_invalid") } : {}),
+    };
   } else {
     if (capture.exactText !== undefined || capture.prefix !== undefined || capture.suffix !== undefined) {
       throw new ContractError("reader_anchor_invalid", "reader_anchor_invalid: visual regions cannot claim exact document text");
     }
-    anchor.visibleRegionId = state.id("visible-region:reader");
   }
-  anchor.anchorDigest = await mintAnchorDigest(anchor);
-  return structuredClone(anchor);
+  try {
+    return await createSpatialAnchor(spatialInput);
+  } catch (error) {
+    throw new ContractError("reader_anchor_invalid", error?.message || "The reader anchor could not be minted.");
+  }
 }
 
 async function validateMintedReaderAnchor(state, anchor) {
-  const common = ["anchorId", "paperRef", "pageIndex", "pageLabel", "sourceKind", "authority", "normalizedBounds", "pageViewBox", "pageRotation", "anchorDigest"];
-  const exact = ["exactText", "exactTextSha256", "prefix", "suffix"];
-  const visual = ["visibleRegionId"];
-  assertTrustedClosedObject(anchor, new Set([...common, ...exact, ...visual]), common, "reader_anchor_invalid");
-  assertId(anchor.anchorId, "reader_anchor_invalid");
-  if (anchor.paperRef !== state.paper.paperRef) throw new ContractError("not_found_in_active_paper", "The reader selection belongs to another paper.");
-  assertInteger(anchor.pageIndex, { min: 0, max: state.paper.pageCount - 1 }, "reader_anchor_invalid");
-  assertString(anchor.pageLabel, { max: 32 }, "reader_anchor_invalid");
-  if (anchor.pageLabel !== String(anchor.pageIndex + 1)) throw new ContractError("reader_anchor_invalid", "Reader anchor page label does not match its page index.");
-  assertString(anchor.sourceKind, { values: ["exact_text", "visual_region"] }, "reader_anchor_invalid");
-  validateNormalizedBounds(anchor.normalizedBounds);
-  validatePageViewBox(anchor.pageViewBox);
-  assertInteger(anchor.pageRotation, { min: 0, max: 270 }, "reader_anchor_invalid");
-  if (![0, 90, 180, 270].includes(anchor.pageRotation)) throw new ContractError("reader_anchor_invalid", "reader_anchor_invalid: unsupported page rotation");
-  assertDigest(anchor.anchorDigest, "reader_anchor_invalid");
-
-  if (anchor.sourceKind === "exact_text") {
-    if (anchor.authority !== "exact_document_text") throw new ContractError("reader_anchor_invalid", "Exact-text anchors require exact-document authority.");
-    assertString(anchor.exactText, { max: 1_200 }, "reader_anchor_invalid");
-    assertDigest(anchor.exactTextSha256, "reader_anchor_invalid");
-    if (anchor.exactTextSha256 !== await sha256Text(anchor.exactText)) throw new ContractError("anchor_digest_conflict", "The selected text digest changed.");
-    if (anchor.prefix !== undefined) assertString(anchor.prefix, { max: 500 }, "reader_anchor_invalid");
-    if (anchor.suffix !== undefined) assertString(anchor.suffix, { max: 500 }, "reader_anchor_invalid");
-    if (anchor.visibleRegionId !== undefined) throw new ContractError("reader_anchor_invalid", "Exact-text anchors cannot claim a visual-region ID.");
-  } else {
-    if (anchor.authority !== "client_rendered_pdf") throw new ContractError("reader_anchor_invalid", "Visual anchors require client-rendered authority.");
-    assertId(anchor.visibleRegionId, "reader_anchor_invalid");
-    if (anchor.exactText !== undefined || anchor.exactTextSha256 !== undefined || anchor.prefix !== undefined || anchor.suffix !== undefined) {
-      throw new ContractError("reader_anchor_invalid", "Visual anchors cannot claim exact document text.");
-    }
+  if (anchor?.paperRef !== state.paper.paperRef || anchor?.documentSha256 !== state.paper.documentSha256) {
+    throw new ContractError("not_found_in_active_paper", "The page-minted reader anchor belongs to another PDF.");
   }
-
-  if (anchor.anchorDigest !== await mintAnchorDigest(anchor)) throw new ContractError("anchor_digest_conflict", "The page-minted reader anchor changed.");
-  return anchor;
+  try {
+    const validated = await validateSpatialAnchor(anchor, {
+      paperRef: state.paper.paperRef,
+      documentSha256: state.paper.documentSha256,
+      pageIndex: anchor?.pageIndex,
+    });
+    if (validated.pageIndex >= state.paper.pageCount || !["exact_text", "visual_region"].includes(validated.sourceKind)) {
+      throw new ContractError("reader_anchor_invalid", "The page-minted reader anchor is outside the active paper contract.");
+    }
+    return validated;
+  } catch (error) {
+    if (error instanceof ContractError) throw error;
+    throw new ContractError(
+      error?.code?.startsWith?.("SPATIAL_FOREIGN") ? "not_found_in_active_paper" : "anchor_digest_conflict",
+      error?.message || "The page-minted reader anchor failed validation.",
+    );
+  }
 }
 
 function seededNodeAttributes(overrides) {
@@ -1603,12 +1640,17 @@ export function applyReaderAnnotation(state, input) {
     if (input.baseWorkspaceRevision !== state.workspaceRevision || input.baseWorkspaceDigest !== state.workspaceDigest) {
       throw new ContractError("stale_workspace", "The workspace changed; recapture or confirm the reader selection before applying it.");
     }
-    await validateMintedReaderAnchor(state, input.anchor);
+    const validatedReaderAnchor = await validateMintedReaderAnchor(state, input.anchor);
     if (state.anchors.has(input.anchor.anchorId)) throw new ContractError("anchor_already_registered", "The page-minted reader anchor is already registered.");
 
-    assertTrustedClosedObject(input.annotation, new Set(["kind", "body"]), ["kind", "body"], "reader_annotation_invalid");
+    assertTrustedClosedObject(input.annotation, new Set(["kind", "label", "body"]), ["kind"], "reader_annotation_invalid");
     assertString(input.annotation.kind, { values: ["highlight", "question", "concept", "note", "region"] }, "reader_annotation_invalid");
-    assertString(input.annotation.body, { max: 240 }, "reader_annotation_invalid");
+    const annotationLabel = input.annotation.label === undefined
+      ? assertString(input.annotation.body, { max: 240 }, "reader_annotation_invalid")
+      : assertString(input.annotation.label, { max: 240 }, "reader_annotation_invalid");
+    const annotationBody = input.annotation.label === undefined || input.annotation.body === undefined
+      ? undefined
+      : assertString(input.annotation.body, { max: 600 }, "reader_annotation_invalid");
     assertTrustedClosedObject(input.node, new Set(["kind", "label", "summary", "salience"]), ["kind", "label", "summary", "salience"], "reader_annotation_invalid");
     assertString(input.node.kind, { values: graphNodeKindSchema.enum }, "reader_annotation_invalid");
     assertString(input.node.label, { max: 160 }, "reader_annotation_invalid");
@@ -1622,7 +1664,7 @@ export function applyReaderAnnotation(state, input) {
       const anchors = new Map([...state.anchors.entries()].map(([key, value]) => [key, structuredClone(value)]));
       const annotations = new Map([...state.annotations.entries()].map(([key, value]) => [key, structuredClone(value)]));
       const graph = state.graph.copy();
-      const anchor = structuredClone(input.anchor);
+      const anchor = validatedReaderAnchor;
       const annotationId = state.id("annotation:reader");
       const nodeKey = state.id("node:reader");
       const edgeKey = state.id("edge:reader");
@@ -1660,7 +1702,8 @@ export function applyReaderAnnotation(state, input) {
         paperRef: state.paper.paperRef,
         anchorId: anchor.anchorId,
         kind: input.annotation.kind,
-        label: input.annotation.body,
+        label: annotationLabel,
+        ...(annotationBody ? { body: annotationBody } : {}),
         graphNodeKeys: [nodeKey],
         graphEdgeKeys: [edgeKey],
         status: "active",
@@ -1720,6 +1763,160 @@ export function applyReaderAnnotation(state, input) {
       state.workspaceDigest = before.workspaceDigest;
       state.graphDigest = before.graphDigest;
       state.annotationDigest = before.annotationDigest;
+      throw error;
+    }
+  });
+}
+
+/**
+ * Soft-remove one reader-authored annotation together with the reader graph
+ * node and provenance edge created by applyReaderAnnotation. This is a trusted
+ * human UI command, not a WebMCP tool. Its single ID input is deliberately
+ * bounded, and the page retains the source anchor so Human Undo/Redo and the
+ * provenance trail can restore the semantic revision without reminting source
+ * geometry.
+ */
+export function removeReaderAnnotation(state, annotationId) {
+  return enqueueMutation(state, async () => {
+    assertId(annotationId, "reader_annotation_invalid");
+
+    const annotation = state.annotations.get(annotationId);
+    if (!annotation || annotation.paperRef !== state.paper.paperRef) {
+      throw new ContractError("not_found_in_active_paper", "Reader annotation not found in the active paper.");
+    }
+    if (annotation.authority !== "reader") {
+      throw new ContractError("reader_annotation_not_reader", "Only a reader-authored annotation can be removed by this human command.");
+    }
+    if (annotation.status === "tombstoned") {
+      throw new ContractError("reader_annotation_already_tombstoned", "The reader annotation is already removed. Human Undo can restore it.");
+    }
+    if (annotation.status !== "active") {
+      throw new ContractError("reader_annotation_stale", "The reader annotation is not in a removable active state.");
+    }
+    if (
+      !Array.isArray(annotation.graphNodeKeys)
+      || annotation.graphNodeKeys.length !== 1
+      || !Array.isArray(annotation.graphEdgeKeys)
+      || annotation.graphEdgeKeys.length !== 1
+    ) {
+      throw new ContractError("reader_annotation_stale", "The reader annotation no longer has its original graph links.");
+    }
+
+    const [nodeKey] = annotation.graphNodeKeys;
+    const [edgeKey] = annotation.graphEdgeKeys;
+    const anchor = state.anchors.get(annotation.anchorId);
+    if (!anchor || anchor.paperRef !== state.paper.paperRef || !state.graph.hasNode(nodeKey) || !state.graph.hasEdge(edgeKey)) {
+      throw new ContractError("reader_annotation_stale", "The reader annotation source or linked graph entities are no longer current.");
+    }
+
+    const node = state.graph.getNodeAttributes(nodeKey);
+    const edge = state.graph.getEdgeAttributes(edgeKey);
+    const nodeAnchorIds = node.sourceAnchorIds;
+    const edgeAnchorIds = edge.sourceAnchorIds;
+    const hasUnexpectedActiveEdge = state.graph.edges(nodeKey).some((candidateKey) => (
+      candidateKey !== edgeKey && state.graph.getEdgeAttribute(candidateKey, "status") === "active"
+    ));
+    if (
+      node.origin !== "reader"
+      || node.authority !== "reader_authored"
+      || node.status !== "active"
+      || edge.origin !== "reader"
+      || edge.authority !== "reader_authored"
+      || edge.status !== "active"
+      || !Array.isArray(nodeAnchorIds)
+      || nodeAnchorIds.length !== 1
+      || nodeAnchorIds[0] !== annotation.anchorId
+      || !Array.isArray(edgeAnchorIds)
+      || edgeAnchorIds.length !== 1
+      || edgeAnchorIds[0] !== annotation.anchorId
+      || state.graph.source(edgeKey) !== nodeKey
+      || state.graph.target(edgeKey) !== "node:paper"
+      || hasUnexpectedActiveEdge
+    ) {
+      throw new ContractError("reader_annotation_stale", "The linked reader graph revision changed; reread before removing this annotation.");
+    }
+    assertInteger(annotation.entityRevision, { min: 1 }, "reader_annotation_stale");
+    assertInteger(node.entityRevision, { min: 1 }, "reader_annotation_stale");
+    assertInteger(edge.entityRevision, { min: 1 }, "reader_annotation_stale");
+
+    const before = snapshotState(state);
+    const historyBefore = [...state.history];
+    const redoHistoryBefore = [...state.redoHistory];
+    const eventsBefore = [...state.events];
+    try {
+      const annotations = new Map([...state.annotations.entries()].map(([key, value]) => [key, structuredClone(value)]));
+      const graph = state.graph.copy();
+      const timestamp = state.now();
+      annotations.set(annotationId, {
+        ...structuredClone(annotation),
+        status: "tombstoned",
+        entityRevision: annotation.entityRevision + 1,
+        updatedAt: timestamp,
+      });
+      graph.mergeNodeAttributes(nodeKey, {
+        status: "tombstoned",
+        entityRevision: node.entityRevision + 1,
+        updatedAt: timestamp,
+      });
+      graph.mergeEdgeAttributes(edgeKey, {
+        status: "tombstoned",
+        entityRevision: edge.entityRevision + 1,
+        updatedAt: timestamp,
+      });
+
+      state.annotations = annotations;
+      state.graph = graph;
+      state.workspaceRevision += 1;
+      await recomputeDigests(state);
+      const revisionId = state.id("revision");
+      const result = {
+        schemaVersion: 1,
+        status: "applied_reversible",
+        actor: "human",
+        revisionId,
+        fromRevision: before.workspaceRevision,
+        toRevision: state.workspaceRevision,
+        beforeWorkspaceDigest: before.workspaceDigest,
+        afterWorkspaceDigest: state.workspaceDigest,
+        beforeGraphDigest: before.graphDigest,
+        afterGraphDigest: state.graphDigest,
+        beforeAnnotationDigest: before.annotationDigest,
+        afterAnnotationDigest: state.annotationDigest,
+        anchorId: annotation.anchorId,
+        annotationId,
+        nodeKey,
+        edgeKey,
+        anchorPreserved: true,
+        inverseRetained: true,
+        undoAvailable: true,
+        message: "Reader annotation and its linked reader graph entities were removed in-app. The source anchor was preserved and Human Undo can restore the revision.",
+      };
+      state.history.push({ kind: "reader_annotation_removal", before, after: snapshotState(state), revisionId });
+      state.redoHistory.length = 0;
+      addEvent(state, {
+        eventType: "reader_annotation_removed",
+        actor: "human",
+        revisionId,
+        anchorId: annotation.anchorId,
+        annotationId,
+        nodeKey,
+        edgeKey,
+        beforeDigest: before.workspaceDigest,
+        afterDigest: state.workspaceDigest,
+      });
+      state.onStateChange(state);
+      return result;
+    } catch (error) {
+      state.anchors = before.anchors;
+      state.graph = before.graph;
+      state.annotations = before.annotations;
+      state.workspaceRevision = before.workspaceRevision;
+      state.workspaceDigest = before.workspaceDigest;
+      state.graphDigest = before.graphDigest;
+      state.annotationDigest = before.annotationDigest;
+      state.history = historyBefore;
+      state.redoHistory = redoHistoryBefore;
+      state.events = eventsBefore;
       throw error;
     }
   });
@@ -2142,15 +2339,20 @@ export function createToolSuite(state) {
         authority: anchor.authority,
         normalizedBounds: anchor.normalizedBounds,
       };
-      if (anchor.exactText) {
-        focus.exactText = anchor.exactText;
-        if (anchor.prefix !== undefined) focus.prefix = anchor.prefix;
-        if (anchor.suffix !== undefined) focus.suffix = anchor.suffix;
+      const quote = anchor.quote || (anchor.exactText ? {
+        exact: anchor.exactText,
+        prefix: anchor.prefix,
+        suffix: anchor.suffix,
+      } : null);
+      if (quote?.exact) {
+        focus.exactText = quote.exact;
+        if (quote.prefix !== undefined) focus.prefix = quote.prefix;
+        if (quote.suffix !== undefined) focus.suffix = quote.suffix;
       }
       if (anchor.sourceKind === "visual_region") {
         focus.visualEvidence = {
           mode: state.visualEvidenceMode,
-          visibleRegionId: anchor.visibleRegionId,
+          visibleRegionId: anchor.visibleRegionId || anchor.anchorId,
           pixelUseVerified: state.visualEvidenceMode === "client_visible_region",
         };
       }

@@ -73,7 +73,14 @@ import { annotationAnchorId } from "./webmcp-observer.mjs";
  *   authority?: string,
  *   status?: string,
  * }} AnnotationLike */
-/** @typedef {{ anchorId?: string, pageLabel?: string, exactText?: string }} AnchorLike */
+/** @typedef {{
+ *   anchorId?: string,
+ *   pageLabel?: string,
+ *   sourceKind?: string,
+ *   exactText?: string,
+ *   regionDescription?: string,
+ *   quote?: { exact?: string },
+ * }} AnchorLike */
 /** @typedef {{
  *   annotationId: string,
  *   annotation: AnnotationLike,
@@ -197,7 +204,7 @@ export function projectAccessibleAnnotationSummary({
   criticalIdeaRank = null,
 }) {
   const anchorId = annotationAnchorId(annotation) || "unknown anchor";
-  const body = annotation.body || annotation.text || annotation.label || annotation.note || "Annotation";
+  const body = annotation.label || annotation.body || annotation.text || annotation.note || "Annotation";
   const isFixture = annotationId.startsWith("annotation:fixture:");
   const isAutomatic = annotationId.startsWith("annotation:auto:");
   const authority = annotation.authority || "unknown";
@@ -212,9 +219,16 @@ export function projectAccessibleAnnotationSummary({
           : `${authority} origin`;
   const kind = annotation.kind || "";
   const status = annotation.status || "unknown status";
-  const sourceSummary = anchor?.exactText
-    ? `Page ${anchor.pageLabel} · ${anchor.anchorId} · “${anchor.exactText}”`
-    : null;
+  const quotedSource = anchor?.quote?.exact || anchor?.exactText;
+  const regionDescription = anchor?.regionDescription
+    || (anchor?.sourceKind === "visual_region" && annotation.body && annotation.body !== annotation.label ? annotation.body : "");
+  const sourceSummary = quotedSource
+    ? `Page ${anchor?.pageLabel || "?"} · ${anchor?.anchorId || "exact text"} · “${quotedSource}”`
+    : regionDescription
+      ? `Page ${anchor?.pageLabel || "?"} · described ${humanReadable(anchor?.sourceKind || "visual region")} · ${regionDescription}`
+      : anchor?.pageLabel
+        ? `Page ${anchor.pageLabel} · ${humanReadable(anchor.sourceKind || "paper source")} · no nonvisual description available`
+        : null;
   const automaticRank = isAutomatic && linkedNodeKey && Number.isInteger(criticalIdeaRank) && Number(criticalIdeaRank) > 0
     ? Number(criticalIdeaRank)
     : null;

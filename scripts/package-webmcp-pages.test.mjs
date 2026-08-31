@@ -69,6 +69,7 @@ test("packages a byte-reproducible public demo without source maps, secrets, or 
   assert.ok(relativeFiles.includes("webmcp/activity-ledger.mjs"));
   assert.ok(relativeFiles.includes("webmcp/browser-snapshot.mjs"));
   assert.ok(relativeFiles.includes("webmcp/mentor-review.mjs"));
+  assert.ok(relativeFiles.includes("webmcp/spatial-anchor.mjs"));
   assert.ok(relativeFiles.includes("webmcp/webmcp-observer.mjs"));
   assert.ok(relativeFiles.includes("vendor/pdfjs/pdf.worker.min.mjs"));
   assert.ok(relativeFiles.includes("vendor/graphology/graphology.umd.min.js"));

@@ -156,6 +156,28 @@ test("projects the exact accessible annotation summary, source, and chip facts",
   assert.equal(reader.sourceSummary, null);
   assert.equal(reader.chipText, "Why divide by the square root?");
 
+  const region = projectAccessibleAnnotationSummary({
+    annotationId: "annotation:reader:region",
+    annotation: {
+      anchorId: "anchor:reader:region",
+      label: "Transformer architecture",
+      body: "A two-column encoder-decoder diagram joined by arrows.",
+      kind: "region",
+      authority: "reader",
+      status: "active",
+    },
+    anchor: {
+      anchorId: "anchor:reader:region",
+      pageLabel: "3",
+      sourceKind: "visual_region",
+    },
+  });
+  assert.equal(region.body, "Transformer architecture");
+  assert.equal(
+    region.sourceSummary,
+    "Page 3 · described visual region · A two-column encoder-decoder diagram joined by arrows.",
+  );
+
   const fixture = projectAccessibleAnnotationSummary({
     annotationId: "annotation:fixture:attention",
     annotation: { sourceAnchorId: "anchor:text:attention", kind: "highlight", authority: "agent", status: "active" },

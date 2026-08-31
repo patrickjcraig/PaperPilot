@@ -1,3 +1,5 @@
+import { validateSpatialAnchor } from "./spatial-anchor.mjs";
+
 /**
  * Browser-local, opt-in persistence for the public PaperPilot vertical slice.
  *
@@ -236,11 +238,12 @@ function buildPayload(state, { savedExplanations, savedAt, presentation }) {
     state.annotations,
     "invalid_live_state",
   );
+  const identity = paperIdentityFromState(state);
   return {
     schemaVersion: BROWSER_SNAPSHOT_SCHEMA_VERSION,
     kind: "paperpilot_browser_workspace",
     savedAt: assertString(savedAt, "invalid_live_state", "savedAt is invalid.", { max: 64 }),
-    paperIdentity: paperIdentityFromState(state),
+    paperIdentity: identity,
     workspace: {
       current: serializeSemanticState(state),
       history: serializeHistory(state.history, "workspace.history", BROWSER_SNAPSHOT_LIMITS.history),
@@ -253,6 +256,21 @@ function buildPayload(state, { savedExplanations, savedAt, presentation }) {
   };
 }
 
+async function validateSerializedSemanticState(value, identity) {
+  value.anchors = await Promise.all(value.anchors.map(async ([key, anchor]) => [
+    key,
+    await validateAnchor(anchor, key, identity),
+  ]));
+}
+
+async function validateSerializedPayloadAnchors(payload) {
+  const states = [payload.workspace.current];
+  for (const entry of [...payload.workspace.history, ...payload.workspace.redoHistory]) {
+    states.push(entry.before, entry.after);
+  }
+  await Promise.all(states.map((state) => validateSerializedSemanticState(state, payload.paperIdentity)));
+}
+
 async function serializeEnvelope(state, options = {}) {
   const now = options.now || (() => new Date().toISOString());
   const savedAt = typeof now === "function" ? now() : now;
@@ -261,6 +279,7 @@ async function serializeEnvelope(state, options = {}) {
     presentation: options.presentation,
     savedAt,
   });
+  await validateSerializedPayloadAnchors(payload);
   const payloadChecksum = await sha256Text(canonicalJson(payload));
   const raw = JSON.stringify({
     schemaVersion: BROWSER_SNAPSHOT_SCHEMA_VERSION,
@@ -371,8 +390,35 @@ function importGraph(templateGraph, graphExport) {
   }
 }
 
+function isCanonicalSpatialAnchor(anchor) {
+  const canonicalFields = ["documentSha256", "rendererRecipe", "geometryKind"];
+  const presentFields = canonicalFields.filter(
+    (field) => Object.prototype.hasOwnProperty.call(anchor, field),
+  );
+  return presentFields.length === canonicalFields.length
+    || (anchor.schemaVersion === 1 && presentFields.length > 0);
+}
+
 async function validateAnchor(anchor, key, identity) {
   assertPlainObject(anchor, "anchor_invalid", `Anchor ${key} is invalid.`);
+  if (isCanonicalSpatialAnchor(anchor)) {
+    let validated;
+    try {
+      validated = await validateSpatialAnchor(anchor, {
+        paperRef: identity.paperRef,
+        documentSha256: identity.documentSha256,
+        pageIndex: anchor.pageIndex,
+      });
+    } catch (error) {
+      const detail = typeof error?.message === "string" && error.message
+        ? ` ${error.message}`
+        : "";
+      fail("anchor_invalid", `Anchor ${key} failed canonical spatial validation.${detail}`);
+    }
+    if (validated.anchorId !== key) fail("anchor_invalid", `Anchor ${key} has a mismatched canonical ID.`);
+    assertInteger(validated.pageIndex, "anchor_invalid", `Anchor ${key} has an invalid page.`, { min: 0, max: identity.pageCount - 1 });
+    return validated;
+  }
   if (anchor.anchorId !== key || anchor.paperRef !== identity.paperRef) fail("anchor_invalid", `Anchor ${key} is bound to another paper.`);
   assertString(anchor.anchorDigest, "anchor_invalid", `Anchor ${key} has an invalid digest.`, { pattern: SHA256_RE });
   const projection = { ...anchor };
@@ -380,6 +426,7 @@ async function validateAnchor(anchor, key, identity) {
   const expected = await sha256Text(canonicalJson(projection));
   if (expected !== anchor.anchorDigest) fail("anchor_digest_mismatch", `Anchor ${key} failed its digest check.`);
   assertInteger(anchor.pageIndex, "anchor_invalid", `Anchor ${key} has an invalid page.`, { min: 0, max: identity.pageCount - 1 });
+  return anchor;
 }
 
 function semanticGraphProjection(graph) {
@@ -465,10 +512,12 @@ async function decodeSemanticState(value, templateGraph, identity, path) {
   );
   const anchorKeys = validatePairEntries(value.anchors, "anchor_invalid", 11_000);
   validatePairEntries(value.annotations, "annotation_invalid", 800);
-  const anchors = new Map(value.anchors.map(([key, anchor]) => [key, structuredClone(anchor)]));
+  const anchors = new Map(await Promise.all(value.anchors.map(async ([key, anchor]) => {
+    const cloned = structuredClone(anchor);
+    return [key, await validateAnchor(cloned, key, identity)];
+  })));
   const annotations = new Map(value.annotations.map(([key, annotation]) => [key, structuredClone(annotation)]));
   const graph = importGraph(templateGraph, value.graph);
-  await Promise.all([...anchors].map(([key, anchor]) => validateAnchor(anchor, key, identity)));
   validateGraphAnchorReferences(graph, anchors);
   validateAnnotations(annotations, anchors, graph, identity);
   if (!anchorKeys.has(value.focusAnchorId)) fail("workspace_invalid", `${path}.focusAnchorId is missing.`);

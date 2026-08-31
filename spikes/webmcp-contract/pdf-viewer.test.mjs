@@ -124,6 +124,41 @@ test("client rectangles are normalized to top-left page coordinates", () => {
   assert.deepEqual(rects, [{ x: 0.2, y: 0.5, width: 0.5, height: 0.025 }]);
 });
 
+test("pointer regions clamp to a page and keyboard editing stays bounded", () => {
+  const pageRect = { left: 100, top: 200, width: 600, height: 800 };
+  assert.deepEqual(
+    viewerModule.normalizeClientPoint({ clientX: 760, clientY: 120 }, pageRect),
+    { x: 1, y: 0 },
+  );
+  const dragged = viewerModule.normalizeDraggedRegion(
+    { x: 0.75, y: 0.8 },
+    { x: 0.25, y: 0.3 },
+  );
+  assert.deepEqual(dragged, { x: 0.25, y: 0.3, width: 0.5, height: 0.5 });
+
+  const moved = viewerModule.adjustNormalizedRegion(dragged, "ArrowRight");
+  assert.deepEqual(moved, { x: 0.265, y: 0.3, width: 0.5, height: 0.5 });
+  const resized = viewerModule.adjustNormalizedRegion(moved, "ArrowDown", { shiftKey: true });
+  assert.deepEqual(resized, { x: 0.265, y: 0.3, width: 0.5, height: 0.515 });
+  const ignored = viewerModule.adjustNormalizedRegion(resized, "Enter");
+  assert.deepEqual(ignored, resized);
+});
+
+test("normalized visual regions translate to rotation-aware PDF-space quadrilaterals", () => {
+  const rect = { x: 0.1, y: 0.2, width: 0.3, height: 0.4 };
+  const viewport = {
+    width: 100,
+    height: 200,
+    convertToPdfPoint(x, y) { return [x, 200 - y]; },
+  };
+  assert.deepEqual(viewerModule.pdfQuadFromNormalizedRegion(rect, viewport), [
+    { x: 10, y: 160 },
+    { x: 40, y: 160 },
+    { x: 40, y: 80 },
+    { x: 10, y: 80 },
+  ]);
+});
+
 test("PDF page view boxes are copied, validated, and frozen for provenance", () => {
   const source = [0, 0, 612, 792];
   const viewBox = viewerModule.freezePdfPageViewBox(source);

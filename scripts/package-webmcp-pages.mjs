@@ -18,6 +18,7 @@ const demoFiles = Object.freeze([
   "paper-analysis.mjs",
   "pdf-viewer.mjs",
   "presentation-layout.mjs",
+  "spatial-anchor.mjs",
   "webmcp-observer.mjs",
   "spike.css",
 ]);

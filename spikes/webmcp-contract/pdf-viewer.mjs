@@ -554,6 +554,106 @@ export function normalizeClientRects(rects, pageRect) {
   }).filter((rect) => rect.width > 0 && rect.height > 0);
 }
 
+/**
+ * Convert one client point into the viewer's scale-independent, top-left
+ * normalized page coordinate space. The returned point is always clamped to
+ * the visible page, which keeps pointer capture stable when the pointer leaves
+ * a page while dragging.
+ */
+export function normalizeClientPoint(point, pageRect) {
+  if (
+    !point
+    || !pageRect
+    || !Number.isFinite(Number(point.clientX))
+    || !Number.isFinite(Number(point.clientY))
+    || !Number.isFinite(Number(pageRect.left))
+    || !Number.isFinite(Number(pageRect.top))
+    || !Number.isFinite(Number(pageRect.width))
+    || !Number.isFinite(Number(pageRect.height))
+    || Number(pageRect.width) <= 0
+    || Number(pageRect.height) <= 0
+  ) {
+    throw new PaperPdfError("PDF_REGION_POINT_INVALID", "The region point could not be mapped to this PDF page.");
+  }
+  return Object.freeze({
+    x: rounded(clamp((Number(point.clientX) - Number(pageRect.left)) / Number(pageRect.width), 0, 1)),
+    y: rounded(clamp((Number(point.clientY) - Number(pageRect.top)) / Number(pageRect.height), 0, 1)),
+  });
+}
+
+/** Build a bounded normalized rectangle from two drag points. */
+export function normalizeDraggedRegion(start, end, minimumSize = 0.015) {
+  if (!start || !end) {
+    throw new PaperPdfError("PDF_REGION_GEOMETRY_INVALID", "A region requires a start and end point.");
+  }
+  const minimum = clamp(Number(minimumSize) || 0.015, 0.002, 0.25);
+  const left = clamp(Math.min(Number(start.x), Number(end.x)), 0, 1);
+  const top = clamp(Math.min(Number(start.y), Number(end.y)), 0, 1);
+  const rawWidth = Math.abs(Number(end.x) - Number(start.x));
+  const rawHeight = Math.abs(Number(end.y) - Number(start.y));
+  const width = Math.min(Math.max(rawWidth, minimum), 1 - left);
+  const height = Math.min(Math.max(rawHeight, minimum), 1 - top);
+  if (![left, top, width, height].every(Number.isFinite) || width <= 0 || height <= 0) {
+    throw new PaperPdfError("PDF_REGION_GEOMETRY_INVALID", "The selected PDF region has invalid geometry.");
+  }
+  return Object.freeze({
+    x: rounded(left),
+    y: rounded(top),
+    width: rounded(width),
+    height: rounded(height),
+  });
+}
+
+/**
+ * Keyboard-equivalent region editing. Arrow keys move the rectangle; holding
+ * Shift resizes its trailing edge. Alt selects a smaller step.
+ */
+export function adjustNormalizedRegion(rect, key, { shiftKey = false, altKey = false } = {}) {
+  const current = normalizeDraggedRegion(
+    { x: Number(rect?.x), y: Number(rect?.y) },
+    { x: Number(rect?.x) + Number(rect?.width), y: Number(rect?.y) + Number(rect?.height) },
+    0.002,
+  );
+  if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(key)) return current;
+  const step = altKey ? 0.005 : 0.015;
+  let { x, y, width, height } = current;
+  if (shiftKey) {
+    if (key === "ArrowLeft") width = Math.max(0.015, width - step);
+    if (key === "ArrowRight") width = Math.min(1 - x, width + step);
+    if (key === "ArrowUp") height = Math.max(0.015, height - step);
+    if (key === "ArrowDown") height = Math.min(1 - y, height + step);
+  } else {
+    if (key === "ArrowLeft") x = Math.max(0, x - step);
+    if (key === "ArrowRight") x = Math.min(1 - width, x + step);
+    if (key === "ArrowUp") y = Math.max(0, y - step);
+    if (key === "ArrowDown") y = Math.min(1 - height, y + step);
+  }
+  return Object.freeze({ x: rounded(x), y: rounded(y), width: rounded(width), height: rounded(height) });
+}
+
+/** Translate one normalized display rectangle to a canonical PDF-space quad. */
+export function pdfQuadFromNormalizedRegion(rect, viewport) {
+  if (!viewport || typeof viewport.convertToPdfPoint !== "function") {
+    throw new PaperPdfError("PDF_REGION_VIEWPORT_INVALID", "The PDF viewport cannot translate region geometry.");
+  }
+  const normalized = normalizeDraggedRegion(
+    { x: Number(rect?.x), y: Number(rect?.y) },
+    { x: Number(rect?.x) + Number(rect?.width), y: Number(rect?.y) + Number(rect?.height) },
+    0.002,
+  );
+  const left = normalized.x * Number(viewport.width);
+  const top = normalized.y * Number(viewport.height);
+  const right = (normalized.x + normalized.width) * Number(viewport.width);
+  const bottom = (normalized.y + normalized.height) * Number(viewport.height);
+  const points = [
+    viewport.convertToPdfPoint(left, top),
+    viewport.convertToPdfPoint(right, top),
+    viewport.convertToPdfPoint(right, bottom),
+    viewport.convertToPdfPoint(left, bottom),
+  ].map(([x, y]) => Object.freeze({ x: rounded(x, 3), y: rounded(y, 3) }));
+  return Object.freeze(points);
+}
+
 export function freezePdfPageViewBox(viewBox) {
   const values = Array.from(viewBox || [], (value) => Number(value));
   if (
@@ -1166,6 +1266,7 @@ export async function initializePaperPdfViewer(options = {}) {
     scrollFrame: null,
     documentTextIndex: null,
     documentTextPromise: null,
+    regionSelection: null,
   };
   const minZoom = Number.isFinite(options.minZoom) ? options.minZoom : DEFAULT_MIN_ZOOM;
   const maxZoom = Number.isFinite(options.maxZoom) ? options.maxZoom : DEFAULT_MAX_ZOOM;
@@ -1738,6 +1839,9 @@ export async function initializePaperPdfViewer(options = {}) {
     normalizedRects,
     className = "",
     ariaLabel = "Reader-selected source in the PDF",
+    ariaDescription = "",
+    interactive = false,
+    visibleLabel = "",
   }) => {
     if (!state.pdfDocument || state.destroyed || state.failed) {
       throw new PaperPdfError("PDF_VIEWER_UNAVAILABLE", "The verified PDF viewer is not available.");
@@ -1783,14 +1887,36 @@ export async function initializePaperPdfViewer(options = {}) {
     target.classList.add(...classTokens);
     target.dataset.anchorId = anchorId;
     target.dataset.pageNumber = String(targetPage);
-    target.tabIndex = -1;
+    target.tabIndex = interactive ? 0 : -1;
     target.hidden = false;
     target.style.position = "absolute";
-    target.style.pointerEvents = "none";
+    target.style.pointerEvents = interactive ? "auto" : "none";
     target.style.border = "2px solid rgba(82, 70, 184, 0.82)";
     target.style.boxShadow = "0 0 0 4px rgba(100, 86, 214, 0.12)";
     target.style.zIndex = "2";
     target.setAttribute("aria-label", ariaLabel);
+    target.setAttribute("role", interactive ? "region" : "note");
+    if (ariaDescription) target.setAttribute("aria-description", ariaDescription);
+    else target.removeAttribute("aria-description");
+    if (interactive) {
+      target.setAttribute("aria-roledescription", "PDF region selector");
+      target.setAttribute("aria-keyshortcuts", "ArrowLeft ArrowRight ArrowUp ArrowDown Shift+ArrowLeft Shift+ArrowRight Shift+ArrowUp Shift+ArrowDown Enter Escape");
+    } else {
+      target.removeAttribute("aria-roledescription");
+      target.removeAttribute("aria-keyshortcuts");
+    }
+    let label = target.querySelector(":scope > .pdf-region-visible-label");
+    if (visibleLabel) {
+      if (!label) {
+        label = document.createElement("span");
+        label.className = "pdf-region-visible-label";
+        label.setAttribute("aria-hidden", "true");
+        target.prepend(label);
+      }
+      label.textContent = visibleLabel;
+    } else {
+      label?.remove();
+    }
     setElementPercentBounds(target, bounds);
     // Keep the focusable, labeled target outside the aria-hidden paint layer.
     // Only the SVG rectangles are decorative; assistive technology must be able
@@ -1800,7 +1926,8 @@ export async function initializePaperPdfViewer(options = {}) {
 
     const svg = current?.svg || document.createElementNS(SVG_NAMESPACE, "svg");
     svg.dataset.paperpilotAnchorOverlay = anchorId;
-    svg.classList.add("pdf-captured-anchor-highlights");
+    svg.setAttribute("class", "pdf-captured-anchor-highlights");
+    svg.classList.add(...classTokens);
     svg.setAttribute("viewBox", "0 0 100 100");
     svg.setAttribute("preserveAspectRatio", "none");
     svg.setAttribute("width", "100%");
@@ -1890,6 +2017,26 @@ export async function initializePaperPdfViewer(options = {}) {
     const rects = normalizeClientRects(clientRects, pageRect);
     const bounds = unionNormalizedRects(rects);
     const pdfQuads = pdfQuadsFromClientRects(clientRects, pageRect, record.viewport);
+    const textItemRefs = [...record.textLayerElement.querySelectorAll("span")]
+      .flatMap((span, index) => {
+        try {
+          return range.intersectsNode(span) ? [`page:${record.pageNumber}:text-item:${index}`] : [];
+        } catch {
+          return [];
+        }
+      })
+      .slice(0, 256);
+    const normalizedPageText = normalizePdfText(record.textLayerElement.textContent || "");
+    const exactTextOffset = normalizedPageText.indexOf(exactText);
+    const uniqueExactTextOffset = exactTextOffset >= 0 && normalizedPageText.indexOf(exactText, exactTextOffset + 1) < 0
+      ? exactTextOffset
+      : -1;
+    const prefix = uniqueExactTextOffset >= 0
+      ? normalizedPageText.slice(Math.max(0, uniqueExactTextOffset - 240), uniqueExactTextOffset)
+      : "";
+    const suffix = uniqueExactTextOffset >= 0
+      ? normalizedPageText.slice(uniqueExactTextOffset + exactText.length, uniqueExactTextOffset + exactText.length + 240)
+      : "";
     const capturedGeneration = record.generation;
     range.detach?.();
 
@@ -1936,14 +2083,28 @@ export async function initializePaperPdfViewer(options = {}) {
       sourceKind: "user_text_selection",
       exactText,
       exactTextSha256,
+      prefix,
+      suffix,
       documentSha256: state.documentFacts.sha256,
-      coordinateSpace: "normalized_page_top_left",
+      documentRevision: 1,
+      coordinateSpace: "pdf-crop-box",
+      normalizedCoordinateSpace: "normalized_page_top_left",
       normalizedBounds: Object.freeze(rects),
       bounds,
       rects: Object.freeze(rects),
       pdfQuads: Object.freeze(pdfQuads),
+      textItemRefs: Object.freeze(textItemRefs),
       pageViewBox,
       pageRotation: record.viewport.rotation,
+      rendererRecipe: Object.freeze({
+        recipeVersion: 1,
+        renderer: "pdfjs",
+        rendererVersion: pdfjsVersion,
+        pageViewBox,
+        rotation: record.viewport.rotation,
+        pdfCoordinateSpace: "pdf-crop-box",
+        displayCoordinateSpace: "normalized_page_top_left",
+      }),
       viewport: Object.freeze({
         width: rounded(record.viewport.width, 3),
         height: rounded(record.viewport.height, 3),
@@ -1956,6 +2117,230 @@ export async function initializePaperPdfViewer(options = {}) {
       target,
     });
   };
+
+  const notifyRegionSelection = (selection, phase = "changed") => {
+    try {
+      selection?.onChange?.(Object.freeze({
+        phase,
+        pageIndex: selection.pageNumber - 1,
+        pageNumber: selection.pageNumber,
+        normalizedBounds: Object.freeze([{ ...selection.bounds }]),
+        inputMethod: selection.inputMethod,
+      }));
+    } catch {
+      // Presentation callbacks cannot invalidate page-owned region geometry.
+    }
+  };
+
+  const paintRegionSelection = ({ focus = false, phase = "changed" } = {}) => {
+    const selection = state.regionSelection;
+    if (!selection) return null;
+    for (const record of pageRecords.values()) {
+      record.surface.classList.toggle("is-region-selecting", record.pageNumber === selection.pageNumber);
+    }
+    const target = upsertAnchorOverlay({
+      anchorId: selection.anchorId,
+      pageNumber: selection.pageNumber,
+      normalizedBounds: [selection.bounds],
+      className: "pdf-region-selection-draft",
+      ariaLabel: `Draft PDF region on page ${selection.pageNumber}`,
+      ariaDescription: "Use arrow keys to move this region. Hold Shift with an arrow key to resize it. Press Enter to keep the region or Escape to cancel.",
+      interactive: true,
+      visibleLabel: `Region · p.${selection.pageNumber}`,
+    });
+    notifyRegionSelection(selection, phase);
+    if (focus) target.focus({ preventScroll: true });
+    return target;
+  };
+
+  const cancelRegionSelection = ({ notify = true } = {}) => {
+    const selection = state.regionSelection;
+    if (!selection) return false;
+    state.regionSelection = null;
+    delete viewer.dataset.regionSelection;
+    for (const record of pageRecords.values()) record.surface.classList.remove("is-region-selecting");
+    const removed = removeAnchorOverlay(selection.anchorId);
+    if (notify) {
+      try { selection.onCancel?.(); } catch { /* presentation callback only */ }
+    }
+    return removed;
+  };
+
+  const beginRegionSelection = async ({
+    pageNumber = state.currentPage,
+    initialBounds = { x: 0.25, y: 0.24, width: 0.5, height: 0.24 },
+    onChange,
+    onConfirm,
+    onCancel,
+  } = {}) => {
+    if (!state.pdfDocument || state.destroyed || state.failed) {
+      throw new PaperPdfError("PDF_VIEWER_UNAVAILABLE", "The verified PDF viewer is not available.");
+    }
+    if (state.regionSelection) cancelRegionSelection({ notify: false });
+    const targetPage = resolveStrictPageNumber({ pageNumber });
+    await showPage(targetPage, { behavior: "auto", block: "center" });
+    const bounds = normalizeDraggedRegion(
+      { x: Number(initialBounds.x), y: Number(initialBounds.y) },
+      { x: Number(initialBounds.x) + Number(initialBounds.width), y: Number(initialBounds.y) + Number(initialBounds.height) },
+      0.015,
+    );
+    state.regionSelection = {
+      anchorId: "anchor:region:draft",
+      pageNumber: targetPage,
+      bounds,
+      inputMethod: "keyboard",
+      pointerId: null,
+      dragStart: null,
+      onChange,
+      onConfirm,
+      onCancel,
+    };
+    viewer.dataset.regionSelection = "active";
+    return paintRegionSelection({ focus: true, phase: "started" });
+  };
+
+  const captureRegionSelection = async () => {
+    const selection = state.regionSelection;
+    if (!selection) {
+      throw new PaperPdfError("PDF_REGION_SELECTION_EMPTY", "Start a PDF region selection first.");
+    }
+    const record = pageRecords.get(selection.pageNumber);
+    if (!record?.viewport || !record.surface.isConnected) {
+      throw new PaperPdfError("PDF_REGION_SELECTION_STALE", "The selected page changed before its region could be frozen.");
+    }
+    const normalizedBounds = Object.freeze([{ ...selection.bounds }]);
+    const pageViewBox = freezePdfPageViewBox(record.viewport.viewBox || record.baseViewport.viewBox);
+    const pdfQuads = Object.freeze([pdfQuadFromNormalizedRegion(selection.bounds, record.viewport)]);
+    const rendererRecipe = Object.freeze({
+      recipeVersion: 1,
+      renderer: "pdfjs",
+      rendererVersion: pdfjsVersion,
+      pageViewBox,
+      rotation: record.viewport.rotation,
+      pdfCoordinateSpace: "pdf-crop-box",
+      displayCoordinateSpace: "normalized_page_top_left",
+    });
+    const regionPayload = JSON.stringify({
+      documentSha256: state.documentFacts.sha256,
+      pageNumber: selection.pageNumber,
+      rotation: record.viewport.rotation,
+      normalizedBounds,
+      pdfQuads,
+      rendererRecipe,
+    });
+    const regionDigest = await sha256Hex(new TextEncoder().encode(regionPayload));
+    if (state.destroyed || state.failed || state.regionSelection !== selection || !record.surface.isConnected) {
+      throw new PaperPdfError("PDF_REGION_SELECTION_STALE", "The selected page changed before its region could be frozen.");
+    }
+    return Object.freeze({
+      anchorId: selection.anchorId,
+      pageIndex: selection.pageNumber - 1,
+      pageNumber: selection.pageNumber,
+      pageLabel: String(selection.pageNumber),
+      sourceKind: "user_page_region",
+      documentSha256: state.documentFacts.sha256,
+      documentRevision: 1,
+      coordinateSpace: "pdf-crop-box",
+      normalizedCoordinateSpace: "normalized_page_top_left",
+      normalizedBounds,
+      rects: normalizedBounds,
+      pdfQuads,
+      textItemRefs: Object.freeze([]),
+      pageViewBox,
+      pageRotation: record.viewport.rotation,
+      rendererRecipe,
+      regionDigest,
+      resolvedFrom: `pdfjs_${selection.inputMethod}_page_region`,
+      pageSurface: record.surface,
+      target: anchorOverlays.get(selection.anchorId)?.target || null,
+    });
+  };
+
+  listen(viewer, "pointerdown", (event) => {
+    const selection = state.regionSelection;
+    if (!selection || event.button !== 0) return;
+    const record = pageRecordForNode(event.target);
+    if (!record) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const point = normalizeClientPoint(event, record.surface.getBoundingClientRect());
+    const safeStart = Object.freeze({ x: Math.min(point.x, 0.985), y: Math.min(point.y, 0.985) });
+    selection.pageNumber = record.pageNumber;
+    selection.inputMethod = "pointer";
+    selection.pointerId = event.pointerId;
+    selection.dragStart = safeStart;
+    selection.bounds = normalizeDraggedRegion(safeStart, {
+      x: safeStart.x + 0.015,
+      y: safeStart.y + 0.015,
+    });
+    try { viewer.setPointerCapture(event.pointerId); } catch { /* optional pointer capture */ }
+    paintRegionSelection({ phase: "drawing" });
+  }, { capture: true });
+
+  listen(viewer, "pointermove", (event) => {
+    const selection = state.regionSelection;
+    if (!selection || selection.pointerId !== event.pointerId || !selection.dragStart) return;
+    const record = pageRecords.get(selection.pageNumber);
+    if (!record) return;
+    event.preventDefault();
+    const point = normalizeClientPoint(event, record.surface.getBoundingClientRect());
+    selection.bounds = normalizeDraggedRegion(selection.dragStart, point);
+    paintRegionSelection({ phase: "drawing" });
+  }, { capture: true });
+
+  listen(viewer, "pointerup", (event) => {
+    const selection = state.regionSelection;
+    if (!selection || selection.pointerId !== event.pointerId || !selection.dragStart) return;
+    event.preventDefault();
+    const record = pageRecords.get(selection.pageNumber);
+    if (record) {
+      const point = normalizeClientPoint(event, record.surface.getBoundingClientRect());
+      if (Math.abs(point.x - selection.dragStart.x) < 0.01 && Math.abs(point.y - selection.dragStart.y) < 0.01) {
+        selection.bounds = Object.freeze({
+          x: rounded(clamp(point.x - 0.06, 0, 0.88)),
+          y: rounded(clamp(point.y - 0.04, 0, 0.92)),
+          width: 0.12,
+          height: 0.08,
+        });
+      } else {
+        selection.bounds = normalizeDraggedRegion(selection.dragStart, point);
+      }
+    }
+    selection.pointerId = null;
+    selection.dragStart = null;
+    try { viewer.releasePointerCapture(event.pointerId); } catch { /* optional pointer capture */ }
+    paintRegionSelection({ focus: true, phase: "selected" });
+  }, { capture: true });
+
+  listen(viewer, "pointercancel", (event) => {
+    const selection = state.regionSelection;
+    if (!selection || selection.pointerId !== event.pointerId) return;
+    selection.pointerId = null;
+    selection.dragStart = null;
+    paintRegionSelection({ focus: true, phase: "selected" });
+  }, { capture: true });
+
+  listen(viewer, "keydown", (event) => {
+    const selection = state.regionSelection;
+    if (!selection || event.target?.dataset?.anchorId !== selection.anchorId) return;
+    if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) {
+      event.preventDefault();
+      selection.inputMethod = "keyboard";
+      selection.bounds = adjustNormalizedRegion(selection.bounds, event.key, event);
+      paintRegionSelection({ focus: true, phase: event.shiftKey ? "resized" : "moved" });
+      return;
+    }
+    if (event.key === "Enter") {
+      event.preventDefault();
+      notifyRegionSelection(selection, "confirmed");
+      try { selection.onConfirm?.(); } catch { /* presentation callback only */ }
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      cancelRegionSelection();
+    }
+  });
 
   const getAnchorTarget = (anchorId = fixedSourceAnchor?.anchorId) => (
     anchorOverlays.get(anchorId)?.target || null
@@ -1985,14 +2370,19 @@ export async function initializePaperPdfViewer(options = {}) {
       ? anchorIdOrOptions
       : fixedSourceAnchor?.anchorId;
     const focusOptions = typeof anchorIdOrOptions === "string" ? maybeOptions : anchorIdOrOptions;
-    const { behavior = "smooth", block = "center", scrollIntoView = true } = focusOptions || {};
+    const {
+      behavior = "smooth",
+      block = "center",
+      scrollIntoView = true,
+      moveKeyboardFocus = true,
+    } = focusOptions || {};
     const overlay = anchorOverlays.get(anchorId);
     if (!overlay?.target?.isConnected) {
       throw new PaperPdfError("PDF_SOURCE_UNAVAILABLE", `The PDF anchor ${anchorId} is not materialized.`);
     }
     if (scrollIntoView) {
       await showPage(overlay.pageNumber, { behavior: "auto", block: "nearest" });
-      overlay.target.focus({ preventScroll: true });
+      if (moveKeyboardFocus) overlay.target.focus({ preventScroll: true });
       overlay.target.scrollIntoView({ behavior, block, inline: "nearest" });
     } else {
       setActivePage(overlay.pageNumber);
@@ -2107,6 +2497,7 @@ export async function initializePaperPdfViewer(options = {}) {
 
   const destroy = async () => {
     if (state.destroyed) return;
+    if (state.regionSelection) cancelRegionSelection({ notify: false });
     state.destroyed = true;
     state.zoomGeneration += 1;
     abortController.abort();
@@ -2296,6 +2687,9 @@ export async function initializePaperPdfViewer(options = {}) {
     },
     captureSelection,
     createAnchorFromSelection: captureSelection,
+    beginRegionSelection,
+    captureRegionSelection,
+    cancelRegionSelection,
     extractDocumentText,
     upsertAnchorOverlay,
     removeAnchorOverlay,

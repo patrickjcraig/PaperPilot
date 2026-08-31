@@ -19,6 +19,7 @@
     "spikes/webmcp-contract/accessibility-projection.mjs",
     "spikes/webmcp-contract/activity-ledger.mjs",
     "spikes/webmcp-contract/mentor-review.mjs",
+    "spikes/webmcp-contract/spatial-anchor.mjs",
     "spikes/webmcp-contract/webmcp-observer.mjs"
   ]
 }

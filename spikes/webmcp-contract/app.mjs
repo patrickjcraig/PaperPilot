@@ -9,6 +9,7 @@ import {
   createToolSuite,
   mintReaderAnchor,
   applyReaderAnnotation,
+  removeReaderAnnotation,
   mountToolSuite,
   redoLastHumanChange,
   undoLastHumanChange,
@@ -112,6 +113,13 @@ const elements = {
   readerAnnotationLabel: byId("reader-annotation-label"),
   readerNodeKind: byId("reader-node-kind"),
   readerSelectionStatus: byId("reader-selection-status"),
+  useTextSelection: byId("use-text-selection"),
+  beginRegionSelection: byId("begin-region-selection"),
+  selectWholePage: byId("select-whole-page"),
+  cancelRegionSelection: byId("cancel-region-selection"),
+  regionDescriptionField: byId("region-description-field"),
+  readerRegionDescription: byId("reader-region-description"),
+  createReaderAnnotation: byId("create-reader-annotation"),
   graphSearchForm: byId("graph-search-form"),
   graphSearchQuery: byId("graph-search-query"),
   graphSearchStatus: byId("graph-search-status"),
@@ -150,6 +158,9 @@ let visualReplayQueue = Promise.resolve();
 let paperViewer = null;
 let pendingReaderCapture = null;
 let pendingReaderOverlayId = null;
+let regionSelectionActive = false;
+let pendingRemovalAnnotationId = null;
+let removalConfirmationTimer = null;
 let annotationOrder = Object.freeze([]);
 let selectedGraphNodeKey = null;
 let draggedAnnotationId = null;
@@ -566,21 +577,43 @@ function cursorTargetForAnchor(anchorId) {
 async function ensureAnchorVisible(anchorId, { moveKeyboardFocus = false, scrollIntoView = true } = {}) {
   const anchor = state?.anchors.get(anchorId);
   if (!anchor) return null;
-  if (paperViewer && anchor.sourceKind !== "visual_region") {
+  const diagnosticVisual = anchor.sourceKind === "visual_region"
+    && ["visual-region-a", "visual-region-b"].includes(anchor.visibleRegionId);
+  if (paperViewer && !diagnosticVisual) {
+    if (!paperViewer.getAnchorTarget?.(anchorId) && Array.isArray(anchor.normalizedBounds)) {
+      const linkedAnnotation = [...state.annotations.values()].find((annotation) => (
+        annotationAnchorId(annotation) === anchorId && annotation.status === "active"
+      ));
+      const nonvisualDescription = anchor.regionDescription
+        || (anchor.sourceKind === "visual_region" ? linkedAnnotation?.body : "")
+        || anchor.quote?.exact
+        || anchor.exactText
+        || "";
+      paperViewer.upsertAnchorOverlay?.({
+        anchorId,
+        pageIndex: anchor.pageIndex,
+        normalizedBounds: anchor.normalizedBounds,
+        className: anchor.sourceKind === "visual_region" ? "is-page-region" : "is-exact-text",
+        ariaLabel: `${linkedAnnotation?.label || nonvisualDescription || "Paper source"}, page ${anchor.pageLabel}`,
+        ariaDescription: nonvisualDescription,
+        visibleLabel: anchor.sourceKind === "visual_region" ? `Region · p.${anchor.pageLabel}` : "",
+      });
+    }
     if (typeof paperViewer.focusAnchor === "function") {
       await paperViewer.focusAnchor(anchorId, {
         behavior: prefersReducedMotion() ? "auto" : "smooth",
         block: "center",
         scrollIntoView,
+        moveKeyboardFocus,
       });
     } else {
       await paperViewer.showPage(anchor.pageIndex + 1);
     }
   }
-  if (anchor.sourceKind === "visual_region") {
+  if (diagnosticVisual) {
     elements.visualRegionA.closest("details")?.setAttribute("open", "");
   }
-  renderFocus({ moveKeyboardFocus, scrollIntoView: anchor.sourceKind === "visual_region" && scrollIntoView });
+  renderFocus({ moveKeyboardFocus, scrollIntoView: diagnosticVisual && scrollIntoView });
   return focusElementForAnchor(anchorId);
 }
 
@@ -728,11 +761,18 @@ function renderFocus({ moveKeyboardFocus = false, scrollIntoView = moveKeyboardF
   elements.focusStatus.textContent = focusAnchor
     ? `${focusAnchor.pageLabel} · ${humanReadable(focusAnchor.sourceKind)}`
     : "Unavailable";
+  elements.primarySourceButton.dataset.focusAnchor = focusAnchor?.anchorId || "";
+  elements.primarySourceButton.disabled = !focusAnchor;
+  elements.primarySourceButton.textContent = focusAnchor?.sourceKind === "exact_text"
+    ? "Go to current passage"
+    : focusAnchor?.sourceKind === "visual_region"
+      ? "Go to current region"
+      : "Go to current page source";
   if (scrollIntoView) {
     scrollTarget.scrollIntoView({ block: "center", behavior: prefersReducedMotion() ? "auto" : "smooth" });
   }
   if (moveKeyboardFocus) {
-    const keyboardTarget = target?.closest?.(".pdf-page-surface") || (target === elements.textSource ? pageSurface : scrollTarget);
+    const keyboardTarget = target && !target.hidden ? target : pageSurface || scrollTarget;
     keyboardTarget?.focus({ preventScroll: true });
   }
 }
@@ -1020,6 +1060,11 @@ function renderGraphOutline() {
 }
 
 function renderAnnotations() {
+  if (pendingRemovalAnnotationId && state.annotations.get(pendingRemovalAnnotationId)?.status !== "active") {
+    pendingRemovalAnnotationId = null;
+    if (removalConfirmationTimer) clearTimeout(removalConfirmationTimer);
+    removalConfirmationTimer = null;
+  }
   for (const target of document.querySelectorAll(".is-reader[data-anchor-id]")) {
     const anchorId = target.dataset.anchorId;
     if (state.anchors.has(anchorId)) continue;
@@ -1070,6 +1115,11 @@ function renderAnnotations() {
     const item = document.createElement("li");
     item.className = `annotation-item${annotation.authority === "agent" ? " is-agent" : annotation.authority === "reader" ? " is-reader" : isAutomatic ? " is-automatic" : ""}`;
     item.dataset.annotationId = key;
+    item.tabIndex = 0;
+    item.setAttribute(
+      "aria-label",
+      `${annotationView.summaryText}. ${annotationView.sourceSummary || "Source description unavailable"}. ${annotation.graphNodeKeys?.length || 0} linked graph nodes and ${annotation.graphEdgeKeys?.length || 0} linked graph edges.`,
+    );
     if (nodeKey) item.dataset.graphNodeKey = nodeKey;
     item.draggable = false;
     item.title = nodeKey
@@ -1101,6 +1151,7 @@ function renderAnnotations() {
       const focusButton = document.createElement("button");
       focusButton.type = "button";
       focusButton.textContent = "Go to source";
+      focusButton.setAttribute("aria-label", `Go to source for ${body} on page ${issuedAnchor?.pageLabel || "unknown"}`);
       focusButton.addEventListener("click", async () => {
         if (nodeKey) selectGraphNode(nodeKey, { announce: false });
         state.focusAnchorId = anchor;
@@ -1137,6 +1188,59 @@ function renderAnnotations() {
       if (targetId) reorderAnnotation(key, targetId, "after", { direction: "later" });
     });
     actions.append(earlierButton, laterButton);
+    if (annotation.authority === "reader" && annotation.status === "active") {
+      const removeButton = document.createElement("button");
+      removeButton.type = "button";
+      removeButton.dataset.removeAnnotation = key;
+      removeButton.textContent = pendingRemovalAnnotationId === key ? "Confirm remove" : "Remove from PaperPilot";
+      removeButton.setAttribute(
+        "aria-label",
+        pendingRemovalAnnotationId === key
+          ? `Confirm removal of ${body}. The PDF file will not change.`
+          : `Remove ${body} from PaperPilot. The PDF file will not change.`,
+      );
+      removeButton.addEventListener("click", async () => {
+        if (pendingRemovalAnnotationId !== key) {
+          pendingRemovalAnnotationId = key;
+          if (removalConfirmationTimer) clearTimeout(removalConfirmationTimer);
+          removalConfirmationTimer = setTimeout(() => {
+            if (pendingRemovalAnnotationId !== key) return;
+            pendingRemovalAnnotationId = null;
+            removalConfirmationTimer = null;
+            renderAnnotations();
+          }, 6_000);
+          elements.annotationLayoutStatus.textContent = `Remove “${body}” and its linked reader idea from PaperPilot? The PDF will not change. Activate Confirm remove to continue.`;
+          renderAnnotations();
+          requestAnimationFrame(() => elements.annotationList.querySelector(`[data-remove-annotation="${CSS.escape(key)}"]`)?.focus());
+          return;
+        }
+        if (removalConfirmationTimer) clearTimeout(removalConfirmationTimer);
+        removalConfirmationTimer = null;
+        pendingRemovalAnnotationId = null;
+        const activeIds = annotationOrder.filter((annotationId) => state.annotations.get(annotationId)?.status === "active");
+        const activeIndex = activeIds.indexOf(key);
+        const nextFocusId = activeIds[activeIndex + 1] || activeIds[activeIndex - 1] || null;
+        try {
+          const result = await removeReaderAnnotation(state, key);
+          recordActivity("reader_annotation_removed", { actor: "human", status: key });
+          elements.annotationLayoutStatus.textContent = `Removed “${body}” and its linked reader idea from PaperPilot. The PDF file is unchanged; Human Undo is available.`;
+          renderLastResult(result);
+          renderState();
+          markSnapshotDirty();
+          requestAnimationFrame(() => {
+            const next = nextFocusId
+              ? elements.annotationList.querySelector(`[data-annotation-id="${CSS.escape(nextFocusId)}"]`)
+              : null;
+            (next || elements.annotationList)?.focus?.({ preventScroll: true });
+          });
+        } catch (error) {
+          elements.annotationLayoutStatus.textContent = error?.message || "The reader annotation could not be removed.";
+          renderLastResult({ status: "reader_annotation_removal_failed", code: error?.code, message: error?.message });
+          renderAnnotations();
+        }
+      });
+      actions.append(removeButton);
+    }
     item.append(actions);
 
     item.addEventListener("dragstart", (event) => {
@@ -1316,6 +1420,7 @@ function renderState() {
   elements.visualMode.textContent = `Evidence mode: ${state.visualEvidenceMode}`;
   elements.humanUndo.disabled = state.history.length === 0;
   elements.humanRedo.disabled = state.redoHistory.length === 0;
+  syncPersistedAnnotationOverlays();
   renderFocus();
   renderCriticalIdeaMap();
   renderGraphOutline();
@@ -1581,6 +1686,22 @@ function normalizeGraphSearchText(value) {
   return String(value || "").normalize("NFKC").toLocaleLowerCase("en-US").replace(/\s+/gu, " ").trim();
 }
 
+function canonicalViewerQuads(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map((quad) => {
+    if (Array.isArray(quad) && quad.length === 4) {
+      return quad.map(({ x, y }) => ({ x: Number(x), y: Number(y) }));
+    }
+    if (Array.isArray(quad?.points) && quad.points.length === 8) {
+      return Array.from({ length: 4 }, (_, index) => ({
+        x: Number(quad.points[index * 2]),
+        y: Number(quad.points[(index * 2) + 1]),
+      }));
+    }
+    throw new Error("The PDF source quadrilateral is malformed.");
+  });
+}
+
 function selectedReaderCapture(rawCapture) {
   if (!rawCapture || typeof rawCapture !== "object") throw new Error("Select text inside one rendered PDF page first.");
   const normalizedBounds = rawCapture.normalizedBounds || rawCapture.normalizedRects || rawCapture.rects;
@@ -1602,41 +1723,162 @@ function selectedReaderCapture(rawCapture) {
   return {
     pageIndex,
     sourceKind: "exact_text",
+    documentSha256: String(rawCapture.documentSha256 || ""),
+    documentRevision: Number(rawCapture.documentRevision || 1),
+    coordinateSpace: String(rawCapture.coordinateSpace || "pdf-crop-box"),
     normalizedBounds: normalizedBounds.map(({ x, y, width, height }) => ({ x, y, width, height })),
+    pdfQuads: canonicalViewerQuads(rawCapture.pdfQuads),
+    textItemRefs: Array.isArray(rawCapture.textItemRefs) ? rawCapture.textItemRefs.map(String) : [],
     pageViewBox: [...pageViewBox],
     pageRotation,
     exactText: String(exactText),
+    exactTextSha256: rawCapture.exactTextSha256 ? String(rawCapture.exactTextSha256) : undefined,
+    rendererRecipe: rawCapture.rendererRecipe ? structuredClone(rawCapture.rendererRecipe) : undefined,
+    resolvedFrom: String(rawCapture.resolvedFrom || "pdfjs_text_layer_user_range"),
     ...(rawCapture.prefix ? { prefix: String(rawCapture.prefix) } : {}),
     ...(rawCapture.suffix ? { suffix: String(rawCapture.suffix) } : {}),
   };
 }
 
+function selectedRegionCapture(rawCapture, regionDescription) {
+  if (!rawCapture || typeof rawCapture !== "object") throw new Error("Mark a region on a rendered PDF page first.");
+  const normalizedBounds = rawCapture.normalizedBounds || rawCapture.rects;
+  const pageIndex = Number.isInteger(rawCapture.pageIndex)
+    ? rawCapture.pageIndex
+    : Number.isInteger(rawCapture.pageNumber)
+      ? rawCapture.pageNumber - 1
+      : null;
+  const pageViewBox = rawCapture.pageViewBox || rawCapture.viewport?.viewBox;
+  const description = String(regionDescription || "").replace(/\s+/gu, " ").trim();
+  if (!Number.isInteger(pageIndex) || !Array.isArray(normalizedBounds) || !Array.isArray(pageViewBox) || !description) {
+    throw new Error("The PDF region needs trusted page geometry and a screen-reader description.");
+  }
+  return {
+    pageIndex,
+    sourceKind: "visual_region",
+    documentSha256: String(rawCapture.documentSha256 || ""),
+    documentRevision: Number(rawCapture.documentRevision || 1),
+    coordinateSpace: String(rawCapture.coordinateSpace || "pdf-crop-box"),
+    normalizedBounds: normalizedBounds.map(({ x, y, width, height }) => ({ x, y, width, height })),
+    pdfQuads: canonicalViewerQuads(rawCapture.pdfQuads),
+    textItemRefs: [],
+    pageViewBox: [...pageViewBox],
+    pageRotation: rawCapture.pageRotation ?? rawCapture.viewport?.rotation ?? 0,
+    rendererRecipe: rawCapture.rendererRecipe ? structuredClone(rawCapture.rendererRecipe) : undefined,
+    regionDigest: String(rawCapture.regionDigest || ""),
+    regionDescription: description,
+    resolvedFrom: String(rawCapture.resolvedFrom || "pdfjs_page_region"),
+  };
+}
+
 function syncPersistedAnnotationOverlays() {
   if (!paperViewer?.upsertAnchorOverlay || !state?.annotations) return;
+  const activeReaderAnchors = new Set(
+    [...state.annotations.values()]
+      .filter((annotation) => annotation.status === "active" && annotation.authority === "reader")
+      .map((annotation) => annotationAnchorId(annotation))
+      .filter(Boolean),
+  );
   for (const [annotationId, annotation] of state.annotations) {
-    if (annotation.status !== "active") continue;
     const anchorId = annotationAnchorId(annotation);
+    if (annotation.authority === "reader" && annotation.status !== "active" && !activeReaderAnchors.has(anchorId)) {
+      paperViewer.removeAnchorOverlay?.(anchorId);
+      continue;
+    }
+    if (annotation.status !== "active") continue;
     const anchor = state.anchors.get(anchorId);
     if (!anchor || !Array.isArray(anchor.normalizedBounds) || anchor.normalizedBounds.length === 0) continue;
     const isAutomatic = annotationId.startsWith("annotation:auto:");
-    const className = annotation.authority === "reader"
+    const sourceClass = anchor.sourceKind === "visual_region" ? "is-page-region" : "is-exact-text";
+    const authorityClass = annotation.authority === "reader"
       ? "is-reader"
       : annotation.authority === "agent"
         ? "is-agent"
         : isAutomatic
           ? "pdf-automatic-map-anchor"
           : "is-system";
+    const className = `${authorityClass} ${sourceClass}`;
+    const nonvisualDescription = anchor.regionDescription
+      || (anchor.sourceKind === "visual_region" ? annotation.body : "")
+      || anchor.quote?.exact
+      || anchor.exactText
+      || "";
     paperViewer.upsertAnchorOverlay({
       anchorId,
       pageIndex: anchor.pageIndex,
       normalizedBounds: anchor.normalizedBounds,
       className,
-      ariaLabel: `${annotation.body || annotation.label || "PaperPilot annotation"}, ${humanReadable(annotation.authority || "system")} source on page ${anchor.pageLabel}`,
+      ariaLabel: `${annotation.label || annotation.body || "PaperPilot annotation"}, ${humanReadable(anchor.sourceKind || "source")} on page ${anchor.pageLabel}`,
+      ariaDescription: nonvisualDescription,
+      visibleLabel: anchor.sourceKind === "visual_region" ? `${annotation.label || "Region"} · p.${anchor.pageLabel}` : "",
     });
   }
 }
 
+function clearPendingReaderDraft({ removeOverlay = true } = {}) {
+  if (removeOverlay && pendingReaderOverlayId && !state?.anchors?.has(pendingReaderOverlayId)) {
+    paperViewer?.removeAnchorOverlay?.(pendingReaderOverlayId);
+  }
+  pendingReaderCapture = null;
+  pendingReaderOverlayId = null;
+}
+
+function presentReaderSourceMode(mode) {
+  const regionMode = mode === "region";
+  regionSelectionActive = regionMode;
+  elements.useTextSelection.setAttribute("aria-pressed", String(!regionMode));
+  elements.beginRegionSelection.setAttribute("aria-pressed", String(regionMode));
+  elements.cancelRegionSelection.hidden = false;
+  elements.regionDescriptionField.hidden = !regionMode;
+  elements.readerRegionDescription.required = regionMode;
+  elements.createReaderAnnotation.textContent = regionMode ? "Add region to the graph" : "Add highlight to the graph";
+}
+
+function leaveRegionSelection({ cancelViewer = true, message = "Region selection cancelled. Select text or start another region lens." } = {}) {
+  if (cancelViewer) paperViewer?.cancelRegionSelection?.({ notify: false });
+  clearPendingReaderDraft({ removeOverlay: !cancelViewer });
+  presentReaderSourceMode("text");
+  elements.readerSelectionStatus.textContent = message;
+}
+
+async function startRegionSelection(initialBounds) {
+  if (typeof paperViewer?.beginRegionSelection !== "function") {
+    elements.readerSelectionStatus.textContent = "Region selection is unavailable in this viewer build.";
+    return;
+  }
+  clearPendingReaderDraft();
+  globalThis.getSelection?.()?.removeAllRanges?.();
+  presentReaderSourceMode("region");
+  if (elements.readerNodeKind.value === "concept") elements.readerNodeKind.value = "figure";
+  elements.readerSelectionStatus.textContent = "Opening a page-owned region lens…";
+  try {
+    await paperViewer.beginRegionSelection({
+      ...(initialBounds ? { initialBounds } : {}),
+      onChange({ phase, pageNumber, normalizedBounds, inputMethod }) {
+        const region = normalizedBounds[0];
+        const width = Math.round(region.width * 100);
+        const height = Math.round(region.height * 100);
+        const left = Math.round(region.x * 100);
+        const top = Math.round(region.y * 100);
+        elements.readerSelectionStatus.textContent = `Page ${pageNumber} region ${phase} · ${left}% from left, ${top}% from top · ${width}% wide × ${height}% high · ${inputMethod}. Add a nonvisual description before saving.`;
+      },
+      onConfirm() {
+        elements.readerSelectionStatus.textContent = "Region confirmed. Describe what is visible, name the idea, then add it to the graph.";
+        elements.readerRegionDescription.focus();
+      },
+      onCancel() {
+        leaveRegionSelection({ cancelViewer: false });
+        elements.beginRegionSelection.focus();
+      },
+    });
+    pendingReaderOverlayId = "anchor:region:draft";
+  } catch (error) {
+    leaveRegionSelection({ cancelViewer: false, message: error?.message || "The region lens could not start." });
+  }
+}
+
 async function captureReaderSelection({ announceFailure = false } = {}) {
+  if (regionSelectionActive) return null;
   if (typeof paperViewer?.captureSelection !== "function") {
     if (announceFailure) elements.readerSelectionStatus.textContent = "Selection capture is unavailable in this viewer build.";
     return null;
@@ -1657,6 +1899,7 @@ async function captureReaderSelection({ announceFailure = false } = {}) {
     }
     return capture;
   } catch (error) {
+    clearPendingReaderDraft();
     if (announceFailure) elements.readerSelectionStatus.textContent = error?.message || "Select text inside one PDF page first.";
     return null;
   }
@@ -1877,9 +2120,46 @@ function wireHumanControls() {
   elements.pdfViewer.addEventListener("pointerup", recaptureSelection);
   elements.pdfViewer.addEventListener("keyup", recaptureSelection);
 
+  elements.useTextSelection.addEventListener("click", () => {
+    if (regionSelectionActive) leaveRegionSelection();
+    else {
+      presentReaderSourceMode("text");
+      elements.readerSelectionStatus.textContent = "Select text directly on one rendered PDF page, then name the idea.";
+    }
+  });
+  elements.beginRegionSelection.addEventListener("click", () => { void startRegionSelection(); });
+  elements.selectWholePage.addEventListener("click", () => {
+    void startRegionSelection({ x: 0, y: 0, width: 1, height: 1 });
+  });
+  elements.cancelRegionSelection.addEventListener("click", () => {
+    if (regionSelectionActive) leaveRegionSelection();
+    else {
+      clearPendingReaderDraft();
+      globalThis.getSelection?.()?.removeAllRanges?.();
+      elements.readerSelectionStatus.textContent = "Selection cleared. Highlight text, mark a region, or use the whole page.";
+    }
+    (regionSelectionActive ? elements.beginRegionSelection : elements.useTextSelection).focus();
+  });
+
   elements.readerAnnotationForm.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const capture = pendingReaderCapture || await captureReaderSelection({ announceFailure: true });
+    let capture;
+    if (regionSelectionActive) {
+      const description = elements.readerRegionDescription.value.trim();
+      if (!description) {
+        elements.readerSelectionStatus.textContent = "Describe the visible region so a screen-reader user can inspect it.";
+        elements.readerRegionDescription.focus();
+        return;
+      }
+      try {
+        capture = selectedRegionCapture(await paperViewer.captureRegionSelection(), description);
+      } catch (error) {
+        elements.readerSelectionStatus.textContent = error?.message || "Mark a PDF region before adding it to the graph.";
+        return;
+      }
+    } else {
+      capture = pendingReaderCapture || await captureReaderSelection({ announceFailure: true });
+    }
     if (!capture) return;
     const label = elements.readerAnnotationLabel.value.trim();
     const nodeKind = elements.readerNodeKind.value;
@@ -1892,16 +2172,22 @@ function wireHumanControls() {
     submitButton.disabled = true;
     try {
       const anchor = await mintReaderAnchor(state, capture);
-      const exactTextSummary = capture.exactText.replace(/\s+/gu, " ").trim();
+      const exactTextSummary = capture.sourceKind === "exact_text"
+        ? capture.exactText.replace(/\s+/gu, " ").trim()
+        : capture.regionDescription;
       const result = await applyReaderAnnotation(state, {
         baseWorkspaceRevision: state.workspaceRevision,
         baseWorkspaceDigest: state.workspaceDigest,
         anchor,
-        annotation: { kind: "highlight", body: label },
+        annotation: capture.sourceKind === "exact_text"
+          ? { kind: "highlight", label }
+          : { kind: "region", label, body: capture.regionDescription },
         node: {
           kind: nodeKind,
           label,
-          summary: `Reader-authored idea grounded in page ${capture.pageIndex + 1}: “${exactTextSummary.slice(0, 700)}${exactTextSummary.length > 700 ? "…" : ""}”`,
+          summary: capture.sourceKind === "exact_text"
+            ? `Reader-authored idea grounded in page ${capture.pageIndex + 1}: “${exactTextSummary.slice(0, 700)}${exactTextSummary.length > 700 ? "…" : ""}”`
+            : `Reader-authored idea grounded in a described PDF region on page ${capture.pageIndex + 1}: ${exactTextSummary.slice(0, 700)}${exactTextSummary.length > 700 ? "…" : ""}`,
           salience: 0.8,
         },
       });
@@ -1912,15 +2198,22 @@ function wireHumanControls() {
         anchorId: result.anchorId,
         pageIndex: anchor.pageIndex,
         normalizedBounds: anchor.normalizedBounds,
-        className: "is-reader",
-        ariaLabel: `${label}, reader highlight on page ${anchor.pageLabel}`,
+        className: capture.sourceKind === "exact_text" ? "is-reader is-exact-text" : "is-reader is-page-region",
+        ariaLabel: `${label}, reader ${capture.sourceKind === "exact_text" ? "highlight" : "region"} on page ${anchor.pageLabel}`,
+        ariaDescription: capture.sourceKind === "exact_text" ? capture.exactText : capture.regionDescription,
+        visibleLabel: capture.sourceKind === "visual_region" ? `${label} · p.${anchor.pageLabel}` : "",
       });
       state.focusAnchorId = result.anchorId;
       pendingReaderCapture = null;
       pendingReaderOverlayId = null;
+      if (regionSelectionActive) {
+        paperViewer?.cancelRegionSelection?.({ notify: false });
+        presentReaderSourceMode("text");
+        elements.readerRegionDescription.value = "";
+      }
       globalThis.getSelection?.()?.removeAllRanges?.();
       elements.readerAnnotationLabel.value = "";
-      elements.readerSelectionStatus.textContent = `Added “${label}” to the graph from page ${anchor.pageLabel}. Human Undo is available.`;
+      elements.readerSelectionStatus.textContent = `Added “${label}” from page ${anchor.pageLabel} as a ${capture.sourceKind === "exact_text" ? "text highlight" : "described region"}. Human Undo is available.`;
       recordActivity("reader_annotation_graph_created", {
         actor: "human",
         status: `${result.nodeKey} · ${result.annotationId}`,
@@ -1985,6 +2278,9 @@ function wireHumanControls() {
   elements.humanUndo.addEventListener("click", async () => {
     const result = await undoLastHumanChange(state);
     recordActivity("human_undo_control", { actor: "human", status: result.status });
+    elements.annotationLayoutStatus.textContent = result.status === "undone"
+      ? "Human Undo restored the previous PaperPilot graph and annotation state. Human Redo is available."
+      : "There is no human change to undo.";
     renderLastResult(result);
     renderState();
     if (result.status === "undone") markSnapshotDirty();
@@ -1993,6 +2289,9 @@ function wireHumanControls() {
   elements.humanRedo.addEventListener("click", async () => {
     const result = await redoLastHumanChange(state);
     recordActivity("human_redo_control", { actor: "human", status: result.status });
+    elements.annotationLayoutStatus.textContent = result.status === "redone"
+      ? "Human Redo reapplied the graph and annotation state. Human Undo is available."
+      : "There is no human change to redo.";
     renderLastResult(result);
     renderState();
     if (result.status === "redone") markSnapshotDirty();

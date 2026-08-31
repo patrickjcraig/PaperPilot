@@ -21,6 +21,7 @@ const {
   mintReaderAnchor,
   mountToolSuite,
   redoLastHumanChange,
+  removeReaderAnnotation,
   resultSizeBytes,
   schemaObjectsAreClosed,
   undoLastHumanChange,
@@ -611,6 +612,164 @@ test("atomically turns a page-owned reader selection into a grounded annotation 
   assert.equal(state.workspaceDigest, baseline.workspaceDigest);
 });
 
+test("mints a canonical described PDF region that remains focusable through WebMCP", async () => {
+  const state = await createFixture();
+  const anchor = await mintReaderAnchor(state, {
+    pageIndex: 2,
+    sourceKind: "visual_region",
+    documentSha256: state.paper.documentSha256,
+    documentRevision: 1,
+    coordinateSpace: "pdf-crop-box",
+    normalizedBounds: [{ x: 0.18, y: 0.22, width: 0.56, height: 0.48 }],
+    pageViewBox: [0, 0, 612, 792],
+    pageRotation: 90,
+    textItemRefs: [],
+    regionDescription: "The encoder and decoder stacks are connected by attention arrows.",
+    resolvedFrom: "pdfjs_keyboard_page_region",
+  });
+
+  assert.equal(anchor.schemaVersion, 1);
+  assert.equal(anchor.paperRef, state.paper.paperRef);
+  assert.equal(anchor.documentSha256, state.paper.documentSha256);
+  assert.equal(anchor.documentRevision, 1);
+  assert.equal(anchor.pageIndex, 2);
+  assert.equal(anchor.rotation, 90);
+  assert.equal(anchor.coordinateSpace, "pdf-crop-box");
+  assert.equal(anchor.sourceKind, "visual_region");
+  assert.equal(anchor.geometryKind, "rectangle");
+  assert.equal(anchor.authority, "client_rendered_pdf");
+  assert.equal(anchor.pdfQuads.length, 1);
+  assert.match(anchor.rendererRecipeDigest, /^[0-9a-f]{64}$/u);
+  assert.match(anchor.regionDigest, /^[0-9a-f]{64}$/u);
+  assert.match(anchor.anchorDigest, /^[0-9a-f]{64}$/u);
+  assert.equal(Object.isFrozen(anchor), true);
+  assert.equal(Object.isFrozen(anchor.pdfQuads[0]), true);
+  assert.equal("quote" in anchor, false);
+
+  const applied = await applyReaderAnnotation(state, readerAnnotationCommand(state, anchor, {
+    annotation: {
+      kind: "region",
+      label: "Transformer architecture figure",
+      body: "The encoder and decoder stacks are connected by attention arrows.",
+    },
+    node: {
+      kind: "figure",
+      label: "Transformer architecture figure",
+      summary: "Reader-authored described visual region on page 3.",
+      salience: 0.86,
+    },
+  }));
+  assert.equal(state.annotations.get(applied.annotationId).body, "The encoder and decoder stacks are connected by attention arrows.");
+  state.focusAnchorId = applied.anchorId;
+  const focus = await toolsFor(state).get("paperpilot.read_focus").execute({});
+  assert.equal(focus.status, "ready");
+  assert.equal(focus.focus.anchorId, applied.anchorId);
+  assert.equal(focus.focus.sourceKind, "visual_region");
+  assert.equal(focus.focus.visualEvidence.visibleRegionId, applied.anchorId);
+  assert.equal("exactText" in focus.focus, false);
+});
+
+test("soft-removes a reader annotation and its linked reader graph entities with Human Undo and Redo", async () => {
+  const state = await createFixture();
+  const anchor = await readerAnchor(state);
+  const created = await applyReaderAnnotation(state, readerAnnotationCommand(state, anchor));
+  const beforeRemoval = snapshotForAtomicTest(state);
+  const anchorBefore = structuredClone(state.anchors.get(created.anchorId));
+  const historyBefore = state.history.length;
+  state.redoHistory.push({ kind: "discarded_divergent_branch" });
+
+  const removed = await removeReaderAnnotation(state, created.annotationId);
+  assert.equal(removed.status, "applied_reversible");
+  assert.equal(removed.actor, "human");
+  assert.equal(removed.fromRevision, beforeRemoval.workspaceRevision);
+  assert.equal(removed.toRevision, beforeRemoval.workspaceRevision + 1);
+  assert.equal(removed.annotationId, created.annotationId);
+  assert.equal(removed.anchorId, created.anchorId);
+  assert.equal(removed.nodeKey, created.nodeKey);
+  assert.equal(removed.edgeKey, created.edgeKey);
+  assert.equal(removed.anchorPreserved, true);
+  assert.equal(removed.undoAvailable, true);
+  assert.notEqual(removed.afterWorkspaceDigest, beforeRemoval.workspaceDigest);
+  assert.notEqual(removed.afterGraphDigest, beforeRemoval.graphDigest);
+  assert.notEqual(removed.afterAnnotationDigest, beforeRemoval.annotationDigest);
+  assert.deepEqual(state.anchors.get(created.anchorId), anchorBefore);
+  assert.equal(state.annotations.get(created.annotationId).status, "tombstoned");
+  assert.equal(state.annotations.get(created.annotationId).entityRevision, 2);
+  assert.equal(state.graph.getNodeAttribute(created.nodeKey, "status"), "tombstoned");
+  assert.equal(state.graph.getNodeAttribute(created.nodeKey, "entityRevision"), 2);
+  assert.equal(state.graph.getEdgeAttribute(created.edgeKey, "status"), "tombstoned");
+  assert.equal(state.graph.getEdgeAttribute(created.edgeKey, "entityRevision"), 2);
+  assert.equal(state.history.length, historyBefore + 1);
+  assert.equal(state.history.at(-1).kind, "reader_annotation_removal");
+  assert.deepEqual(state.redoHistory, []);
+  assert.equal(state.events.at(-1).eventType, "reader_annotation_removed");
+  assert.equal(state.events.at(-1).actor, "human");
+
+  const afterRemovalDigest = state.workspaceDigest;
+  const undone = await undoLastHumanChange(state);
+  assert.equal(undone.status, "undone");
+  assert.equal(undone.digestMatches, true);
+  assert.equal(state.workspaceDigest, beforeRemoval.workspaceDigest);
+  assert.equal(state.annotations.get(created.annotationId).status, "active");
+  assert.equal(state.graph.getNodeAttribute(created.nodeKey, "status"), "active");
+  assert.equal(state.graph.getEdgeAttribute(created.edgeKey, "status"), "active");
+  assert.deepEqual(state.anchors.get(created.anchorId), anchorBefore);
+
+  const redone = await redoLastHumanChange(state);
+  assert.equal(redone.status, "redone");
+  assert.equal(redone.digestMatches, true);
+  assert.equal(state.workspaceDigest, afterRemovalDigest);
+  assert.equal(state.annotations.get(created.annotationId).status, "tombstoned");
+  assert.equal(state.graph.getNodeAttribute(created.nodeKey, "status"), "tombstoned");
+  assert.equal(state.graph.getEdgeAttribute(created.edgeKey, "status"), "tombstoned");
+  assert.deepEqual(state.anchors.get(created.anchorId), anchorBefore);
+  assert.equal(toolsFor(state).has("paperpilot.remove_reader_annotation"), false);
+});
+
+test("rejects invalid, missing, non-reader, already-removed, and stale reader removals atomically", async () => {
+  const state = await createFixture();
+  const fixtureAnnotationId = [...state.annotations.keys()][0];
+
+  for (const [annotationId, code] of [
+    ["not an id", "reader_annotation_invalid"],
+    ["annotation:reader:missing", "not_found_in_active_paper"],
+    [fixtureAnnotationId, "reader_annotation_not_reader"],
+  ]) {
+    const before = snapshotForAtomicTest(state);
+    const eventCount = state.events.length;
+    const redoCount = state.redoHistory.length;
+    await assert.rejects(removeReaderAnnotation(state, annotationId), (error) => error.code === code);
+    assert.deepEqual(snapshotForAtomicTest(state), before);
+    assert.equal(state.events.length, eventCount);
+    assert.equal(state.redoHistory.length, redoCount);
+  }
+
+  const anchor = await readerAnchor(state);
+  const created = await applyReaderAnnotation(state, readerAnnotationCommand(state, anchor));
+  await removeReaderAnnotation(state, created.annotationId);
+  const alreadyRemoved = snapshotForAtomicTest(state);
+  const alreadyRemovedEvents = state.events.length;
+  await assert.rejects(
+    removeReaderAnnotation(state, created.annotationId),
+    (error) => error.code === "reader_annotation_already_tombstoned",
+  );
+  assert.deepEqual(snapshotForAtomicTest(state), alreadyRemoved);
+  assert.equal(state.events.length, alreadyRemovedEvents);
+
+  const staleState = await createFixture();
+  const staleAnchor = await readerAnchor(staleState);
+  const stale = await applyReaderAnnotation(staleState, readerAnnotationCommand(staleState, staleAnchor));
+  staleState.graph.mergeEdgeAttributes(stale.edgeKey, { status: "tombstoned", entityRevision: 2 });
+  const staleBefore = snapshotForAtomicTest(staleState);
+  const staleEvents = staleState.events.length;
+  await assert.rejects(
+    removeReaderAnnotation(staleState, stale.annotationId),
+    (error) => error.code === "reader_annotation_stale",
+  );
+  assert.deepEqual(snapshotForAtomicTest(staleState), staleBefore);
+  assert.equal(staleState.events.length, staleEvents);
+});
+
 test("searches graph labels and summaries literally with authority/type filters and deterministic truncation", async () => {
   const state = await createFixture();
   const firstAnchor = await readerAnchor(state);
@@ -733,7 +892,7 @@ test("keeps WebMCP graph create, update, tombstone, and explicit reader-node rea
 test("rejects foreign, stale, tampered, and unknown reader/graph targets without partial changes", async () => {
   const foreignState = await createFixture();
   const foreignBaseline = snapshotForAtomicTest(foreignState);
-  const foreignAnchor = await readerAnchor(foreignState);
+  const foreignAnchor = structuredClone(await readerAnchor(foreignState));
   foreignAnchor.paperRef = "paper:foreign";
   await assert.rejects(
     applyReaderAnnotation(foreignState, readerAnnotationCommand(foreignState, foreignAnchor)),
@@ -743,7 +902,7 @@ test("rejects foreign, stale, tampered, and unknown reader/graph targets without
 
   const tamperedState = await createFixture();
   const tamperedBaseline = snapshotForAtomicTest(tamperedState);
-  const tamperedAnchor = await readerAnchor(tamperedState);
+  const tamperedAnchor = structuredClone(await readerAnchor(tamperedState));
   tamperedAnchor.normalizedBounds[0].x += 0.01;
   await assert.rejects(
     applyReaderAnnotation(tamperedState, readerAnnotationCommand(tamperedState, tamperedAnchor)),

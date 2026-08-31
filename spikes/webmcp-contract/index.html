@@ -116,8 +116,15 @@
             <form id="reader-annotation-form" class="reader-annotation-composer" aria-labelledby="reader-annotation-heading">
               <div class="annotation-composer-intro">
                 <p class="source-kicker">Reader → annotation → graph</p>
-                <h3 id="reader-annotation-heading">Turn your highlight into an idea</h3>
-                <p id="reader-selection-status" role="status" aria-live="polite">Select text directly on any rendered PDF page, then name the idea you want to remember.</p>
+                <h3 id="reader-annotation-heading">Turn a passage or region into an idea</h3>
+                <p id="reader-selection-status" role="status" aria-live="polite">Select text on a PDF page, or start a region lens for a figure, equation, or visual detail.</p>
+              </div>
+              <div class="annotation-source-mode" role="group" aria-label="Choose annotation source">
+                <button id="use-text-selection" type="button" aria-pressed="true" aria-describedby="reader-selection-status">Highlight text</button>
+                <button id="begin-region-selection" type="button" aria-pressed="false" aria-describedby="reader-selection-status region-keyboard-help">Mark a region</button>
+                <button id="select-whole-page" type="button" aria-describedby="reader-selection-status region-keyboard-help">Use whole page</button>
+                <button id="cancel-region-selection" type="button" aria-describedby="reader-selection-status">Cancel selection</button>
+                <span id="region-keyboard-help">Region lens: drag on a page, or use Arrow keys to move and Shift + Arrow keys to resize. Enter confirms; Escape cancels.</span>
               </div>
               <label>
                 Idea label
@@ -137,7 +144,11 @@
                 </select>
               </label>
               <button id="create-reader-annotation" type="submit">Add highlight to the graph</button>
-              <p class="annotation-composer-boundary">PaperPilot mints the source geometry. The graph records this as reader-authored; WebMCP can search and revise the issued node, but it cannot invent the highlight coordinates.</p>
+              <label id="region-description-field" class="region-description-field" hidden>
+                Screen-reader description of this region
+                <textarea id="reader-region-description" name="regionDescription" maxlength="600" rows="3" placeholder="Describe what is visibly present and why this region matters."></textarea>
+              </label>
+              <p class="annotation-composer-boundary">PaperPilot mints and binds PDF-space geometry to this document. The graph records the result as reader-authored; WebMCP can search and revise the issued node, but it cannot invent source coordinates.</p>
             </form>
 
             <details class="visual-diagnostic" aria-labelledby="visual-heading">
@@ -306,7 +317,7 @@
             </div>
             <p class="annotation-boundary">Annotations stay inside PaperPilot. Use “Save in this browser” to recover them after reopening the same exact PDF; the original file is never rewritten.</p>
             <p id="annotation-layout-status" class="annotation-layout-status" role="status" aria-live="polite">Drag a card to reorder it, or drag it onto the map. Keyboard controls are inside each card.</p>
-            <ul id="annotation-list"><li>Loading annotations…</li></ul>
+            <ul id="annotation-list" tabindex="-1"><li>Loading annotations…</li></ul>
           </section>
           <section class="critical-map" aria-labelledby="critical-map-heading">
             <div class="critical-map-heading">
