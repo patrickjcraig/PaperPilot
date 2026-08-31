@@ -20,6 +20,7 @@ const {
   createToolSuite,
   mintReaderAnchor,
   mountToolSuite,
+  redoLastHumanChange,
   resultSizeBytes,
   schemaObjectsAreClosed,
   undoLastHumanChange,
@@ -77,6 +78,59 @@ function deterministicStateOptions(overrides = {}) {
 
 async function createFixture(overrides = {}) {
   return createSpikeState(MultiDirectedGraph, deterministicStateOptions(overrides));
+}
+
+function automaticMapFixture({ candidates, coverage } = {}) {
+  const baseCandidates = candidates || [
+    {
+      key: "candidate:idea:p2:alpha001",
+      rank: 1,
+      kind: "main_idea",
+      label: "Direct comparison is the central candidate",
+      summary: "The paper proposes direct comparison as the primary mechanism for relating positions.",
+      salience: 0.94,
+      authority: "system_derived_candidate",
+      reviewState: "unreviewed",
+      source: {
+        pageIndex: 1,
+        pageLabel: "2",
+        exactText: "The paper proposes direct comparison as the primary mechanism for relating positions.",
+        normalizedBounds: [{ x: 0.18, y: 0.24, width: 0.64, height: 0.05 }],
+        pageViewBox: [0, 0, 612, 792],
+        pageRotation: 0,
+      },
+    },
+    {
+      key: "candidate:idea:p7:beta002",
+      rank: 2,
+      kind: "result",
+      label: "Evaluation reports a quality gain",
+      summary: "The evaluation reports improved quality together with reduced training cost.",
+      salience: 0.72,
+      authority: "system_derived_candidate",
+      reviewState: "unreviewed",
+      source: {
+        pageIndex: 6,
+        pageLabel: "7",
+        exactText: "The evaluation reports improved quality together with reduced training cost.",
+        normalizedBounds: [{ x: 0.2, y: 0.62, width: 0.58, height: 0.045 }],
+        pageViewBox: [0, 0, 612, 792],
+        pageRotation: 0,
+      },
+    },
+  ];
+  return {
+    schemaVersion: 1,
+    status: baseCandidates.length >= 5 ? "candidate_ready" : "candidate_limited",
+    claimBoundary: "Ranked from extracted PDF text by generic heuristics. These are reviewable candidates, not verified scientific claims.",
+    pageCount: 15,
+    coverage: coverage || Array.from({ length: 15 }, (_, pageIndex) => ({
+      pageIndex,
+      pageLabel: String(pageIndex + 1),
+      textCapability: "exact_candidate",
+    })),
+    candidates: baseCandidates,
+  };
 }
 
 function toolsFor(state) {
@@ -313,6 +367,130 @@ test("uses a directed multigraph with no self-loops and supports parallel eviden
   state.graph.addDirectedEdge("node:paper", "node:concept:attention", { kind: "evidenced_by" });
   assert.equal([...state.graph.directedEdgeEntries("node:paper", "node:concept:attention")].length, 2);
   assert.throws(() => state.graph.addDirectedEdge("node:paper", "node:paper"));
+});
+
+test("hydrates a deterministic grounded critical-idea map as the revision-one baseline", async () => {
+  const automaticMap = automaticMapFixture();
+  const first = await createFixture({ automaticMap });
+  const second = await createFixture({
+    automaticMap: { ...automaticMap, candidates: [...automaticMap.candidates].reverse() },
+  });
+
+  assert.equal(first.workspaceRevision, 1);
+  assert.equal(first.history.length, 0);
+  assert.equal(first.events.length, 0);
+  assert.equal(first.graph.order, 3);
+  assert.equal(first.graph.size, 2);
+  assert.equal(first.annotations.size, 2);
+  assert.equal(first.graphDigest, second.graphDigest);
+  assert.equal(first.workspaceDigest, second.workspaceDigest);
+
+  const candidate = first.graph.getNodeAttributes("candidate:idea:p2:alpha001");
+  assert.equal(candidate.origin, "automatic_map");
+  assert.equal(candidate.authority, "paper_grounded");
+  assert.equal(candidate.salience, 0.94);
+  assert.deepEqual(candidate.sourceAnchorIds, ["anchor:auto:idea:p2:alpha001"]);
+  const anchor = first.anchors.get(candidate.sourceAnchorIds[0]);
+  assert.equal(anchor.pageIndex, 1);
+  assert.equal(anchor.sourceKind, "exact_text");
+  assert.equal(anchor.exactText, automaticMap.candidates[0].source.exactText);
+  assert.match(anchor.anchorDigest, /^[0-9a-f]{64}$/u);
+
+  const read = await toolsFor(first).get("paperpilot.read_graph").execute({ mode: "overview", limit: 20 });
+  assert.equal(read.status, "ready");
+  assert.equal(read.coverage.pageCount, 15);
+  assert.equal(read.coverage.semanticPages, 2);
+  assert.equal(read.coverage.limitedPages, 0);
+  assert.match(read.guidance, /automatically ranked, unreviewed/u);
+  assert.equal(read.nodes.find(({ key }) => key === "candidate:idea:p2:alpha001").entityRevision, 1);
+  assert.equal(read.edges.find(({ key }) => key === "edge:auto:idea:p2:alpha001").entityRevision, 1);
+  assert.equal(JSON.stringify(read).includes('"x"'), false);
+  assert.equal(JSON.stringify(read).includes("criticalityScore"), false);
+});
+
+test("binds an arbitrary browser-local PDF identity to the automatic map and first exact candidate", async () => {
+  const automaticMap = automaticMapFixture({
+    coverage: Array.from({ length: 8 }, (_, pageIndex) => ({
+      pageIndex,
+      pageLabel: String(pageIndex + 1),
+      textCapability: "exact_candidate",
+    })),
+  });
+  automaticMap.pageCount = 8;
+  const digest = "a".repeat(64);
+  const state = await createFixture({
+    paper: {
+      paperRef: `paper:sha256:${digest}`,
+      filename: "reader-upload.pdf",
+      documentSha256: digest,
+      pageCount: 8,
+      title: "A Browser-Local Research Paper",
+      pageViewBox: [0, 0, 400, 700],
+      pageRotation: 0,
+    },
+    textAnchor: null,
+    automaticMap,
+  });
+
+  assert.deepEqual(state.paper, {
+    paperRef: `paper:sha256:${digest}`,
+    filename: "reader-upload.pdf",
+    documentSha256: digest,
+    pageCount: 8,
+  });
+  assert.equal(state.graph.getNodeAttribute("node:paper", "label"), "A Browser-Local Research Paper");
+  assert.deepEqual(state.anchors.get("anchor:page:1").pageViewBox, [0, 0, 400, 700]);
+  assert.equal(state.anchors.has("anchor:text:attention"), false);
+  assert.equal(state.anchors.has("anchor:visual:a"), false);
+  assert.equal(state.focusAnchorId, "anchor:auto:idea:p2:alpha001");
+  const focus = await toolsFor(state).get("paperpilot.read_focus").execute({});
+  assert.equal(focus.status, "ready");
+  assert.equal(focus.paper.documentSha256, digest);
+  assert.equal(focus.focus.exactText, automaticMap.candidates[0].source.exactText);
+});
+
+test("agent refinement and Human Undo preserve the automatic map and immutable source", async () => {
+  const state = await createFixture({ automaticMap: automaticMapFixture() });
+  const baselineDigest = state.workspaceDigest;
+  const anchorBefore = structuredClone(state.anchors.get("anchor:auto:idea:p2:alpha001"));
+  const result = await toolsFor(state).get("paperpilot.apply_graph").execute({
+    idempotencyKey: "automatic-refine-0001",
+    baseWorkspaceRevision: state.workspaceRevision,
+    baseWorkspaceDigest: state.workspaceDigest,
+    baseGraphDigest: state.graphDigest,
+    reason: "Refine one automatically ranked candidate after reading its issued source.",
+    operations: [{
+      op: "update_node",
+      nodeKey: "candidate:idea:p2:alpha001",
+      expectedEntityRevision: 1,
+      set: { label: "Direct comparison connects distant positions" },
+    }],
+  });
+  assert.equal(result.status, "applied_reversible");
+  assert.equal(state.graph.getNodeAttribute("candidate:idea:p2:alpha001", "origin"), "agent");
+  assert.deepEqual(state.anchors.get(anchorBefore.anchorId), anchorBefore);
+
+  const undone = await undoLastHumanChange(state);
+  assert.equal(undone.status, "undone");
+  assert.equal(state.workspaceDigest, baselineDigest);
+  assert.equal(state.graph.getNodeAttribute("candidate:idea:p2:alpha001", "origin"), "automatic_map");
+  assert.equal(state.graph.hasNode("candidate:idea:p7:beta002"), true);
+  assert.deepEqual(state.anchors.get(anchorBefore.anchorId), anchorBefore);
+});
+
+test("rejects malformed automatic-map geometry atomically", async () => {
+  const automaticMap = automaticMapFixture();
+  const badCandidate = {
+    ...automaticMap.candidates[0],
+    source: {
+      ...automaticMap.candidates[0].source,
+      normalizedBounds: [{ x: 0.9, y: 0.2, width: 0.2, height: 0.1 }],
+    },
+  };
+  await assert.rejects(
+    createFixture({ automaticMap: { ...automaticMap, candidates: [badCandidate] } }),
+    (error) => error.code === "automatic_map_invalid",
+  );
 });
 
 test("rehydrates one explicit demo annotation without manufacturing mutation history", async () => {
@@ -859,6 +1037,55 @@ test("human Undo restores the semantic digest while advancing the audit revision
   assert.equal(state.graph.hasNode(createdNodeKey), false);
   assert.equal(state.events.at(-1).actor, "human");
   assert.equal(state.events.at(-1).eventType, "undo_applied");
+});
+
+test("Human Redo restores the exact semantic after-digest while advancing audit revision", async () => {
+  const state = await createFixture();
+  const applied = await toolsFor(state).get("paperpilot.apply_graph").execute(graphCommand(state));
+  const appliedDigest = applied.afterWorkspaceDigest;
+  const appliedRevision = state.workspaceRevision;
+
+  const undone = await undoLastHumanChange(state);
+  assert.equal(undone.status, "undone");
+  assert.equal(state.redoHistory.length, 1);
+  assert.ok(state.workspaceRevision > appliedRevision);
+
+  const redone = await redoLastHumanChange(state);
+  assert.equal(redone.status, "redone");
+  assert.equal(redone.digestMatches, true);
+  assert.equal(state.workspaceDigest, appliedDigest);
+  assert.equal(state.redoHistory.length, 0);
+  assert.equal(state.history.length, 1);
+  assert.ok(state.workspaceRevision > appliedRevision + 1);
+  assert.equal(state.events.at(-1).eventType, "redo_applied");
+});
+
+test("a divergent reader or agent mutation clears the Human Redo branch", async () => {
+  const state = await createFixture();
+  await toolsFor(state).get("paperpilot.apply_graph").execute(graphCommand(state));
+  await undoLastHumanChange(state);
+  assert.equal(state.redoHistory.length, 1);
+
+  const divergent = graphCommand(state, {
+    idempotencyKey: "graph-command-divergent-0002",
+    reason: "Create a different grounded concept after choosing a new history branch.",
+    operations: [{
+      op: "add_node",
+      clientRef: "client:concept:divergent",
+      node: {
+        kind: "concept",
+        label: "Divergent grounded branch",
+        summary: "This new node deliberately replaces the undone history branch.",
+        authority: "paper_grounded",
+        sourceAnchorIds: ["anchor:text:attention"],
+        salience: 0.61,
+      },
+    }],
+  });
+  const applied = await toolsFor(state).get("paperpilot.apply_graph").execute(divergent);
+  assert.equal(applied.status, "applied_reversible");
+  assert.equal(state.redoHistory.length, 0);
+  assert.deepEqual(await redoLastHumanChange(state), { status: "nothing_to_redo" });
 });
 
 test("enforces canonical UTF-8 input and JSON result byte budgets without clipping", async () => {

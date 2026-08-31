@@ -291,7 +291,8 @@ const graphNodeResultSchema = closedObject({
   salience: { type: "number", minimum: 0, maximum: 1 },
   origin: { type: "string", enum: ["system", "agent", "reader", "automatic_map"] },
   status: { type: "string", enum: ["active", "tombstoned"] },
-}, ["key", "kind", "label", "summary", "authority", "sourceAnchorIds", "structuralCoverage", "origin", "status"]);
+  entityRevision: { type: "integer", minimum: 1 },
+}, ["key", "kind", "label", "summary", "authority", "sourceAnchorIds", "structuralCoverage", "origin", "status", "entityRevision"]);
 
 const graphEdgeResultSchema = closedObject({
   key: idSchema(),
@@ -303,7 +304,8 @@ const graphEdgeResultSchema = closedObject({
   sourceAnchorIds: { type: "array", maxItems: 12, uniqueItems: true, items: idSchema() },
   origin: { type: "string", enum: ["system", "agent", "reader", "automatic_map"] },
   status: { type: "string", enum: ["active", "tombstoned"] },
-}, ["key", "sourceKey", "targetKey", "kind", "claim", "authority", "sourceAnchorIds", "origin", "status"]);
+  entityRevision: { type: "integer", minimum: 1 },
+}, ["key", "sourceKey", "targetKey", "kind", "claim", "authority", "sourceAnchorIds", "origin", "status", "entityRevision"]);
 
 const affectedResultSchema = closedObject({
   created: { type: "array", maxItems: LIMITS.mutationOperations * 2, uniqueItems: true, items: idSchema() },
@@ -611,6 +613,13 @@ function semanticAttributes(attributes) {
   return Object.fromEntries(Object.entries(attributes).filter(([key]) => !excluded.has(key)).sort(([a], [b]) => a.localeCompare(b)));
 }
 
+function readableGraphAttributes(attributes) {
+  return {
+    ...semanticAttributes(attributes),
+    entityRevision: attributes.entityRevision,
+  };
+}
+
 function graphProjection(graph) {
   const nodes = graph.nodes().sort().map((key) => ({ key, ...semanticAttributes(graph.getNodeAttributes(key)) }));
   const edges = graph.edges().sort().map((key) => ({
@@ -778,50 +787,283 @@ function seededEdgeAttributes(overrides) {
   };
 }
 
+const AUTOMATIC_MAP_STATUS = new Set(["candidate_ready", "candidate_limited", "no_text"]);
+const AUTOMATIC_TEXT_CAPABILITIES = new Set(["exact_candidate", "weak_text", "no_text", "visual_only", "failed"]);
+
+function automaticNodeColor(kind) {
+  return {
+    main_idea: "#f06449",
+    method: "#3155d5",
+    result: "#2f9f86",
+    term: "#8b5e34",
+    figure: "#9b4d96",
+    equation: "#537188",
+    concept: "#6456d6",
+  }[kind] || "#6456d6";
+}
+
+function automaticEntitySuffix(candidateKey) {
+  return candidateKey.replace(/^candidate:/u, "");
+}
+
+async function hydrateAutomaticPaperMap({ graph, anchors, annotations, automaticMap, paperRef, pageCount }) {
+  assertTrustedClosedObject(
+    automaticMap,
+    new Set(["schemaVersion", "status", "claimBoundary", "pageCount", "coverage", "candidates"]),
+    ["schemaVersion", "status", "claimBoundary", "pageCount", "coverage", "candidates"],
+    "automatic_map_invalid",
+  );
+  if (automaticMap.schemaVersion !== 1) throw new ContractError("automatic_map_invalid", "Automatic map schema version is unsupported.");
+  assertString(automaticMap.status, { values: [...AUTOMATIC_MAP_STATUS] }, "automatic_map_invalid");
+  assertString(automaticMap.claimBoundary, { max: 500 }, "automatic_map_invalid");
+  assertInteger(automaticMap.pageCount, { min: 1, max: pageCount }, "automatic_map_invalid");
+  if (automaticMap.pageCount !== pageCount) throw new ContractError("automatic_map_invalid", "Automatic map page count does not match the verified paper.");
+  assertArray(automaticMap.coverage, { min: pageCount, max: pageCount }, "automatic_map_invalid");
+  assertArray(automaticMap.candidates, { max: 15 }, "automatic_map_invalid");
+
+  const coverage = [];
+  const seenPages = new Set();
+  for (const entry of automaticMap.coverage) {
+    assertTrustedClosedObject(
+      entry,
+      new Set(["pageIndex", "pageLabel", "textCapability"]),
+      ["pageIndex", "pageLabel", "textCapability"],
+      "automatic_map_invalid",
+    );
+    const pageIndex = assertInteger(entry.pageIndex, { min: 0, max: pageCount - 1 }, "automatic_map_invalid");
+    if (seenPages.has(pageIndex)) throw new ContractError("automatic_map_invalid", "Automatic map coverage contains a duplicate page.");
+    seenPages.add(pageIndex);
+    const pageLabel = assertString(entry.pageLabel, { max: 32 }, "automatic_map_invalid");
+    if (pageLabel !== String(pageIndex + 1)) throw new ContractError("automatic_map_invalid", "Automatic map page label does not match its index.");
+    const textCapability = assertString(entry.textCapability, { values: [...AUTOMATIC_TEXT_CAPABILITIES] }, "automatic_map_invalid");
+    coverage.push({ pageIndex, pageLabel, textCapability });
+  }
+
+  const seenKeys = new Set();
+  const seenRanks = new Set();
+  const seededCandidates = [];
+  for (const candidate of automaticMap.candidates) {
+    assertTrustedClosedObject(
+      candidate,
+      new Set(["key", "rank", "kind", "label", "summary", "salience", "authority", "reviewState", "source"]),
+      ["key", "rank", "kind", "label", "summary", "salience", "authority", "reviewState", "source"],
+      "automatic_map_invalid",
+    );
+    const key = assertId(candidate.key, "automatic_map_invalid");
+    if (!key.startsWith("candidate:") || seenKeys.has(key) || graph.hasNode(key)) {
+      throw new ContractError("automatic_map_invalid", "Automatic candidate keys must be unique page-owned candidate IDs.");
+    }
+    seenKeys.add(key);
+    const rank = assertInteger(candidate.rank, { min: 1, max: automaticMap.candidates.length }, "automatic_map_invalid");
+    if (seenRanks.has(rank)) throw new ContractError("automatic_map_invalid", "Automatic candidate ranks must be unique.");
+    seenRanks.add(rank);
+    const kind = assertString(candidate.kind, { values: graphNodeKindSchema.enum }, "automatic_map_invalid");
+    const label = assertString(candidate.label, { max: 160 }, "automatic_map_invalid");
+    const summary = assertString(candidate.summary, { max: 800 }, "automatic_map_invalid");
+    const salience = assertFiniteNumber(candidate.salience, { min: 0, max: 1 }, "automatic_map_invalid");
+    if (candidate.authority !== "system_derived_candidate" || candidate.reviewState !== "unreviewed") {
+      throw new ContractError("automatic_map_invalid", "Automatic ideas must remain explicitly unreviewed system-derived candidates.");
+    }
+    assertTrustedClosedObject(
+      candidate.source,
+      new Set(["pageIndex", "pageLabel", "exactText", "normalizedBounds", "pageViewBox", "pageRotation"]),
+      ["pageIndex", "pageLabel", "exactText", "normalizedBounds", "pageViewBox", "pageRotation"],
+      "automatic_map_invalid",
+    );
+    const pageIndex = assertInteger(candidate.source.pageIndex, { min: 0, max: pageCount - 1 }, "automatic_map_invalid");
+    const pageLabel = assertString(candidate.source.pageLabel, { max: 32 }, "automatic_map_invalid");
+    if (pageLabel !== String(pageIndex + 1)) throw new ContractError("automatic_map_invalid", "Automatic source page label does not match its index.");
+    const exactText = assertString(candidate.source.exactText, { max: 1_200 }, "automatic_map_invalid");
+    const normalizedBounds = validateNormalizedBounds(candidate.source.normalizedBounds, "automatic_map_invalid");
+    const pageViewBox = validatePageViewBox(candidate.source.pageViewBox, "automatic_map_invalid");
+    const pageRotation = assertInteger(candidate.source.pageRotation, { min: 0, max: 270 }, "automatic_map_invalid");
+    if (![0, 90, 180, 270].includes(pageRotation)) throw new ContractError("automatic_map_invalid", "Automatic source page rotation is unsupported.");
+
+    const suffix = automaticEntitySuffix(key);
+    const anchorId = `anchor:auto:${suffix}`;
+    const annotationId = `annotation:auto:${suffix}`;
+    const edgeKey = `edge:auto:${suffix}`;
+    for (const issuedId of [anchorId, annotationId, edgeKey]) assertId(issuedId, "automatic_map_invalid");
+    if (anchors.has(anchorId) || annotations.has(annotationId) || graph.hasEdge(edgeKey)) {
+      throw new ContractError("automatic_map_invalid", "Automatic map identity collided with an existing paper entity.");
+    }
+    const anchor = {
+      anchorId,
+      paperRef,
+      pageIndex,
+      pageLabel,
+      sourceKind: "exact_text",
+      authority: "exact_document_text",
+      normalizedBounds,
+      pageViewBox,
+      pageRotation,
+      exactText,
+      exactTextSha256: await sha256Text(exactText),
+      createdBy: "system",
+    };
+    anchor.anchorDigest = await mintAnchorDigest(anchor);
+    anchors.set(anchorId, anchor);
+
+    graph.addNode(key, seededNodeAttributes({
+      kind,
+      label,
+      summary: `Automatically ranked, unreviewed candidate from page ${pageLabel}: ${summary}`,
+      authority: "paper_grounded",
+      sourceAnchorIds: [anchorId],
+      structuralCoverage: [],
+      salience,
+      origin: "automatic_map",
+      x: rank % 2 === 0 ? 0.45 : -0.45,
+      y: rank * 1.55,
+      size: 8 + (salience * 7),
+      color: automaticNodeColor(kind),
+    }));
+    graph.addDirectedEdgeWithKey(edgeKey, "node:paper", key, seededEdgeAttributes({
+      kind: "contains",
+      claim: "Paper contains an automatically ranked critical-idea candidate.",
+      authority: "paper_grounded",
+      sourceAnchorIds: [anchorId],
+      origin: "automatic_map",
+      color: "#9ba6ba",
+      size: 1.5,
+    }));
+    annotations.set(annotationId, {
+      annotationId,
+      paperRef,
+      anchorId,
+      kind: "concept",
+      label: `Automatic candidate ${rank} — ${label}`,
+      graphNodeKeys: [key],
+      graphEdgeKeys: [edgeKey],
+      status: "active",
+      authority: "system",
+      entityRevision: 1,
+      createdAt: "2026-08-31T00:00:00.000Z",
+      updatedAt: "2026-08-31T00:00:00.000Z",
+    });
+    seededCandidates.push({ key, rank, anchorId, annotationId, edgeKey, pageIndex });
+  }
+
+  seededCandidates.sort((left, right) => left.rank - right.rank || left.key.localeCompare(right.key));
+  return {
+    schemaVersion: 1,
+    status: automaticMap.status,
+    claimBoundary: automaticMap.claimBoundary,
+    pageCount,
+    coverage,
+    candidates: seededCandidates,
+  };
+}
+
+function resolvePaperDefinition(options = {}) {
+  const supplied = options.paper;
+  if (supplied !== undefined && (!supplied || typeof supplied !== "object" || Array.isArray(supplied))) {
+    throw new ContractError("paper_invalid", "The trusted paper definition must be an object.");
+  }
+  const paper = supplied || {};
+  const paperRef = paper.paperRef ?? PAPER_FIXTURE.paperRef;
+  const filename = paper.filename ?? PAPER_FIXTURE.filename;
+  const documentSha256 = String(paper.documentSha256 ?? PAPER_FIXTURE.documentSha256).toLowerCase();
+  const pageCount = Number(paper.pageCount ?? PAPER_FIXTURE.pageCount);
+  const title = String(paper.title ?? "Attention Is All You Need — arXiv:1706.03762v7").replace(/\s+/gu, " ").trim();
+  const pageViewBox = Array.from(paper.pageViewBox ?? [0, 0, 612, 792], Number);
+  const pageRotation = Number(paper.pageRotation ?? 0);
+  if (!(new RegExp(ID_PATTERN)).test(String(paperRef))) {
+    throw new ContractError("paper_invalid", "The trusted paper reference is invalid.");
+  }
+  if (typeof filename !== "string" || filename.length < 1 || filename.length > 255) {
+    throw new ContractError("paper_invalid", "The trusted paper filename must contain 1 to 255 characters.");
+  }
+  if (!(new RegExp(SHA256_PATTERN)).test(documentSha256)) {
+    throw new ContractError("paper_invalid", "The trusted paper SHA-256 identity is invalid.");
+  }
+  if (!Number.isInteger(pageCount) || pageCount < 1 || pageCount > 20_000) {
+    throw new ContractError("paper_invalid", "The trusted paper page count must be a positive bounded integer.");
+  }
+  if (!title || title.length > 240) {
+    throw new ContractError("paper_invalid", "The trusted paper title must contain 1 to 240 characters.");
+  }
+  if (
+    pageViewBox.length !== 4
+    || pageViewBox.some((value) => !Number.isFinite(value))
+    || pageViewBox[2] <= pageViewBox[0]
+    || pageViewBox[3] <= pageViewBox[1]
+  ) {
+    throw new ContractError("paper_invalid", "The trusted first-page view box is invalid.");
+  }
+  if (![0, 90, 180, 270].includes(pageRotation)) {
+    throw new ContractError("paper_invalid", "The trusted first-page rotation is invalid.");
+  }
+  const isFixture = String(paperRef) === PAPER_FIXTURE.paperRef
+    && documentSha256 === PAPER_FIXTURE.documentSha256
+    && filename === PAPER_FIXTURE.filename
+    && pageCount === PAPER_FIXTURE.pageCount;
+  return Object.freeze({
+    isFixture,
+    paperRef: String(paperRef),
+    filename,
+    documentSha256,
+    pageCount,
+    title,
+    pageViewBox: Object.freeze(pageViewBox),
+    pageRotation,
+  });
+}
+
 export async function createSpikeState(MultiDirectedGraph, options = {}) {
   if (typeof MultiDirectedGraph !== "function") throw new TypeError("MultiDirectedGraph constructor required");
+  const paperDefinition = resolvePaperDefinition(options);
+  const includeFixtureAnchors = paperDefinition.isFixture && options.textAnchor !== null;
   const graph = new MultiDirectedGraph({ allowSelfLoops: false });
   graph.addNode("node:paper", seededNodeAttributes({
     kind: "paper",
-    label: "Attention Is All You Need — arXiv:1706.03762v7",
-    summary: "The official 15-page arXiv v7 paper used for local WebMCP contract verification.",
+    label: paperDefinition.title,
+    summary: paperDefinition.isFixture
+      ? "The official 15-page arXiv v7 paper used for local WebMCP contract verification."
+      : "The active browser-local PDF, identified by its computed SHA-256 and mapped from extracted document text.",
     authority: "document_structure",
-    structuralCoverage: [{ startPageIndex: 0, endPageIndex: 14, primaryAnchorId: "anchor:page:1" }],
+    structuralCoverage: [{
+      startPageIndex: 0,
+      endPageIndex: paperDefinition.pageCount - 1,
+      primaryAnchorId: "anchor:page:1",
+    }],
     x: 0,
     y: 0,
     size: 14,
     color: "#3155d5",
   }));
-  graph.addNode("node:section:introduction", seededNodeAttributes({
-    kind: "section",
-    label: "Introduction",
-    summary: "The paper motivates attention-based sequence modeling.",
-    authority: "document_structure",
-    sourceAnchorIds: ["anchor:text:attention"],
-    structuralCoverage: [{ startPageIndex: 0, endPageIndex: 0, primaryAnchorId: "anchor:page:1" }],
-    x: -1,
-    y: 1,
-    size: 10,
-    color: "#6a56d7",
-  }));
-  graph.addNode("node:concept:attention", seededNodeAttributes({
-    kind: "main_idea",
-    label: "Attention replaces recurrence",
-    summary: "The architecture uses attention mechanisms instead of recurrence and convolutions.",
-    sourceAnchorIds: ["anchor:text:attention"],
-    x: 1,
-    y: 1,
-    size: 11,
-    color: "#ea5a4f",
-  }));
-  graph.addDirectedEdgeWithKey("edge:paper:introduction", "node:paper", "node:section:introduction", seededEdgeAttributes({
-    sourceAnchorIds: ["anchor:page:1"],
-  }));
-  graph.addDirectedEdgeWithKey("edge:introduction:attention", "node:section:introduction", "node:concept:attention", seededEdgeAttributes({
-    sourceAnchorIds: ["anchor:text:attention"],
-  }));
+  if (!options.automaticMap && includeFixtureAnchors) {
+    graph.addNode("node:section:introduction", seededNodeAttributes({
+      kind: "section",
+      label: "Introduction",
+      summary: "The paper motivates attention-based sequence modeling.",
+      authority: "document_structure",
+      sourceAnchorIds: ["anchor:text:attention"],
+      structuralCoverage: [{ startPageIndex: 0, endPageIndex: 0, primaryAnchorId: "anchor:page:1" }],
+      x: -1,
+      y: 1,
+      size: 10,
+      color: "#6a56d7",
+    }));
+    graph.addNode("node:concept:attention", seededNodeAttributes({
+      kind: "main_idea",
+      label: "Attention replaces recurrence",
+      summary: "The architecture uses attention mechanisms instead of recurrence and convolutions.",
+      sourceAnchorIds: ["anchor:text:attention"],
+      x: 1,
+      y: 1,
+      size: 11,
+      color: "#ea5a4f",
+    }));
+    graph.addDirectedEdgeWithKey("edge:paper:introduction", "node:paper", "node:section:introduction", seededEdgeAttributes({
+      sourceAnchorIds: ["anchor:page:1"],
+    }));
+    graph.addDirectedEdgeWithKey("edge:introduction:attention", "node:section:introduction", "node:concept:attention", seededEdgeAttributes({
+      sourceAnchorIds: ["anchor:text:attention"],
+    }));
+  }
 
-  const paperRef = PAPER_FIXTURE.paperRef;
+  const paperRef = paperDefinition.paperRef;
   const pageAnchor = {
       anchorId: "anchor:page:1",
       paperRef,
@@ -830,12 +1072,12 @@ export async function createSpikeState(MultiDirectedGraph, options = {}) {
       sourceKind: "whole_page",
       authority: "client_rendered_pdf",
       normalizedBounds: [{ x: 0, y: 0, width: 1, height: 1 }],
-      pageViewBox: [0, 0, 612, 792],
-      pageRotation: 0,
+      pageViewBox: [...paperDefinition.pageViewBox],
+      pageRotation: paperDefinition.pageRotation,
     };
   pageAnchor.anchorDigest = await mintAnchorDigest(pageAnchor);
 
-  const textAnchor = {
+  const textAnchor = includeFixtureAnchors ? {
       ...options.textAnchor,
       anchorId: "anchor:text:attention",
       paperRef,
@@ -854,8 +1096,8 @@ export async function createSpikeState(MultiDirectedGraph, options = {}) {
       suffix: options.textAnchor?.suffix || "Experiments on two machine translation tasks show these models to be superior in quality while being more parallelizable and requiring significantly less time to train.",
       pageViewBox: options.textAnchor?.pageViewBox || [0, 0, 612, 792],
       pageRotation: options.textAnchor?.pageRotation || 0,
-    };
-  textAnchor.anchorDigest = await mintAnchorDigest(textAnchor);
+    } : null;
+  if (textAnchor) textAnchor.anchorDigest = await mintAnchorDigest(textAnchor);
 
   const visualAnchorA = {
       anchorId: "anchor:visual:a",
@@ -881,18 +1123,19 @@ export async function createSpikeState(MultiDirectedGraph, options = {}) {
     };
   visualAnchorB.anchorDigest = await mintAnchorDigest(visualAnchorB);
 
-  const anchors = new Map([
-    [pageAnchor.anchorId, pageAnchor],
-    [textAnchor.anchorId, textAnchor],
-    [visualAnchorA.anchorId, visualAnchorA],
-    [visualAnchorB.anchorId, visualAnchorB],
-  ]);
+  const anchors = new Map([[pageAnchor.anchorId, pageAnchor]]);
+  if (includeFixtureAnchors) {
+    anchors.set(textAnchor.anchorId, textAnchor);
+    anchors.set(visualAnchorA.anchorId, visualAnchorA);
+    anchors.set(visualAnchorB.anchorId, visualAnchorB);
+  }
 
   // This deterministic fixture mark is intentionally not an agent event or a
   // persistence claim. It gives every fresh diagnostic load one visible,
   // source-bound annotation while live WebMCP mutations remain memory-only.
-  const annotations = new Map([
-    ["annotation:fixture:attention", {
+  const annotations = new Map();
+  if (!options.automaticMap && includeFixtureAnchors) {
+    annotations.set("annotation:fixture:attention", {
       annotationId: "annotation:fixture:attention",
       paperRef,
       anchorId: "anchor:text:attention",
@@ -905,16 +1148,30 @@ export async function createSpikeState(MultiDirectedGraph, options = {}) {
       entityRevision: 1,
       createdAt: "2026-08-30T00:00:00.000Z",
       updatedAt: "2026-08-30T00:00:00.000Z",
-    }],
-  ]);
+    });
+  }
+
+  const automaticMap = options.automaticMap
+    ? await hydrateAutomaticPaperMap({
+        graph,
+        anchors,
+        annotations,
+        automaticMap: options.automaticMap,
+        paperRef,
+        pageCount: paperDefinition.pageCount,
+      })
+    : null;
+  if (graph.order > LIMITS.graphNodes || graph.size > LIMITS.graphEdges || annotations.size > LIMITS.annotations) {
+    throw new ContractError("automatic_map_invalid", "Automatic map exceeds the frozen workspace limits.");
+  }
 
   const state = {
     schemaVersion: 1,
     paper: {
       paperRef,
-      filename: PAPER_FIXTURE.filename,
-      documentSha256: PAPER_FIXTURE.documentSha256,
-      pageCount: PAPER_FIXTURE.pageCount,
+      filename: paperDefinition.filename,
+      documentSha256: paperDefinition.documentSha256,
+      pageCount: paperDefinition.pageCount,
     },
     anchors,
     annotations,
@@ -923,14 +1180,16 @@ export async function createSpikeState(MultiDirectedGraph, options = {}) {
     workspaceDigest: "",
     graphDigest: "",
     annotationDigest: "",
-    focusAnchorId: "anchor:text:attention",
+    focusAnchorId: automaticMap?.candidates?.[0]?.anchorId || textAnchor?.anchorId || pageAnchor.anchorId,
     events: [],
     explanations: [],
     requestResults: new Map(),
     history: [],
+    redoHistory: [],
     mutationQueue: Promise.resolve(),
     latestReadFocusReceipt: null,
     latestReadGraphReceipt: null,
+    automaticMap,
     visualEvidenceMode: options.visualEvidenceMode || "locator_only",
     now: options.now || (() => new Date().toISOString()),
     id: options.id || ((prefix) => `${prefix}:${crypto.randomUUID()}`),
@@ -1181,9 +1440,44 @@ function visibleGraphSlice(state, input) {
     .sort();
   const edgeKeys = matchingEdgeKeys.slice(0, LIMITS.readGraphEdges);
   return {
-    nodes: nodeKeys.map((key) => ({ key, ...semanticAttributes(state.graph.getNodeAttributes(key)) })),
-    edges: edgeKeys.map((key) => ({ key, sourceKey: state.graph.source(key), targetKey: state.graph.target(key), ...semanticAttributes(state.graph.getEdgeAttributes(key)) })),
+    nodes: nodeKeys.map((key) => ({ key, ...readableGraphAttributes(state.graph.getNodeAttributes(key)) })),
+    edges: edgeKeys.map((key) => ({ key, sourceKey: state.graph.source(key), targetKey: state.graph.target(key), ...readableGraphAttributes(state.graph.getEdgeAttributes(key)) })),
     truncated: truncated || matchingEdgeKeys.length > LIMITS.readGraphEdges,
+  };
+}
+
+function currentMapCoverage(state) {
+  if (!state.automaticMap) {
+    return {
+      pageCount: state.paper.pageCount,
+      structuralPages: state.paper.pageCount,
+      semanticPages: 1,
+      limitedPages: state.paper.pageCount - 1,
+      failedPages: 0,
+      status: "semantic_partial",
+    };
+  }
+  const failedPages = state.automaticMap.coverage.filter((entry) => entry.textCapability === "failed").length;
+  const limitedPages = state.automaticMap.coverage.filter((entry) => (
+    entry.textCapability === "no_text"
+    || entry.textCapability === "visual_only"
+    || entry.textCapability === "weak_text"
+  )).length;
+  const semanticPageIndexes = new Set();
+  state.graph.forEachNode((_key, attributes) => {
+    if (attributes.status !== "active" || attributes.authority !== "paper_grounded") return;
+    for (const anchorId of attributes.sourceAnchorIds || []) {
+      const anchor = state.anchors.get(anchorId);
+      if (anchor) semanticPageIndexes.add(anchor.pageIndex);
+    }
+  });
+  return {
+    pageCount: state.paper.pageCount,
+    structuralPages: Math.max(0, state.paper.pageCount - failedPages),
+    semanticPages: semanticPageIndexes.size,
+    limitedPages,
+    failedPages,
+    status: semanticPageIndexes.size > 0 ? "semantic_partial" : "structural_only",
   };
 }
 
@@ -1226,7 +1520,17 @@ function snapshotState(state) {
     workspaceDigest: state.workspaceDigest,
     graphDigest: state.graphDigest,
     annotationDigest: state.annotationDigest,
+    focusAnchorId: state.focusAnchorId,
   };
+}
+
+function restoreSemanticSnapshot(state, snapshot) {
+  state.anchors = new Map([...snapshot.anchors.entries()].map(([key, value]) => [key, structuredClone(value)]));
+  state.graph = snapshot.graph.copy();
+  state.annotations = new Map([...snapshot.annotations.entries()].map(([key, value]) => [key, structuredClone(value)]));
+  state.focusAnchorId = state.anchors.has(snapshot.focusAnchorId)
+    ? snapshot.focusAnchorId
+    : state.anchors.keys().next().value;
 }
 
 function checkReplay(state, idempotencyKey, commandDigest, toolName) {
@@ -1394,6 +1698,7 @@ export function applyReaderAnnotation(state, input) {
         message: "Reader annotation and grounded graph node were created together. The human UI may Undo this revision.",
       };
       state.history.push({ kind: "reader_annotation_graph", before, after: snapshotState(state), revisionId });
+      state.redoHistory.length = 0;
       addEvent(state, {
         eventType: "reader_annotation_graph_created",
         actor: "human",
@@ -1537,10 +1842,11 @@ async function applyGraphCommand(state, input) {
         if (current.origin === "reader" && operation.set.authority === undefined) {
           throw new ContractError("reader_authority_required", "Reauthoring a reader node requires an explicit paper-grounded or mentor-background authority.");
         }
+        const reattributedByAgent = current.origin === "reader" || current.origin === "automatic_map";
         const next = {
           ...current,
           ...operation.set,
-          ...(current.origin === "reader" ? { origin: "agent", updatedAt: state.now() } : {}),
+          ...(reattributedByAgent ? { origin: "agent", updatedAt: state.now() } : {}),
           entityRevision: current.entityRevision + 1,
         };
         assertString(next.kind, { values: graphNodeKindSchema.enum }, "graph_node_invalid");
@@ -1588,10 +1894,11 @@ async function applyGraphCommand(state, input) {
         if (current.origin === "reader" && operation.set.authority === undefined) {
           throw new ContractError("reader_authority_required", "Reauthoring a reader provenance edge requires an explicit paper-grounded or mentor-background authority.");
         }
+        const reattributedByAgent = current.origin === "reader" || current.origin === "automatic_map";
         const next = {
           ...current,
           ...operation.set,
-          ...(current.origin === "reader" ? { origin: "agent", updatedAt: state.now() } : {}),
+          ...(reattributedByAgent ? { origin: "agent", updatedAt: state.now() } : {}),
           entityRevision: current.entityRevision + 1,
         };
         assertString(next.kind, { values: graphEdgeKindSchema.enum }, "graph_edge_invalid");
@@ -1634,6 +1941,7 @@ async function applyGraphCommand(state, input) {
       message: "Graph revision applied reversibly. Only the human UI may Undo or Redo it.",
     };
     state.history.push({ kind: "graph", before, after: snapshotState(state), operationId, revisionId });
+    state.redoHistory.length = 0;
     state.requestResults.set(input.idempotencyKey, { commandDigest, result });
     addEvent(state, { eventType: "graph_applied", actor: "agent", toolName: "paperpilot.apply_graph", callbackReceiptId: result.callbackReceiptId, revisionId, beforeDigest: before.workspaceDigest, afterDigest: state.workspaceDigest });
     state.onStateChange(state);
@@ -1738,6 +2046,7 @@ async function applyAnnotationCommand(state, input) {
       message: "Annotation revision applied reversibly. Only the human UI may Undo or Redo it.",
     };
     state.history.push({ kind: "annotation", before, after: snapshotState(state), operationId, revisionId });
+    state.redoHistory.length = 0;
     state.requestResults.set(input.idempotencyKey, { commandDigest, result });
     addEvent(state, { eventType: "annotation_changed", actor: "agent", toolName: "paperpilot.apply_annotation", callbackReceiptId: result.callbackReceiptId, revisionId, beforeDigest: before.workspaceDigest, afterDigest: state.workspaceDigest });
     state.onStateChange(state);
@@ -1758,11 +2067,10 @@ export async function undoLastHumanChange(state) {
   const last = state.history.pop();
   if (!last) return { status: "nothing_to_undo" };
   const beforeUndoDigest = state.workspaceDigest;
-  state.anchors = new Map([...last.before.anchors.entries()].map(([key, value]) => [key, structuredClone(value)]));
-  state.graph = last.before.graph.copy();
-  state.annotations = new Map([...last.before.annotations.entries()].map(([key, value]) => [key, structuredClone(value)]));
+  restoreSemanticSnapshot(state, last.before);
   state.workspaceRevision += 1;
   await recomputeDigests(state);
+  state.redoHistory.push(last);
   addEvent(state, { eventType: "undo_applied", actor: "human", relatedRevisionId: last.revisionId, beforeDigest: beforeUndoDigest, afterDigest: state.workspaceDigest });
   state.onStateChange(state);
   return {
@@ -1771,6 +2079,36 @@ export async function undoLastHumanChange(state) {
     restoredWorkspaceDigest: state.workspaceDigest,
     expectedWorkspaceDigest: last.before.workspaceDigest,
     digestMatches: state.workspaceDigest === last.before.workspaceDigest,
+  };
+}
+
+/**
+ * Restore the semantic `after` snapshot retained by Human Undo. This remains a
+ * page-owned UI command; it is deliberately absent from all six WebMCP tools
+ * and their closed input schemas.
+ */
+export async function redoLastHumanChange(state) {
+  const last = state.redoHistory.pop();
+  if (!last) return { status: "nothing_to_redo" };
+  const beforeRedoDigest = state.workspaceDigest;
+  restoreSemanticSnapshot(state, last.after);
+  state.workspaceRevision += 1;
+  await recomputeDigests(state);
+  state.history.push(last);
+  addEvent(state, {
+    eventType: "redo_applied",
+    actor: "human",
+    relatedRevisionId: last.revisionId,
+    beforeDigest: beforeRedoDigest,
+    afterDigest: state.workspaceDigest,
+  });
+  state.onStateChange(state);
+  return {
+    status: "redone",
+    relatedRevisionId: last.revisionId,
+    restoredWorkspaceDigest: state.workspaceDigest,
+    expectedWorkspaceDigest: last.after.workspaceDigest,
+    digestMatches: state.workspaceDigest === last.after.workspaceDigest,
   };
 }
 
@@ -1838,6 +2176,7 @@ export function createToolSuite(state) {
       const slice = visibleGraphSlice(state, input);
       const receipt = addEvent(state, { eventType: "graph_read", actor: "agent", toolName: "paperpilot.read_graph", callbackReceiptId: state.id("callback") });
       state.latestReadGraphReceipt = receipt;
+      const coverage = currentMapCoverage(state);
       return {
         schemaVersion: 1,
         status: "ready",
@@ -1846,11 +2185,15 @@ export function createToolSuite(state) {
         workspaceDigest: state.workspaceDigest,
         graphDigest: state.graphDigest,
         annotationDigest: state.annotationDigest,
-        coverage: { pageCount: 15, structuralPages: 15, semanticPages: 1, limitedPages: 14, failedPages: 0, status: "semantic_partial" },
+        coverage,
         ...slice,
         guidance: input.mode === "search"
           ? (slice.truncated ? "Literal label/summary matches were truncated; narrow the query or filters." : "Literal label/summary search completed within the current paper graph.")
-          : (slice.truncated ? "Read a narrower issued-node neighborhood." : "Page 1 has semantic evidence; the remaining 14 pages are structurally present but not yet semantically mapped in this spike."),
+          : (slice.truncated
+              ? "Read a narrower issued-node neighborhood."
+              : state.automaticMap
+                ? `${state.automaticMap.candidates.length} automatically ranked, unreviewed critical-idea candidates are grounded across ${coverage.semanticPages} pages. Treat ranking as orientation, then inspect or refine nodes through issued sources.`
+                : "Page 1 has semantic evidence; the remaining pages are structurally present but not yet semantically mapped in this spike."),
       };
     }),
     toolDefinition("paperpilot.stage_explain", async (input) => {

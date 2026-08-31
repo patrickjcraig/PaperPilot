@@ -4,9 +4,16 @@ import {
   TextLayer,
   getDocument,
   version as pdfjsVersion,
-} from "/vendor/pdfjs/pdf.min.mjs";
+} from "../vendor/pdfjs/pdf.min.mjs";
 
-GlobalWorkerOptions.workerSrc = "/vendor/pdfjs/pdf.worker.min.mjs";
+const PDFJS_ASSET_URLS = Object.freeze({
+  worker: new URL("../vendor/pdfjs/pdf.worker.min.mjs", import.meta.url).href,
+  standardFonts: new URL("../vendor/pdfjs/standard_fonts/", import.meta.url).href,
+  cmaps: new URL("../vendor/pdfjs/cmaps/", import.meta.url).href,
+  wasm: new URL("../vendor/pdfjs/wasm/", import.meta.url).href,
+});
+
+GlobalWorkerOptions.workerSrc = PDFJS_ASSET_URLS.worker;
 
 const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
 const DEFAULT_ZOOM_STEP = 0.15;
@@ -16,6 +23,8 @@ const MAX_DEVICE_PIXEL_RATIO = 2;
 const DEFAULT_PAGE_GAP = 24;
 const DEFAULT_RENDER_RADIUS = 2;
 const DEFAULT_MAX_SELECTION_CHARACTERS = 4_000;
+const DEFAULT_MAX_PDF_BYTES = 64 * 1024 * 1024;
+const DEFAULT_MAX_PDF_PAGES = 300;
 
 export const ATTENTION_PDF = Object.freeze({
   title: "Attention Is All You Need",
@@ -91,6 +100,24 @@ export function clampPdfPageNumber(value, pageCount, fallback = 1) {
   const totalPages = Math.max(1, asPositiveInteger(pageCount, 1));
   const safeFallback = clamp(asPositiveInteger(fallback, 1), 1, totalPages);
   return clamp(asPositiveInteger(value, safeFallback), 1, totalPages);
+}
+
+export function assertPdfPageCountWithinLimit(pageCount, maxPdfPages = DEFAULT_MAX_PDF_PAGES) {
+  const count = Number(pageCount);
+  const maximum = Number(maxPdfPages);
+  if (!Number.isInteger(count) || count < 1) {
+    throw new PaperPdfError("PDF_PAGE_COUNT_INVALID", "PDF.js returned an invalid page count.");
+  }
+  if (!Number.isInteger(maximum) || maximum < 1) {
+    throw new PaperPdfError("PDF_PAGE_LIMIT_INVALID", "maxPdfPages must be a positive integer.");
+  }
+  if (count > maximum) {
+    throw new PaperPdfError(
+      "PDF_PAGE_LIMIT_EXCEEDED",
+      `The selected PDF has ${count} pages; the browser-local limit is ${maximum}.`,
+    );
+  }
+  return count;
 }
 
 /**
@@ -211,6 +238,109 @@ async function sha256Hex(bytes) {
 function isPdfSignature(bytes) {
   if (bytes.byteLength < 5) return false;
   return bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46 && bytes[4] === 0x2d;
+}
+
+function uploadedPdfTitle(filename, explicitTitle) {
+  const normalizedTitle = String(explicitTitle || "").replace(/\s+/gu, " ").trim();
+  if (normalizedTitle) return normalizedTitle.slice(0, 240);
+  const withoutExtension = String(filename || "").replace(/\.pdf$/iu, "");
+  const fromFilename = withoutExtension.replace(/[_-]+/gu, " ").replace(/\s+/gu, " ").trim();
+  return (fromFilename || "Uploaded scientific paper").slice(0, 240);
+}
+
+function uploadedPdfFilename(value) {
+  const leaf = String(value || "uploaded-paper.pdf").split(/[\\/]/u).at(-1).trim();
+  const normalized = (leaf || "uploaded-paper.pdf").replace(/[\u0000-\u001f\u007f]/gu, "");
+  return (normalized.toLowerCase().endsWith(".pdf") ? normalized : `${normalized}.pdf`).slice(0, 255);
+}
+
+async function bytesFromPdfInput(value) {
+  if (value instanceof Uint8Array) return value.slice();
+  if (value instanceof ArrayBuffer) return new Uint8Array(value.slice(0));
+  if (ArrayBuffer.isView(value)) {
+    return new Uint8Array(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength));
+  }
+  if (value && typeof value.arrayBuffer === "function") {
+    return new Uint8Array(await value.arrayBuffer());
+  }
+  throw new PaperPdfError(
+    "PDF_INPUT_INVALID",
+    "A PDF File, Blob, ArrayBuffer, or Uint8Array is required for a browser-local document.",
+  );
+}
+
+/**
+ * Read a caller-supplied PDF into a browser-local, digest-addressed source.
+ * This helper never uploads or stores the bytes. The returned SHA-256 is an
+ * identity computed over the bytes the user selected, not a scientific-truth
+ * or publisher-integrity claim.
+ */
+export async function preparePdfDocumentSource(options = {}) {
+  const descriptor = options.documentSource || {};
+  const input = descriptor.bytes ?? descriptor.file ?? options.pdfBytes ?? options.pdfFile;
+  if (input === undefined || input === null) return null;
+
+  const declaredSize = Number(descriptor.byteLength ?? input?.size);
+  const maxBytes = Number.isInteger(options.maxPdfBytes) && options.maxPdfBytes > 0
+    ? options.maxPdfBytes
+    : DEFAULT_MAX_PDF_BYTES;
+  if (Number.isFinite(declaredSize) && declaredSize > maxBytes) {
+    throw new PaperPdfError(
+      "PDF_TOO_LARGE",
+      `The selected PDF declares ${declaredSize} bytes; the browser-local limit is ${maxBytes}.`,
+    );
+  }
+
+  const bytes = await bytesFromPdfInput(input);
+  if (bytes.byteLength === 0 || bytes.byteLength > maxBytes) {
+    throw new PaperPdfError(
+      bytes.byteLength === 0 ? "PDF_EMPTY" : "PDF_TOO_LARGE",
+      bytes.byteLength === 0
+        ? "The selected PDF is empty."
+        : `The selected PDF has ${bytes.byteLength} bytes; the browser-local limit is ${maxBytes}.`,
+    );
+  }
+  if (!isPdfSignature(bytes)) {
+    throw new PaperPdfError("PDF_SIGNATURE_MISMATCH", "The selected file does not begin with a PDF signature.");
+  }
+
+  const sha256 = await sha256Hex(bytes);
+  const expectedSha256 = descriptor.expectedSha256 ?? options.expectedSha256;
+  if (expectedSha256 !== undefined && String(expectedSha256).toLowerCase() !== sha256) {
+    throw new PaperPdfError(
+      "PDF_SHA256_MISMATCH",
+      `The selected PDF SHA-256 is ${sha256}; expected ${String(expectedSha256).toLowerCase()}.`,
+    );
+  }
+  const expectedByteLength = descriptor.expectedByteLength ?? options.expectedByteLength;
+  if (expectedByteLength !== undefined && Number(expectedByteLength) !== bytes.byteLength) {
+    throw new PaperPdfError(
+      "PDF_BYTE_LENGTH_MISMATCH",
+      `The selected PDF has ${bytes.byteLength} bytes; expected ${Number(expectedByteLength)}.`,
+    );
+  }
+
+  const filename = uploadedPdfFilename(descriptor.filename ?? options.filename ?? input?.name);
+  const contentType = String(descriptor.contentType ?? options.contentType ?? input?.type ?? "application/pdf")
+    .trim()
+    .slice(0, 120) || "application/pdf";
+  const expectedPageCount = descriptor.expectedPageCount ?? options.expectedPageCount;
+  if (expectedPageCount !== undefined && (!Number.isInteger(Number(expectedPageCount)) || Number(expectedPageCount) < 1)) {
+    throw new PaperPdfError("PDF_PAGE_COUNT_INVALID", "expectedPageCount must be a positive integer when supplied.");
+  }
+
+  return Object.freeze({
+    bytes,
+    filename,
+    title: uploadedPdfTitle(filename, descriptor.title ?? options.title),
+    contentType,
+    sourceUrl: descriptor.sourceUrl ?? options.sourceUrl ?? null,
+    sha256,
+    byteLength: bytes.byteLength,
+    paperRef: `paper:sha256:${sha256}`,
+    expectedPageCount: expectedPageCount === undefined ? null : Number(expectedPageCount),
+    identityMethod: expectedSha256 === undefined ? "client_computed_sha256" : "expected_sha256_verified",
+  });
 }
 
 /**
@@ -414,6 +544,334 @@ function unionNormalizedRects(rects) {
   });
 }
 
+function normalizeViewportRectangle(viewport, pdfRectangle) {
+  if (
+    !viewport
+    || !Number.isFinite(Number(viewport.width))
+    || !Number.isFinite(Number(viewport.height))
+    || Number(viewport.width) <= 0
+    || Number(viewport.height) <= 0
+  ) {
+    return null;
+  }
+  let convertedPoints;
+  if (typeof viewport.convertToViewportRectangle === "function") {
+    const converted = viewport.convertToViewportRectangle(pdfRectangle).map(Number);
+    convertedPoints = [[converted[0], converted[1]], [converted[2], converted[3]]];
+  } else if (Array.isArray(viewport.transform) && viewport.transform.length >= 6) {
+    const [a, b, c, d, e, f] = viewport.transform.map(Number);
+    if ([a, b, c, d, e, f].some((value) => !Number.isFinite(value))) return null;
+    const applyTransform = (x, y) => [a * x + c * y + e, b * x + d * y + f];
+    const [x1, y1, x2, y2] = pdfRectangle.map(Number);
+    convertedPoints = [
+      applyTransform(x1, y1),
+      applyTransform(x1, y2),
+      applyTransform(x2, y1),
+      applyTransform(x2, y2),
+    ];
+  } else {
+    return null;
+  }
+  if (convertedPoints.flat().some((value) => !Number.isFinite(value))) return null;
+  const left = clamp(Math.min(...convertedPoints.map(([x]) => x)), 0, viewport.width);
+  const top = clamp(Math.min(...convertedPoints.map(([, y]) => y)), 0, viewport.height);
+  const right = clamp(Math.max(...convertedPoints.map(([x]) => x)), 0, viewport.width);
+  const bottom = clamp(Math.max(...convertedPoints.map(([, y]) => y)), 0, viewport.height);
+  if (right <= left || bottom <= top) return null;
+  return Object.freeze({
+    x: rounded(left / viewport.width),
+    y: rounded(top / viewport.height),
+    width: rounded((right - left) / viewport.width),
+    height: rounded((bottom - top) / viewport.height),
+  });
+}
+
+function pdfTextItemNormalizedBounds(item, viewport) {
+  if (!item || typeof item !== "object" || !Array.isArray(item.transform)) return null;
+  const transform = item.transform.map(Number);
+  if (transform.length < 6 || transform.some((value) => !Number.isFinite(value))) return null;
+  const width = Number(item.width);
+  const declaredHeight = Number(item.height);
+  const transformHeight = Math.hypot(transform[2], transform[3]) || Math.hypot(transform[0], transform[1]);
+  const height = Number.isFinite(declaredHeight) && declaredHeight > 0 ? declaredHeight : transformHeight;
+  if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(height) || height <= 0) return null;
+  const x = transform[4];
+  const baselineY = transform[5];
+  return normalizeViewportRectangle(viewport, [x, baselineY, x + width, baselineY + height]);
+}
+
+function shouldStartNewTextLine(currentLine, itemBounds) {
+  if (!currentLine || !itemBounds || currentLine.rects.length === 0) return false;
+  const currentBounds = unionNormalizedRects(currentLine.rects);
+  const currentCenter = currentBounds.y + (currentBounds.height / 2);
+  const itemCenter = itemBounds.y + (itemBounds.height / 2);
+  return Math.abs(currentCenter - itemCenter) > Math.max(currentBounds.height, itemBounds.height) * 0.62;
+}
+
+function shouldInsertItemSpace(currentLine, itemText, itemBounds) {
+  if (!currentLine || currentLine.parts.length === 0) return false;
+  const previousText = currentLine.parts.at(-1)?.text || "";
+  if (/\s$/u.test(previousText) || /^\s/u.test(itemText)) return false;
+  const previousBounds = currentLine.parts.at(-1)?.bounds;
+  if (!previousBounds || !itemBounds) return true;
+  const gap = itemBounds.x - (previousBounds.x + previousBounds.width);
+  return gap > Math.max(0.0015, Math.min(previousBounds.height, itemBounds.height) * 0.12);
+}
+
+function normalizedLineParts(parts) {
+  let text = "";
+  let separatorPending = false;
+  const segments = [];
+  for (const part of parts) {
+    if (part.syntheticSpace) {
+      if (text) separatorPending = true;
+      continue;
+    }
+    const normalized = normalizePdfText(part.text);
+    if (!normalized) {
+      if (/\s/u.test(part.text) && text) separatorPending = true;
+      continue;
+    }
+    if (text && (separatorPending || /^\s/u.test(part.text))) text += " ";
+    separatorPending = /\s$/u.test(part.text);
+    const startOffset = text.length;
+    text += normalized;
+    const endOffset = text.length;
+    if (part.bounds) {
+      segments.push({
+        startOffset,
+        endOffset,
+        normalizedBounds: part.bounds,
+        sourceItemIndex: part.sourceItemIndex,
+        direction: part.direction === "rtl" ? "rtl" : "ltr",
+      });
+    }
+  }
+  return { text, segments };
+}
+
+function normalizedTextOffsetMap(value) {
+  const characters = [];
+  const positions = [];
+  let pendingWhitespaceStart = null;
+  let pendingWhitespaceEnd = null;
+  const flushWhitespace = () => {
+    if (characters.length === 0 || pendingWhitespaceStart === null) {
+      pendingWhitespaceStart = null;
+      pendingWhitespaceEnd = null;
+      return;
+    }
+    characters.push(" ");
+    positions.push({ startOffset: pendingWhitespaceStart, endOffset: pendingWhitespaceEnd });
+    pendingWhitespaceStart = null;
+    pendingWhitespaceEnd = null;
+  };
+  const source = String(value ?? "");
+  for (let offset = 0; offset < source.length;) {
+    const character = String.fromCodePoint(source.codePointAt(offset));
+    const nextOffset = offset + character.length;
+    if (/\s/u.test(character)) {
+      if (pendingWhitespaceStart === null) pendingWhitespaceStart = offset;
+      pendingWhitespaceEnd = nextOffset;
+      offset = nextOffset;
+      continue;
+    }
+    flushWhitespace();
+    for (const normalizedCharacter of character.normalize("NFKC")) {
+      characters.push(normalizedCharacter);
+      positions.push({ startOffset: offset, endOffset: nextOffset });
+    }
+    offset = nextOffset;
+  }
+  return { text: characters.join(""), positions };
+}
+
+function clippedSegmentRectangle(segment, startOffset, endOffset) {
+  const segmentLength = segment.endOffset - segment.startOffset;
+  if (segmentLength <= 0) return null;
+  const localStart = clamp((startOffset - segment.startOffset) / segmentLength, 0, 1);
+  const localEnd = clamp((endOffset - segment.startOffset) / segmentLength, 0, 1);
+  if (localEnd <= localStart) return null;
+  const bounds = segment.normalizedBounds;
+  const leftFraction = segment.direction === "rtl" ? 1 - localEnd : localStart;
+  return Object.freeze({
+    x: rounded(bounds.x + (bounds.width * leftFraction)),
+    y: bounds.y,
+    width: rounded(bounds.width * (localEnd - localStart)),
+    height: bounds.height,
+  });
+}
+
+/**
+ * Project a page-text offset range onto PDF.js item geometry without widening
+ * the evidence to entire source lines. When `exactText` is supplied, newline
+ * and whitespace normalization are reconciled back to the page's raw offsets.
+ */
+export function resolvePdfTextRangeGeometry(pageRecord, locator = {}) {
+  if (!pageRecord || typeof pageRecord.text !== "string" || !Array.isArray(pageRecord.lines)) return null;
+  let startOffset = Number(locator.startOffset);
+  let endOffset = Number(locator.endOffset);
+  const exactText = normalizePdfText(locator.exactText || "");
+  let matchMethod = "issued_offsets";
+  const directValid = Number.isInteger(startOffset)
+    && Number.isInteger(endOffset)
+    && startOffset >= 0
+    && endOffset > startOffset
+    && endOffset <= pageRecord.text.length
+    && (!exactText || normalizePdfText(pageRecord.text.slice(startOffset, endOffset)) === exactText);
+
+  if (!directValid) {
+    if (!exactText) return null;
+    const normalizedPage = normalizedTextOffsetMap(pageRecord.text);
+    const matches = [];
+    let cursor = 0;
+    while (cursor <= normalizedPage.text.length - exactText.length) {
+      const match = normalizedPage.text.indexOf(exactText, cursor);
+      if (match < 0) break;
+      matches.push(match);
+      cursor = match + Math.max(1, exactText.length);
+    }
+    if (matches.length !== 1) return null;
+    const first = normalizedPage.positions[matches[0]];
+    const last = normalizedPage.positions[matches[0] + exactText.length - 1];
+    if (!first || !last) return null;
+    startOffset = first.startOffset;
+    endOffset = last.endOffset;
+    matchMethod = "unique_normalized_exact_text";
+  }
+
+  const rects = [];
+  let coveredCharacters = 0;
+  for (const line of pageRecord.lines) {
+    for (const segment of line.segments || []) {
+      const selectedStart = Math.max(startOffset, segment.startOffset);
+      const selectedEnd = Math.min(endOffset, segment.endOffset);
+      if (selectedEnd <= selectedStart) continue;
+      const rect = clippedSegmentRectangle(segment, selectedStart, selectedEnd);
+      if (!rect || rect.width <= 0 || rect.height <= 0) continue;
+      rects.push(rect);
+      coveredCharacters += pageRecord.text.slice(selectedStart, selectedEnd).replace(/\s/gu, "").length;
+    }
+  }
+  if (rects.length === 0) return null;
+  const requestedCharacters = pageRecord.text.slice(startOffset, endOffset).replace(/\s/gu, "").length;
+  return Object.freeze({
+    startOffset,
+    endOffset,
+    exactText: exactText || normalizePdfText(pageRecord.text.slice(startOffset, endOffset)),
+    matchMethod,
+    geometryMethod: "pdfjs_item_proportional_text_range",
+    geometryCoverage: requestedCharacters > 0 ? rounded(Math.min(1, coveredCharacters / requestedCharacters), 4) : 1,
+    normalizedBounds: Object.freeze(rects),
+  });
+}
+
+/**
+ * Convert one PDF.js text-content payload into a bounded, serializable page
+ * record. The record is page-owned parsing input: it is never rendered as a
+ * transcript and it preserves only line text plus normalized source geometry.
+ */
+export function buildPdfPageTextRecord({
+  pageIndex,
+  pageLabel = String(Number(pageIndex) + 1),
+  textItems,
+  viewport,
+  pageViewBox = viewport?.viewBox,
+  pageRotation = viewport?.rotation ?? 0,
+} = {}) {
+  const safePageIndex = Number(pageIndex);
+  if (!Number.isInteger(safePageIndex) || safePageIndex < 0) {
+    throw new PaperPdfError("PDF_TEXT_INDEX_INVALID", "A nonnegative PDF page index is required.");
+  }
+  if (!Array.isArray(textItems)) {
+    throw new PaperPdfError("PDF_TEXT_INDEX_INVALID", "PDF text items must be an array.");
+  }
+  const frozenViewBox = freezePdfPageViewBox(pageViewBox);
+  const lines = [];
+  let currentLine = null;
+  let pageTextCursor = 0;
+
+  const flushLine = () => {
+    if (!currentLine) return;
+    const normalizedLine = normalizedLineParts(currentLine.parts);
+    const { text } = normalizedLine;
+    if (text) {
+      const normalizedBounds = currentLine.rects.length > 0
+        ? Object.freeze(currentLine.rects.map((rectangle) => Object.freeze({ ...rectangle })))
+        : Object.freeze([{ x: 0, y: 0, width: 1, height: 1 }]);
+      const lineStartOffset = pageTextCursor;
+      const lineEndOffset = lineStartOffset + text.length;
+      const segments = normalizedLine.segments.map((segment) => Object.freeze({
+        ...segment,
+        startOffset: lineStartOffset + segment.startOffset,
+        endOffset: lineStartOffset + segment.endOffset,
+      }));
+      lines.push(Object.freeze({
+        lineIndex: lines.length,
+        lineId: `page:${safePageIndex + 1}:line:${lines.length + 1}`,
+        text,
+        startOffset: lineStartOffset,
+        endOffset: lineEndOffset,
+        segments: Object.freeze(segments),
+        normalizedBounds,
+        bounds: currentLine.rects.length > 0
+          ? unionNormalizedRects(currentLine.rects)
+          : Object.freeze({ x: 0, y: 0, width: 1, height: 1 }),
+        sourceItemStart: currentLine.sourceItemStart,
+        sourceItemEnd: currentLine.sourceItemEnd,
+        fontHeight: rounded(currentLine.fontHeight),
+      }));
+      pageTextCursor = lineEndOffset + 1;
+    }
+    currentLine = null;
+  };
+
+  for (const [sourceItemIndex, item] of textItems.entries()) {
+    if (!item || typeof item !== "object" || typeof item.str !== "string") continue;
+    const itemText = item.str.normalize("NFKC");
+    const itemBounds = pdfTextItemNormalizedBounds(item, viewport);
+    if (currentLine && shouldStartNewTextLine(currentLine, itemBounds)) flushLine();
+    if (!currentLine) {
+      currentLine = {
+        parts: [],
+        rects: [],
+        sourceItemStart: sourceItemIndex,
+        sourceItemEnd: sourceItemIndex,
+        fontHeight: 0,
+      };
+    }
+    if (itemText) {
+      if (shouldInsertItemSpace(currentLine, itemText, itemBounds)) {
+        currentLine.parts.push({ text: " ", bounds: null, syntheticSpace: true });
+      }
+      currentLine.parts.push({
+        text: itemText,
+        bounds: itemBounds,
+        sourceItemIndex,
+        direction: item.dir,
+        syntheticSpace: false,
+      });
+    }
+    if (itemBounds) currentLine.rects.push(itemBounds);
+    currentLine.sourceItemEnd = sourceItemIndex;
+    const itemHeight = Number(item.height) || Math.hypot(Number(item.transform?.[2]) || 0, Number(item.transform?.[3]) || 0);
+    if (Number.isFinite(itemHeight)) currentLine.fontHeight = Math.max(currentLine.fontHeight, itemHeight);
+    if (item.hasEOL === true) flushLine();
+  }
+  flushLine();
+
+  const text = lines.map((line) => line.text).join("\n");
+  return Object.freeze({
+    pageIndex: safePageIndex,
+    pageLabel: String(pageLabel),
+    pageViewBox: frozenViewBox,
+    pageRotation: Number(pageRotation) || 0,
+    textCapability: text ? "exact_candidate" : "visual_only",
+    text,
+    lines: Object.freeze(lines),
+  });
+}
+
 function pdfQuadsFromClientRects(rects, pageRect, viewport) {
   return rects.map((rect) => {
     const left = clamp(rect.left - pageRect.left, 0, pageRect.width);
@@ -437,7 +895,7 @@ function setElementPercentBounds(element, bounds) {
   element.style.height = `${bounds.height * 100}%`;
 }
 
-function paintSourceHighlights({ annotationOverlay, anchorTarget, rects, bounds, viewport }) {
+function paintSourceHighlights({ annotationOverlay, anchorTarget, sourceAnchor, rects, bounds, viewport }) {
   let highlightSvg = annotationOverlay.querySelector("[data-paperpilot-source-highlights]");
   if (!highlightSvg) {
     highlightSvg = document.createElementNS(SVG_NAMESPACE, "svg");
@@ -470,25 +928,27 @@ function paintSourceHighlights({ annotationOverlay, anchorTarget, rects, bounds,
 
   setElementPercentBounds(anchorTarget, bounds);
   anchorTarget.hidden = false;
-  anchorTarget.dataset.pageNumber = "1";
-  anchorTarget.dataset.anchorId = ATTENTION_SOURCE_ANCHOR.anchorId;
+  anchorTarget.dataset.pageNumber = String(sourceAnchor.pageNumber);
+  anchorTarget.dataset.anchorId = sourceAnchor.anchorId;
 }
 
-function createSourceAnchorTarget(annotationOverlay) {
-  let anchorTarget = annotationOverlay.querySelector("#text-source") || document.getElementById("text-source");
-  if (anchorTarget && anchorTarget.parentElement !== annotationOverlay) annotationOverlay.append(anchorTarget);
+function createSourceAnchorTarget(annotationOverlay, sourceAnchor) {
+  const focusParent = annotationOverlay.parentElement || annotationOverlay;
+  let anchorTarget = focusParent.querySelector("#text-source") || document.getElementById("text-source");
+  if (anchorTarget && anchorTarget.parentElement !== focusParent) focusParent.append(anchorTarget);
   if (!anchorTarget) {
     anchorTarget = document.createElement("div");
     anchorTarget.id = "text-source";
-    annotationOverlay.append(anchorTarget);
+    focusParent.append(anchorTarget);
   }
   anchorTarget.classList.add("pdf-source-anchor", "active");
   anchorTarget.tabIndex = -1;
   anchorTarget.hidden = true;
   anchorTarget.style.position = "absolute";
+  anchorTarget.style.zIndex = "5";
   anchorTarget.setAttribute(
     "aria-label",
-    `Exact source on page 1: ${ATTENTION_SOURCE_ANCHOR.exactText}`,
+    `Exact source on page ${sourceAnchor.pageNumber}: ${sourceAnchor.exactText}`,
   );
 
   let annotationContent = anchorTarget.querySelector("#source-annotation-overlay");
@@ -511,7 +971,7 @@ function isExpectedCancellation(error) {
 }
 
 /**
- * Initialize the exact-paper PDF.js surface as a continuous vertical document.
+ * Initialize an identity-addressed PDF.js surface as a continuous vertical document.
  * All page shells participate in scroll layout. Page 1 and a small window around
  * the active page retain their canvas/text layers; distant pages are lightweight
  * placeholders with stable dimensions and page-owned annotation overlays.
@@ -521,6 +981,27 @@ function isExpectedCancellation(error) {
  *   zoom, and lifecycle APIs.
  */
 export async function initializePaperPdfViewer(options = {}) {
+  const suppliedDocument = await preparePdfDocumentSource(options);
+  const fixedSourceAnchor = options.sourceAnchor === undefined
+    ? suppliedDocument
+      ? null
+      : ATTENTION_SOURCE_ANCHOR
+    : options.sourceAnchor;
+  if (fixedSourceAnchor !== null && fixedSourceAnchor !== undefined) {
+    if (
+      typeof fixedSourceAnchor !== "object"
+      || typeof fixedSourceAnchor.anchorId !== "string"
+      || !Number.isInteger(fixedSourceAnchor.pageNumber)
+      || fixedSourceAnchor.pageNumber < 1
+      || typeof fixedSourceAnchor.exactText !== "string"
+      || fixedSourceAnchor.exactText.trim().length === 0
+    ) {
+      throw new PaperPdfError(
+        "PDF_SOURCE_ANCHOR_INVALID",
+        "A fixed source anchor requires an id, positive page number, and nonempty exact text.",
+      );
+    }
+  }
   const viewer = resolveElement(options.viewer, DEFAULT_PDF_VIEWER_IDS.viewer, { required: true });
   const initialSurface = getOrCreateLayer(
     options.surface,
@@ -565,14 +1046,18 @@ export async function initializePaperPdfViewer(options = {}) {
   const cleanupCallbacks = [];
   const pageRecords = new Map();
   const anchorOverlays = new Map();
-  const anchorTarget = createSourceAnchorTarget(initialAnnotationOverlay);
-  anchorOverlays.set(ATTENTION_SOURCE_ANCHOR.anchorId, {
-    anchorId: ATTENTION_SOURCE_ANCHOR.anchorId,
-    pageNumber: ATTENTION_SOURCE_ANCHOR.pageNumber,
-    target: anchorTarget,
-    svg: null,
-    builtIn: true,
-  });
+  const anchorTarget = fixedSourceAnchor
+    ? createSourceAnchorTarget(initialAnnotationOverlay, fixedSourceAnchor)
+    : null;
+  if (fixedSourceAnchor) {
+    anchorOverlays.set(fixedSourceAnchor.anchorId, {
+      anchorId: fixedSourceAnchor.anchorId,
+      pageNumber: fixedSourceAnchor.pageNumber,
+      target: anchorTarget,
+      svg: null,
+      builtIn: true,
+    });
+  }
 
   const state = {
     destroyed: false,
@@ -590,6 +1075,8 @@ export async function initializePaperPdfViewer(options = {}) {
     renderPromise: Promise.resolve(null),
     resizeFrame: null,
     scrollFrame: null,
+    documentTextIndex: null,
+    documentTextPromise: null,
   };
   const minZoom = Number.isFinite(options.minZoom) ? options.minZoom : DEFAULT_MIN_ZOOM;
   const maxZoom = Number.isFinite(options.maxZoom) ? options.maxZoom : DEFAULT_MAX_ZOOM;
@@ -602,6 +1089,9 @@ export async function initializePaperPdfViewer(options = {}) {
   const maxSelectionCharacters = Number.isInteger(options.maxSelectionCharacters)
     ? Math.max(1, options.maxSelectionCharacters)
     : DEFAULT_MAX_SELECTION_CHARACTERS;
+  const maxPdfPages = Number.isInteger(options.maxPdfPages) && options.maxPdfPages > 0
+    ? options.maxPdfPages
+    : DEFAULT_MAX_PDF_PAGES;
 
   const emitStatus = (kind, message, details = {}) => {
     viewer.dataset.pdfState = kind;
@@ -612,12 +1102,12 @@ export async function initializePaperPdfViewer(options = {}) {
   const fail = (error) => {
     const wrapped = error instanceof PaperPdfError
       ? error
-      : new PaperPdfError("PDF_VIEWER_FAILED", error?.message || "The exact paper could not be rendered.", { cause: error });
+      : new PaperPdfError("PDF_VIEWER_FAILED", error?.message || "The selected paper could not be rendered.", { cause: error });
     const alreadyFailed = state.failed;
     state.failed = true;
     viewer.dataset.pdfState = "error";
     viewer.setAttribute("aria-busy", "false");
-    anchorTarget.hidden = true;
+    if (anchorTarget) anchorTarget.hidden = true;
     emitStatus("error", wrapped.message, { code: wrapped.code });
     if (!alreadyFailed) options.onError?.(wrapped);
     return wrapped;
@@ -642,9 +1132,10 @@ export async function initializePaperPdfViewer(options = {}) {
     surface.tabIndex = -1;
     surface.style.position = "relative";
     surface.style.marginInline = "auto";
-    surface.style.marginBlockEnd = pageNumber === ATTENTION_PDF.pageCount ? "0" : `${pageGap}px`;
+    const pageCount = state.pdfDocument?.numPages || suppliedDocument?.expectedPageCount || ATTENTION_PDF.pageCount;
+    surface.style.marginBlockEnd = pageNumber === pageCount ? "0" : `${pageGap}px`;
     surface.style.flex = "0 0 auto";
-    surface.setAttribute("aria-label", `PDF page ${pageNumber} of ${ATTENTION_PDF.pageCount}`);
+    surface.setAttribute("aria-label", `PDF page ${pageNumber} of ${pageCount}`);
 
     canvas.classList.add("pdf-canvas");
     canvas.style.display = "block";
@@ -701,6 +1192,7 @@ export async function initializePaperPdfViewer(options = {}) {
       requestedScale: null,
       generation: 0,
       renderPromise: null,
+      textContentPromise: null,
     };
     pageRecords.set(pageNumber, record);
     return record;
@@ -721,14 +1213,14 @@ export async function initializePaperPdfViewer(options = {}) {
   };
 
   const updatePageLabels = () => {
-    const pageCount = state.pdfDocument?.numPages || ATTENTION_PDF.pageCount;
+    const pageCount = state.pdfDocument?.numPages || suppliedDocument?.expectedPageCount || ATTENTION_PDF.pageCount;
     for (const record of pageRecords.values()) {
       record.surface.setAttribute("aria-label", `PDF page ${record.pageNumber} of ${pageCount}`);
     }
   };
 
   const updateControls = () => {
-    const pageCount = state.pdfDocument?.numPages || ATTENTION_PDF.pageCount;
+    const pageCount = state.pdfDocument?.numPages || suppliedDocument?.expectedPageCount || ATTENTION_PDF.pageCount;
     if (controls.pageNumber) {
       if ("value" in controls.pageNumber) controls.pageNumber.value = String(state.currentPage);
       else controls.pageNumber.textContent = String(state.currentPage);
@@ -748,7 +1240,7 @@ export async function initializePaperPdfViewer(options = {}) {
     if (!state.ready || state.failed || state.destroyed) return;
     emitStatus(
       "ready",
-      `Exact PDF verified · continuous page ${state.currentPage} of ${state.pdfDocument.numPages} · ${Math.round(state.scale * 100)}%`,
+      `PDF identity ready · continuous page ${state.currentPage} of ${state.pdfDocument.numPages} · ${Math.round(state.scale * 100)}%`,
       { pageNumber: state.currentPage, scale: state.scale, mode: state.zoomMode },
     );
   };
@@ -779,9 +1271,10 @@ export async function initializePaperPdfViewer(options = {}) {
   };
 
   const resolveSourceAnchor = (record, textLayer, viewport) => {
+    if (!fixedSourceAnchor) return null;
     const chunks = collectPdfTextNodes(textLayer.textDivs);
     const characterMap = buildNormalizedCharacterMap(chunks);
-    const match = findUniqueNormalizedMatch(characterMap.text, ATTENTION_SOURCE_ANCHOR.exactText);
+    const match = findUniqueNormalizedMatch(characterMap.text, fixedSourceAnchor.exactText);
     const startPosition = characterMap.positions[match.start];
     const endPosition = characterMap.positions[match.end - 1];
     if (!startPosition || !endPosition) {
@@ -799,8 +1292,10 @@ export async function initializePaperPdfViewer(options = {}) {
     range.detach?.();
 
     const anchorGeometry = Object.freeze({
-      ...ATTENTION_SOURCE_ANCHOR,
-      documentSha256: ATTENTION_PDF.sha256,
+      ...fixedSourceAnchor,
+      pageIndex: fixedSourceAnchor.pageIndex ?? fixedSourceAnchor.pageNumber - 1,
+      pageLabel: fixedSourceAnchor.pageLabel ?? String(fixedSourceAnchor.pageNumber),
+      documentSha256: state.documentFacts.sha256,
       coordinateSpace: "normalized_page_top_left",
       bounds,
       rects: Object.freeze(rects),
@@ -819,6 +1314,7 @@ export async function initializePaperPdfViewer(options = {}) {
     paintSourceHighlights({
       annotationOverlay: record.annotationOverlay,
       anchorTarget,
+      sourceAnchor: fixedSourceAnchor,
       rects,
       bounds,
       viewport,
@@ -838,6 +1334,17 @@ export async function initializePaperPdfViewer(options = {}) {
     ) {
       throw new StalePdfRenderError();
     }
+  };
+
+  const loadPageTextContent = (record) => {
+    if (record.textContentPromise) return record.textContentPromise;
+    record.textContentPromise = record.pdfPage
+      .getTextContent({ includeMarkedContent: true })
+      .catch((error) => {
+        record.textContentPromise = null;
+        throw error;
+      });
+    return record.textContentPromise;
   };
 
   const renderPage = (record, { announce = false, force = false } = {}) => {
@@ -860,7 +1367,7 @@ export async function initializePaperPdfViewer(options = {}) {
     record.renderTask = null;
     record.textLayer = null;
     record.surface.dataset.renderState = "rendering";
-    if (record.pageNumber === ATTENTION_SOURCE_ANCHOR.pageNumber) anchorTarget.hidden = true;
+    if (fixedSourceAnchor && record.pageNumber === fixedSourceAnchor.pageNumber) anchorTarget.hidden = true;
     if (announce) {
       viewer.setAttribute("aria-busy", "true");
       emitStatus("rendering", `Rendering continuous page ${record.pageNumber} of ${state.pdfDocument.numPages}…`);
@@ -896,7 +1403,7 @@ export async function initializePaperPdfViewer(options = {}) {
       await record.renderTask.promise;
       assertLivePageRender(record, generation, zoomGeneration, scale);
 
-      const textContent = await record.pdfPage.getTextContent({ includeMarkedContent: true });
+      const textContent = await loadPageTextContent(record);
       assertLivePageRender(record, generation, zoomGeneration, scale);
       record.textLayer = new TextLayer({
         textContentSource: textContent,
@@ -907,7 +1414,7 @@ export async function initializePaperPdfViewer(options = {}) {
       assertLivePageRender(record, generation, zoomGeneration, scale);
 
       let anchor = state.anchorGeometry;
-      if (record.pageNumber === ATTENTION_SOURCE_ANCHOR.pageNumber) {
+      if (fixedSourceAnchor && record.pageNumber === fixedSourceAnchor.pageNumber) {
         anchor = resolveSourceAnchor(record, record.textLayer, viewport);
       }
       record.viewport = viewport;
@@ -930,7 +1437,7 @@ export async function initializePaperPdfViewer(options = {}) {
 
   const evictPage = (record) => {
     if (
-      record.pageNumber === ATTENTION_SOURCE_ANCHOR.pageNumber
+      (fixedSourceAnchor && record.pageNumber === fixedSourceAnchor.pageNumber)
       || (record.renderedScale === null && !record.renderPromise && record.canvas.width <= 1)
     ) return;
     record.generation += 1;
@@ -1166,7 +1673,7 @@ export async function initializePaperPdfViewer(options = {}) {
       state.pendingSelectionAnchorId = null;
     }
     const prior = anchorOverlays.get(anchorId);
-    if (prior?.builtIn && anchorId === ATTENTION_SOURCE_ANCHOR.anchorId) return prior.target;
+    if (prior?.builtIn && anchorId === fixedSourceAnchor?.anchorId) return prior.target;
     if (prior && prior.pageNumber !== targetPage) {
       prior.svg?.remove();
       prior.target?.remove();
@@ -1189,7 +1696,11 @@ export async function initializePaperPdfViewer(options = {}) {
     target.style.zIndex = "2";
     target.setAttribute("aria-label", ariaLabel);
     setElementPercentBounds(target, bounds);
-    if (target.parentElement !== record.annotationOverlay) record.annotationOverlay.append(target);
+    // Keep the focusable, labeled target outside the aria-hidden paint layer.
+    // Only the SVG rectangles are decorative; assistive technology must be able
+    // to perceive the programmatically focused provenance target.
+    if (target.parentElement !== record.surface) record.surface.append(target);
+    target.style.zIndex = "5";
 
     const svg = current?.svg || document.createElementNS(SVG_NAMESPACE, "svg");
     svg.dataset.paperpilotAnchorOverlay = anchorId;
@@ -1289,7 +1800,7 @@ export async function initializePaperPdfViewer(options = {}) {
     const encodedText = new TextEncoder().encode(exactText);
     const exactTextSha256 = await sha256Hex(encodedText);
     const anchorPayload = JSON.stringify({
-      documentSha256: ATTENTION_PDF.sha256,
+      documentSha256: state.documentFacts.sha256,
       pageNumber: record.pageNumber,
       exactText,
       rects,
@@ -1329,7 +1840,7 @@ export async function initializePaperPdfViewer(options = {}) {
       sourceKind: "user_text_selection",
       exactText,
       exactTextSha256,
-      documentSha256: ATTENTION_PDF.sha256,
+      documentSha256: state.documentFacts.sha256,
       coordinateSpace: "normalized_page_top_left",
       normalizedBounds: Object.freeze(rects),
       bounds,
@@ -1350,7 +1861,7 @@ export async function initializePaperPdfViewer(options = {}) {
     });
   };
 
-  const getAnchorTarget = (anchorId = ATTENTION_SOURCE_ANCHOR.anchorId) => (
+  const getAnchorTarget = (anchorId = fixedSourceAnchor?.anchorId) => (
     anchorOverlays.get(anchorId)?.target || null
   );
 
@@ -1371,12 +1882,12 @@ export async function initializePaperPdfViewer(options = {}) {
   };
 
   const focusAnchor = async (
-    anchorIdOrOptions = ATTENTION_SOURCE_ANCHOR.anchorId,
+    anchorIdOrOptions = fixedSourceAnchor?.anchorId,
     maybeOptions = {},
   ) => {
     const anchorId = typeof anchorIdOrOptions === "string"
       ? anchorIdOrOptions
-      : ATTENTION_SOURCE_ANCHOR.anchorId;
+      : fixedSourceAnchor?.anchorId;
     const focusOptions = typeof anchorIdOrOptions === "string" ? maybeOptions : anchorIdOrOptions;
     const { behavior = "smooth", block = "center", scrollIntoView = true } = focusOptions || {};
     const overlay = anchorOverlays.get(anchorId);
@@ -1397,11 +1908,105 @@ export async function initializePaperPdfViewer(options = {}) {
   };
 
   const focus = async (focusOptions = {}) => {
-    await focusAnchor(ATTENTION_SOURCE_ANCHOR.anchorId, focusOptions);
+    if (!fixedSourceAnchor) {
+      throw new PaperPdfError("PDF_SOURCE_UNAVAILABLE", "This PDF has no fixed source anchor; focus an issued dynamic anchor instead.");
+    }
+    await focusAnchor(fixedSourceAnchor.anchorId, focusOptions);
     if (!state.anchorGeometry || anchorTarget.hidden) {
-      throw new PaperPdfError("PDF_SOURCE_UNAVAILABLE", "The exact source anchor is not available on page 1.");
+      throw new PaperPdfError(
+        "PDF_SOURCE_UNAVAILABLE",
+        `The exact source anchor is not available on page ${fixedSourceAnchor.pageNumber}.`,
+      );
     }
     return state.anchorGeometry;
+  };
+
+  const extractDocumentText = async ({ onProgress, signal } = {}) => {
+    if (!state.documentFacts?.integrityVerified || !state.pdfDocument || state.destroyed || state.failed) {
+      throw new PaperPdfError(
+        "PDF_TEXT_INDEX_UNAVAILABLE",
+        "The PDF text index is available only after the selected document identity is ready.",
+      );
+    }
+    if (state.documentTextIndex) return state.documentTextIndex;
+    if (state.documentTextPromise) return state.documentTextPromise;
+
+    state.documentTextPromise = (async () => {
+      const pages = [];
+      let exactCandidatePages = 0;
+      let visualOnlyPages = 0;
+      let failedPages = 0;
+      const records = [...pageRecords.values()].sort((left, right) => left.pageNumber - right.pageNumber);
+      for (const record of records) {
+        if (signal?.aborted || abortController.signal.aborted || state.destroyed) {
+          throw new PaperPdfError("PDF_TEXT_INDEX_ABORTED", "Whole-paper text indexing was cancelled.");
+        }
+        let pageRecord;
+        try {
+          const textContent = await loadPageTextContent(record);
+          pageRecord = buildPdfPageTextRecord({
+            pageIndex: record.pageIndex,
+            pageLabel: String(record.pageNumber),
+            textItems: textContent.items,
+            viewport: record.baseViewport,
+            pageViewBox: record.baseViewport.viewBox,
+            pageRotation: record.baseViewport.rotation,
+          });
+          if (pageRecord.textCapability === "exact_candidate") exactCandidatePages += 1;
+          else visualOnlyPages += 1;
+        } catch (error) {
+          if (signal?.aborted || abortController.signal.aborted || state.destroyed) throw error;
+          failedPages += 1;
+          pageRecord = Object.freeze({
+            pageIndex: record.pageIndex,
+            pageLabel: String(record.pageNumber),
+            pageViewBox: freezePdfPageViewBox(record.baseViewport.viewBox),
+            pageRotation: record.baseViewport.rotation,
+            textCapability: "failed",
+            text: "",
+            lines: Object.freeze([]),
+            limitation: error?.name || "text_extraction_failed",
+          });
+        }
+        pages.push(pageRecord);
+        const progress = Object.freeze({
+          pageIndex: record.pageIndex,
+          pageNumber: record.pageNumber,
+          pageCount: records.length,
+          indexedPages: pages.length,
+          textCapability: pageRecord.textCapability,
+        });
+        onProgress?.(progress);
+        options.onTextIndexProgress?.(progress);
+      }
+
+      const status = failedPages === records.length
+        ? "failed"
+        : failedPages > 0 || visualOnlyPages > 0
+          ? "partial"
+          : "ready";
+      const snapshot = Object.freeze({
+        schemaVersion: 1,
+        documentSha256: state.documentFacts.sha256,
+        pageCount: records.length,
+        indexedPages: pages.length,
+        exactCandidatePages,
+        visualOnlyPages,
+        failedPages,
+        status,
+        pages: Object.freeze(pages),
+      });
+      state.documentTextIndex = snapshot;
+      emitReadyStatus();
+      return snapshot;
+    })();
+
+    try {
+      return await state.documentTextPromise;
+    } catch (error) {
+      state.documentTextPromise = null;
+      throw error;
+    }
   };
 
   const destroy = async () => {
@@ -1449,52 +2054,61 @@ export async function initializePaperPdfViewer(options = {}) {
   }, { passive: true });
 
   viewer.setAttribute("aria-busy", "true");
-  emitStatus("verifying", "Verifying the exact 15-page arXiv PDF…");
+  emitStatus(
+    "verifying",
+    suppliedDocument
+      ? "Computing a browser-local identity for the selected PDF…"
+      : "Verifying the exact 15-page arXiv PDF…",
+  );
   try {
-    const response = await fetch(ATTENTION_PDF.localUrl, {
-      cache: "no-store",
-      credentials: "same-origin",
-      headers: { Accept: "application/pdf" },
-      signal: abortController.signal,
-    });
-    if (!response.ok) {
-      throw new PaperPdfError(
-        "PDF_FETCH_FAILED",
-        `The exact paper is unavailable (${response.status}). Fetch the pinned local PDF before launching the spike.`,
-      );
-    }
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    if (!isPdfSignature(bytes)) {
-      throw new PaperPdfError("PDF_SIGNATURE_MISMATCH", "The local paper asset is not a PDF document.");
-    }
-    if (bytes.byteLength !== ATTENTION_PDF.byteLength) {
-      throw new PaperPdfError(
-        "PDF_BYTE_LENGTH_MISMATCH",
-        `The local paper has ${bytes.byteLength} bytes; expected ${ATTENTION_PDF.byteLength}.`,
-      );
-    }
-    const sha256 = await sha256Hex(bytes);
-    if (sha256 !== ATTENTION_PDF.sha256) {
-      throw new PaperPdfError(
-        "PDF_SHA256_MISMATCH",
-        `The local paper SHA-256 is ${sha256}; expected ${ATTENTION_PDF.sha256}.`,
-      );
+    let source = suppliedDocument;
+    if (!source) {
+      const response = await fetch(ATTENTION_PDF.localUrl, {
+        cache: "no-store",
+        credentials: "same-origin",
+        headers: { Accept: "application/pdf" },
+        signal: abortController.signal,
+      });
+      if (!response.ok) {
+        throw new PaperPdfError(
+          "PDF_FETCH_FAILED",
+          `The exact paper is unavailable (${response.status}). Fetch the pinned local PDF before launching the spike.`,
+        );
+      }
+      const preparedFixture = await preparePdfDocumentSource({
+        pdfBytes: await response.arrayBuffer(),
+        filename: ATTENTION_PDF.filename,
+        title: ATTENTION_PDF.title,
+        contentType: response.headers.get("content-type") || "application/pdf",
+        sourceUrl: ATTENTION_PDF.sourceUrl,
+        expectedByteLength: ATTENTION_PDF.byteLength,
+        expectedSha256: ATTENTION_PDF.sha256,
+        expectedPageCount: ATTENTION_PDF.pageCount,
+      });
+      source = Object.freeze({ ...preparedFixture, paperRef: "paper:arxiv:1706_03762v7" });
     }
 
     state.loadingTask = getDocument({
-      data: bytes,
+      data: source.bytes.slice(),
       isEvalSupported: false,
       useWorkerFetch: false,
-      standardFontDataUrl: "/vendor/pdfjs/standard_fonts/",
-      cMapUrl: "/vendor/pdfjs/cmaps/",
+      standardFontDataUrl: PDFJS_ASSET_URLS.standardFonts,
+      cMapUrl: PDFJS_ASSET_URLS.cmaps,
       cMapPacked: true,
-      wasmUrl: "/vendor/pdfjs/wasm/",
+      wasmUrl: PDFJS_ASSET_URLS.wasm,
     });
     state.pdfDocument = await state.loadingTask.promise;
-    if (state.pdfDocument.numPages !== ATTENTION_PDF.pageCount) {
+    assertPdfPageCountWithinLimit(state.pdfDocument.numPages, maxPdfPages);
+    if (source.expectedPageCount !== null && state.pdfDocument.numPages !== source.expectedPageCount) {
       throw new PaperPdfError(
         "PDF_PAGE_COUNT_MISMATCH",
-        `The local paper has ${state.pdfDocument.numPages} pages; expected ${ATTENTION_PDF.pageCount}.`,
+        `The selected PDF has ${state.pdfDocument.numPages} pages; expected ${source.expectedPageCount}.`,
+      );
+    }
+    if (fixedSourceAnchor && fixedSourceAnchor.pageNumber > state.pdfDocument.numPages) {
+      throw new PaperPdfError(
+        "PDF_SOURCE_ANCHOR_INVALID",
+        `The fixed source anchor targets page ${fixedSourceAnchor.pageNumber}, but the PDF has ${state.pdfDocument.numPages} pages.`,
       );
     }
     state.currentPage = clampPdfPageNumber(state.currentPage, state.pdfDocument.numPages);
@@ -1509,22 +2123,34 @@ export async function initializePaperPdfViewer(options = {}) {
       state.zoomMode = "custom";
     }
     for (const record of pageRecords.values()) applyPageDimensions(record, state.scale);
+    const firstPage = pageRecords.get(1);
     state.documentFacts = Object.freeze({
-      ...ATTENTION_PDF,
-      contentType: response.headers.get("content-type") || "application/pdf",
+      ...(suppliedDocument ? {} : ATTENTION_PDF),
+      title: source.title,
+      filename: source.filename,
+      byteLength: source.byteLength,
+      sha256: source.sha256,
+      paperRef: source.paperRef,
+      pageCount: state.pdfDocument.numPages,
+      sourceUrl: source.sourceUrl,
+      contentType: source.contentType,
       pdfjsVersion,
       integrityVerified: true,
+      identityMethod: source.identityMethod,
       layoutMode: "continuous_virtualized",
+      firstPageViewBox: freezePdfPageViewBox(firstPage.baseViewport.viewBox),
+      firstPageRotation: firstPage.baseViewport.rotation,
     });
 
-    await renderPage(pageRecords.get(ATTENTION_SOURCE_ANCHOR.pageNumber), { announce: true });
-    if (!state.anchorGeometry) {
+    const firstRenderedPage = fixedSourceAnchor?.pageNumber ?? state.currentPage;
+    await renderPage(pageRecords.get(firstRenderedPage), { announce: true });
+    if (fixedSourceAnchor && !state.anchorGeometry) {
       throw new PaperPdfError(
         "PDF_SOURCE_UNAVAILABLE",
-        "The exact page-1 sentence did not resolve before the viewer became ready.",
+        `The exact page-${fixedSourceAnchor.pageNumber} sentence did not resolve before the viewer became ready.`,
       );
     }
-    if (state.currentPage !== ATTENTION_SOURCE_ANCHOR.pageNumber) {
+    if (state.currentPage !== firstRenderedPage) {
       await renderPage(pageRecords.get(state.currentPage), { announce: true });
       scrollToPageRecord(pageRecords.get(state.currentPage), { behavior: "auto", block: "start" });
     }
@@ -1574,6 +2200,7 @@ export async function initializePaperPdfViewer(options = {}) {
     },
     captureSelection,
     createAnchorFromSelection: captureSelection,
+    extractDocumentText,
     upsertAnchorOverlay,
     removeAnchorOverlay,
     focus,

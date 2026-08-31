@@ -6,6 +6,9 @@ on:
     paths:
       - ".github/workflows/pages.yml"
       - "public/webmcp/**"
+      - "scripts/package-webmcp-pages.mjs"
+      - "spikes/webmcp-contract/**"
+      - "package-lock.json"
   workflow_dispatch:
 
 permissions:
@@ -27,13 +30,25 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install pinned browser dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Package the redesigned demo without paper bytes
+        run: node scripts/package-webmcp-pages.mjs
+
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
 
       - name: Upload the public prototype
         uses: actions/upload-pages-artifact@v3
         with:
-          path: public
+          path: .paperpilot-pages
 
       - name: Deploy to GitHub Pages
         id: deployment

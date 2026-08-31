@@ -4,28 +4,49 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="description" content="Removable PaperPilot WebMCP six-capability contract spike." />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; base-uri 'none'; connect-src 'self' blob:; font-src 'self'; form-action 'none'; img-src 'self' data: blob:; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; worker-src 'self' blob:"
+    />
     <title>PaperPilot — WebMCP contract spike</title>
-    <link rel="stylesheet" href="/vendor/pdfjs/pdf_viewer.css" />
+    <link rel="stylesheet" href="../vendor/pdfjs/pdf_viewer.css" />
     <link rel="stylesheet" href="./spike.css" />
-    <script src="/vendor/graphology/graphology.umd.min.js"></script>
-    <script src="/vendor/sigma/sigma.min.js"></script>
+    <script src="../vendor/graphology/graphology.umd.min.js"></script>
+    <script src="../vendor/sigma/sigma.min.js"></script>
     <script type="module" src="./app.mjs"></script>
   </head>
-  <body>
+  <body class="is-waiting-for-paper">
     <a class="skip-link" href="#contract-workspace">Skip to contract workspace</a>
     <header class="topbar">
       <div>
         <p class="eyebrow">PaperPilot development diagnostic</p>
-        <h1>Watch WebMCP actions land on exact paper evidence</h1>
+        <h1>Watch a paper become an evidence-backed idea map</h1>
       </div>
-      <p class="boundary">Official arXiv v7 bytes · real PDF.js text geometry · no PDF export</p>
+      <p id="paper-boundary" class="boundary">Browser-local PDF bytes · real PDF.js text geometry · no PDF export</p>
     </header>
+
+    <section id="paper-source-gate" class="paper-source-gate" aria-labelledby="paper-source-heading">
+      <div>
+        <p class="eyebrow">Private, browser-local intake</p>
+        <h2 id="paper-source-heading">Drop in any research PDF</h2>
+        <p>
+          PaperPilot reads the file only in this tab, fingerprints the exact bytes, and builds a reviewable
+          critical-idea map with page-owned provenance. Nothing is uploaded, exported, or saved.
+        </p>
+      </div>
+      <label class="paper-file-picker" for="paper-file-input">
+        <span>Choose a PDF</span>
+        <input id="paper-file-input" type="file" accept="application/pdf,.pdf" />
+      </label>
+      <p id="paper-source-gate-status" role="status" aria-live="polite">Waiting for a PDF from this device.</p>
+    </section>
 
     <main id="contract-workspace" tabindex="-1">
       <section class="status-grid" aria-label="Contract status">
         <div><span>WebMCP</span><strong id="webmcp-status" role="status" aria-live="polite">Connecting…</strong></div>
         <div><span>Workspace</span><strong id="workspace-status">Revision 1</strong></div>
         <div><span>Paper focus</span><strong id="focus-status">Exact text</strong></div>
+        <div><span>Paper parse</span><strong id="paper-analysis-status">Waiting for PDF…</strong></div>
         <div><span>Graph view</span><strong id="renderer-status">Starting…</strong></div>
       </section>
 
@@ -33,8 +54,8 @@
         <article class="paper-panel" aria-labelledby="paper-heading">
           <header class="panel-heading">
             <div>
-              <p class="eyebrow">Verified PDF render</p>
-              <h2 id="paper-heading">Attention Is All You Need</h2>
+              <p class="eyebrow">Browser-local PDF render</p>
+              <h2 id="paper-heading">Upload a paper to begin</h2>
             </div>
               <p>The publication stays centered as one continuous paper. Provenance marks bind to its real selectable text.</p>
           </header>
@@ -42,13 +63,13 @@
           <div id="paper-stage" class="paper-stage">
             <div class="pdf-toolbar" aria-label="PDF viewer controls">
               <div class="pdf-identity">
-                <span><span class="pdf-dot" aria-hidden="true"></span>PDF.js · arXiv:1706.03762v7</span>
-                <span id="pdf-status" role="status" aria-live="polite">Verifying exact bytes…</span>
+                <span id="pdf-identity"><span class="pdf-dot" aria-hidden="true"></span>PDF.js · local-only processing</span>
+                <span id="pdf-status" role="status" aria-live="polite">Waiting for a PDF…</span>
               </div>
               <div class="pdf-controls">
                 <label for="pdf-page-number">Jump to page</label>
-                <input id="pdf-page-number" type="number" min="1" max="15" value="1" inputmode="numeric" />
-                <span>of <strong id="pdf-page-count">15</strong></span>
+                <input id="pdf-page-number" type="number" min="1" max="1" value="1" inputmode="numeric" />
+                <span>of <strong id="pdf-page-count">1</strong></span>
                 <span id="pdf-active-page-description" class="pdf-active-page">Page 1 is centered</span>
                 <span class="pdf-control-divider" aria-hidden="true"></span>
                 <button id="pdf-zoom-out" type="button" aria-label="Zoom PDF out">−</button>
@@ -63,25 +84,25 @@
               class="pdf-scrollport"
               tabindex="0"
               role="region"
-              aria-label="Attention Is All You Need PDF viewer"
+              aria-label="Scientific paper PDF viewer"
               aria-busy="true"
             >
-              <section id="pdf-page-surface" class="pdf-page-surface" tabindex="-1" aria-label="Loading PDF page 1 of 15">
+              <section id="pdf-page-surface" class="pdf-page-surface" tabindex="-1" aria-label="Waiting for PDF page 1">
                 <canvas id="pdf-canvas" aria-hidden="true"></canvas>
                 <div id="pdf-text-layer" class="textLayer"></div>
                 <div id="pdf-annotation-overlay" class="pdf-annotation-overlay" aria-hidden="true"></div>
               </section>
               <div id="pdf-loading" class="pdf-loading" role="status" aria-live="polite">
-                Loading and verifying the exact 15-page paper for continuous reading…
+                Choose a PDF above to begin continuous reading and whole-paper analysis.
               </div>
             </div>
 
             <div class="paper-evidence-strip">
               <div>
                 <p class="source-kicker">Page-owned provenance</p>
-                <p id="pdf-source-status">The source anchor will appear only after the PDF text matches exactly.</p>
+                <p id="pdf-source-status">Source anchors appear after PaperPilot indexes page-owned PDF text.</p>
               </div>
-              <button type="button" data-focus-anchor="anchor:text:attention">Go to exact source</button>
+              <button id="primary-source-button" type="button" data-focus-anchor="" disabled>Go to current source</button>
               <div id="paper-annotation-summary" class="source-annotation-overlay" role="list" aria-label="Annotations bound to the exact paper passage"></div>
             </div>
 
@@ -183,10 +204,11 @@
             <button id="register-tools" type="button">Register tools</button>
             <button id="dispose-tools" type="button">Dispose tools</button>
             <button id="human-undo" type="button">Human Undo</button>
+            <button id="human-redo" type="button" disabled>Human Redo</button>
           </div>
           <p class="hint">
-            Ask the browser agent to read focus and graph, navigate, stage an explanation,
-            and apply one graph and one annotation change. Undo is deliberately UI-only.
+            Ask the browser agent to inspect the ranked critical-idea candidates, navigate to one,
+            refine or remove a node, and add one grounded relation. Undo is deliberately UI-only.
           </p>
           <ol id="activity-list" tabindex="0" aria-label="Observed WebMCP callback receipts"></ol>
           <details>
@@ -213,6 +235,25 @@
             <p class="eyebrow">Graphology model · Sigma renderer</p>
             <h2 id="graph-heading">Graph &amp; annotations</h2>
           </header>
+          <section class="critical-map" aria-labelledby="critical-map-heading">
+            <div class="critical-map-heading">
+              <div>
+                <p class="eyebrow">Whole-paper parse</p>
+                <h3 id="critical-map-heading">Critical idea spine</h3>
+              </div>
+              <span id="critical-idea-count" class="count-chip" aria-label="0 critical idea candidates">0</span>
+            </div>
+            <progress id="paper-analysis-progress" max="15" value="0">0 of 15 pages</progress>
+            <p id="paper-analysis-summary" role="status" aria-live="polite">
+              Waiting for the verified PDF text index.
+            </p>
+            <p class="critical-map-boundary">
+              These are automatically ranked, extractive candidates—not verified conclusions. Each one keeps an exact page source, and WebMCP can search, navigate, refine, connect, or tombstone it through the existing graph tools.
+            </p>
+            <ol id="critical-idea-list" aria-label="Ranked critical idea candidates">
+              <li>Paper analysis has not started.</li>
+            </ol>
+          </section>
           <form id="graph-search-form" class="graph-search" role="search" aria-labelledby="graph-search-heading">
             <div>
               <h3 id="graph-search-heading">Find an idea in this paper</h3>
@@ -257,7 +298,7 @@
               <h3 id="annotation-heading">Annotations</h3>
               <span id="annotation-count" class="count-chip">0</span>
             </div>
-            <p class="annotation-boundary">The demo fixture returns after reload. Live agent edits remain memory-only in this spike.</p>
+            <p class="annotation-boundary">Automatic candidates and live agent edits remain browser-memory only in this prototype.</p>
             <p id="annotation-layout-status" class="annotation-layout-status" role="status" aria-live="polite">Drag a card to reorder it, or drag it onto the map. Keyboard controls are inside each card.</p>
             <ul id="annotation-list"><li>Loading annotation fixture…</li></ul>
           </section>

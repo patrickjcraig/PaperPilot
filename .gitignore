@@ -13,6 +13,7 @@ src/generated/prisma/
 .devpost-hackathon-state.json
 /.swc
 /.vercel/
+/.paperpilot-pages/
 
 # Official paper bytes are fetched locally from the committed, digest-pinned
 # source manifest. Do not redistribute the PDF or interrupted downloads.
