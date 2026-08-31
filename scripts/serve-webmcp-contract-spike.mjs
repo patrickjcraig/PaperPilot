@@ -11,6 +11,8 @@ const SPIKE_ROUTE_PREFIX = "/webmcp-contract/";
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(scriptDirectory, "..");
 const spikeRoot = path.join(repositoryRoot, "spikes", "webmcp-contract");
+const packagedPagesRoot = path.join(repositoryRoot, ".paperpilot-pages");
+const servePackagedPages = process.argv.slice(2).includes("--pages");
 
 const vendorRoutes = new Map([
   [
@@ -146,12 +148,47 @@ function resolveSpikeFile(pathname) {
   return isWithinDirectory(candidate, spikeRoot) ? candidate : null;
 }
 
+function resolvePackagedFile(pathname) {
+  let routePath = pathname;
+  if (routePath === "/" || routePath === "/webmcp") routePath = "/webmcp/";
+  if (routePath.endsWith("/")) routePath = `${routePath}index.html`;
+  let decodedPath;
+  try {
+    decodedPath = decodeURIComponent(routePath);
+  } catch {
+    return null;
+  }
+  if (
+    !decodedPath.startsWith("/")
+    || decodedPath.includes("\0")
+    || decodedPath.includes("\\")
+    || decodedPath.split("/").some((segment) => segment === "." || segment === "..")
+  ) {
+    return null;
+  }
+  const relativePath = decodedPath.slice(1);
+  if (!relativePath || relativePath.startsWith(".")) return null;
+  const candidate = path.resolve(packagedPagesRoot, relativePath);
+  return isWithinDirectory(candidate, packagedPagesRoot) ? candidate : null;
+}
+
 async function resolveRequestTarget(requestUrl) {
   let pathname;
   try {
     pathname = new URL(requestUrl, `http://${LOOPBACK_HOST}`).pathname;
   } catch {
     return null;
+  }
+
+  if (servePackagedPages) {
+    const packagedTarget = resolvePackagedFile(pathname);
+    if (!packagedTarget) return null;
+    try {
+      const metadata = await stat(packagedTarget);
+      return metadata.isFile() ? packagedTarget : null;
+    } catch {
+      return null;
+    }
   }
 
   const vendorTarget = vendorRoutes.get(pathname);
@@ -252,8 +289,13 @@ server.on("clientError", (_error, socket) => {
 });
 
 server.listen(port, LOOPBACK_HOST, () => {
-  console.log(`PaperPilot WebMCP contract spike: http://${LOOPBACK_HOST}:${port}/`);
-  console.log(`Serving only ${spikeRoot} plus pinned Graphology, Sigma, and PDF.js assets.`);
+  if (servePackagedPages) {
+    console.log(`PaperPilot packaged Pages artifact: http://${LOOPBACK_HOST}:${port}/webmcp/`);
+    console.log(`Serving only ${packagedPagesRoot}.`);
+  } else {
+    console.log(`PaperPilot WebMCP contract spike: http://${LOOPBACK_HOST}:${port}/`);
+    console.log(`Serving only ${spikeRoot} plus pinned Graphology, Sigma, and PDF.js assets.`);
+  }
 });
 
 for (const signal of ["SIGINT", "SIGTERM"]) {

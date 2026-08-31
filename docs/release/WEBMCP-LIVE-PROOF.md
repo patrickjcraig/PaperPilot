@@ -1,6 +1,8 @@
-# WebMCP live proof record
+# Historical two-tool WebMCP live proof record
 
-Status: durable public release and live WebMCP execution witnessed, 2026-08-30.
+Status: **prior release evidence**, witnessed 2026-08-30 and superseded by the
+six-capability graph/annotation release. This record is retained unchanged as
+historical proof; it must not be used to satisfy the redesigned Reader gates.
 
 ## Proof contract
 

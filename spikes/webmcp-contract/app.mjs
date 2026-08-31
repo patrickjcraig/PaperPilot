@@ -27,6 +27,28 @@ import {
   loadBrowserSnapshot,
   saveBrowserSnapshot,
 } from "./browser-snapshot.mjs";
+import {
+  TOOL_PRESENTATION_COPY,
+  annotationAnchorId,
+  createObservedTrace,
+  instrumentWebmcpTools,
+  resolveObservedAnchor,
+} from "./webmcp-observer.mjs";
+import {
+  applyHumanMentorDecision,
+  createMentorReviewViewModel,
+} from "./mentor-review.mjs";
+import {
+  boundActivityForDisplay,
+  createActivityRecord,
+  formatActivityEvent,
+  humanReadable,
+  mergeRestoredActivity as mergeActivityLedger,
+} from "./activity-ledger.mjs";
+import {
+  projectAccessibleAnnotationSummary,
+  projectAccessibleGraphOutline,
+} from "./accessibility-projection.mjs";
 
 const byId = (id) => document.getElementById(id);
 
@@ -151,48 +173,19 @@ const reducedMotionQuery = globalThis.matchMedia?.("(prefers-reduced-motion: red
 
 const ATTENTION_DEMO_URL = "https://arxiv.org/pdf/1706.03762";
 const ATTENTION_DEMO_FILENAME = "Attention Is All You Need.pdf";
-const MENTOR_SECTION_LABELS = Object.freeze({
-  quickTake: "Quick take",
-  paperFit: "Where this fits in the paper",
-  prerequisites: "What you need first",
-  howItWorks: "How it works",
-  paperEvidence: "Evidence in the paper",
-  relatedIdeas: "Related ideas in the map",
-  limitations: "Limits and uncertainty",
-});
-
-const TOOL_COPY = Object.freeze({
-  "paperpilot.read_focus": { action: "Focus request reached page", complete: "Focus returned" },
-  "paperpilot.read_graph": { action: "Graph request reached page", complete: "Graph view returned" },
-  "paperpilot.stage_explain": { action: "Explanation request reached page", complete: "Explanation staged" },
-  "paperpilot.apply_graph": { action: "Graph-change request reached page", complete: "Graph revision applied" },
-  "paperpilot.apply_annotation": { action: "Annotation request reached page", complete: "Annotation revision applied" },
-  "paperpilot.focus_source": { action: "Source-focus request reached page", complete: "Source focused" },
-});
-
 function timestamp() {
   return new Date().toISOString();
 }
 
 function recordActivity(eventType, details = {}) {
-  const record = { observedAt: timestamp(), eventType, ...details };
+  const record = createActivityRecord(eventType, details, timestamp());
   activity.push(record);
   renderActivity();
   return record;
 }
 
 function mergeRestoredActivity(events) {
-  const knownEventIds = new Set(activity.map((event) => event.eventId).filter(Boolean));
-  for (const event of events || []) {
-    if (event.eventId && knownEventIds.has(event.eventId)) continue;
-    activity.push({ ...event });
-    if (event.eventId) knownEventIds.add(event.eventId);
-  }
-  activity.sort((left, right) => String(left.observedAt || "").localeCompare(String(right.observedAt || "")));
-}
-
-function humanReadable(value) {
-  return String(value ?? "").replaceAll("_", " ");
+  activity.splice(0, activity.length, ...mergeActivityLedger({ current: activity, restored: events }));
 }
 
 function paperTitleFromFilename(filename) {
@@ -234,61 +227,56 @@ function sourceThreadToken(anchorId) {
   return `P${anchor.pageLabel} · source ${String(Math.max(1, sourceIndex)).padStart(2, "0")}`;
 }
 
-function latestMentorExplanation() {
-  const staged = state?.explanations?.at(-1) || null;
-  return staged || savedExplanations.at(-1) || null;
-}
-
-function isSavedExplanation(explanationId) {
-  return savedExplanations.some((explanation) => explanation.explanationId === explanationId);
-}
-
 function renderMentorExplanation() {
-  const explanation = latestMentorExplanation();
+  const review = createMentorReviewViewModel({
+    stagedExplanations: state?.explanations,
+    savedExplanations,
+    currentAnchorIds: state?.anchors?.keys(),
+    currentGraphNodeKeys: state?.graph?.nodes(),
+  });
+  const explanation = review.explanation;
   elements.mentorExplanationBody.replaceChildren();
   elements.mentorExplanationState.className = "review-state is-empty";
   elements.mentorExplanationActions.hidden = true;
   if (!explanation) {
     const empty = document.createElement("p");
-    empty.textContent = "Select a difficult passage, then ask the browser agent to explain it. PaperPilot will keep the paper’s claims separate from mentor background knowledge.";
+    empty.textContent = review.quickTake;
     elements.mentorExplanationBody.append(empty);
-    elements.mentorExplanationState.textContent = "Waiting";
-    elements.mentorExplanationStatus.textContent = "Nothing has been staged yet.";
+    elements.mentorExplanationState.textContent = review.stateLabel;
+    elements.mentorExplanationStatus.textContent = review.statusMessage;
     elements.mentorTakeaway.value = "";
     delete elements.mentorTakeaway.dataset.explanationId;
     return;
   }
 
-  const saved = isSavedExplanation(explanation.explanationId);
+  const saved = review.state === "saved";
   const takeawayChangedExplanation = elements.mentorTakeaway.dataset.explanationId !== explanation.explanationId;
   elements.mentorTakeaway.dataset.explanationId = explanation.explanationId;
-  elements.mentorExplanationState.textContent = saved ? "Saved" : "Draft";
+  elements.mentorExplanationState.textContent = review.stateLabel;
   elements.mentorExplanationState.className = `review-state${saved ? " is-saved" : ""}`;
   const quickTake = document.createElement("p");
   quickTake.className = "mentor-quick-take";
-  quickTake.textContent = explanation.sections?.quickTake || "The mentor returned a structured draft without a quick take.";
+  quickTake.textContent = review.quickTake;
   elements.mentorExplanationBody.append(quickTake);
 
-  for (const [key, label] of Object.entries(MENTOR_SECTION_LABELS)) {
-    if (key === "quickTake") continue;
+  for (const sectionModel of review.sections) {
     const section = document.createElement("details");
     section.className = "mentor-section";
-    if (key === "paperEvidence") section.open = true;
+    section.open = sectionModel.initiallyOpen;
     const summary = document.createElement("summary");
-    summary.textContent = label;
+    summary.textContent = sectionModel.label;
     const authority = document.createElement("span");
-    authority.className = `mentor-authority ${key === "paperEvidence" ? "is-paper" : "is-mentor"}`;
-    authority.textContent = key === "paperEvidence" ? "Paper evidence" : "Mentor synthesis";
+    authority.className = `mentor-authority ${sectionModel.authorityKind === "paper_evidence" ? "is-paper" : "is-mentor"}`;
+    authority.textContent = sectionModel.authorityLabel;
     const content = document.createElement("p");
-    content.textContent = explanation.sections?.[key] || "No content was provided for this section.";
+    content.textContent = sectionModel.content;
     section.append(summary, authority, content);
     elements.mentorExplanationBody.append(section);
   }
 
   const chips = document.createElement("div");
   chips.className = "mentor-evidence-chips";
-  for (const anchorId of explanation.sourceAnchorIds || []) {
-    if (!state.anchors.has(anchorId)) continue;
+  for (const anchorId of review.sourceAnchorIds) {
     const button = document.createElement("button");
     button.type = "button";
     button.textContent = sourceThreadToken(anchorId);
@@ -300,8 +288,7 @@ function renderMentorExplanation() {
     });
     chips.append(button);
   }
-  for (const graphKey of explanation.graphEntityKeys || []) {
-    if (!state.graph.hasNode(graphKey)) continue;
+  for (const graphKey of review.graphEntityKeys) {
     const button = document.createElement("button");
     button.type = "button";
     button.textContent = `Map · ${graphNodeLabel(graphKey)}`;
@@ -315,14 +302,14 @@ function renderMentorExplanation() {
     if (explanation.takeaway) {
       const takeaway = document.createElement("p");
       takeaway.className = "reader-takeaway";
-      takeaway.textContent = `My takeaway: ${explanation.takeaway}`;
+      takeaway.textContent = `My takeaway: ${review.takeaway}`;
       elements.mentorExplanationBody.append(takeaway);
     }
     elements.mentorExplanationStatus.textContent = `Saved by the reader · ${explanation.savedAt ? new Date(explanation.savedAt).toLocaleString() : "this session"} · AI-generated, not scientifically verified.`;
-    if (takeawayChangedExplanation) elements.mentorTakeaway.value = explanation.takeaway || "";
+    if (takeawayChangedExplanation) elements.mentorTakeaway.value = review.takeaway;
   } else {
-    elements.mentorExplanationActions.hidden = false;
-    elements.mentorExplanationStatus.textContent = `Mentor draft · AI-generated · ${(explanation.sourceAnchorIds || []).length} cited ${(explanation.sourceAnchorIds || []).length === 1 ? "source" : "sources"} · not saved or verified.`;
+    elements.mentorExplanationActions.hidden = !review.showHumanDecisionActions;
+    elements.mentorExplanationStatus.textContent = review.statusMessage;
     if (takeawayChangedExplanation) elements.mentorTakeaway.value = "";
   }
 }
@@ -553,42 +540,9 @@ function prefersReducedMotion() {
   return Boolean(reducedMotionQuery?.matches);
 }
 
-function presentedActor(actor) {
-  if (actor === "agent" || actor === "webmcp_caller" || actor === "WebMCP caller") return "WebMCP caller";
-  if (actor === "page" || actor === "PaperPilot page") return "PaperPilot page";
-  if (actor === "human") return "Human";
-  return humanReadable(actor || "");
-}
-
 function waitForReplay(milliseconds) {
   if (prefersReducedMotion() || milliseconds <= 0) return Promise.resolve();
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
-
-function annotationAnchorId(annotation) {
-  return annotation?.anchorId || annotation?.sourceAnchorId || annotation?.sourceAnchorIds?.[0] || null;
-}
-
-function resolveToolAnchor(toolName, input = {}, result = {}) {
-  if (toolName === "paperpilot.read_focus") return result?.focus?.anchorId || state.focusAnchorId;
-  if (toolName === "paperpilot.focus_source") return result?.anchorId || state.focusAnchorId;
-  if (toolName === "paperpilot.stage_explain") return input.focusAnchorId || input.sourceAnchorIds?.[0] || state.focusAnchorId;
-  if (toolName === "paperpilot.apply_annotation") {
-    for (const operation of input.operations || []) {
-      if (operation.anchorId && state.anchors.has(operation.anchorId)) return operation.anchorId;
-      const annotation = state.annotations.get(operation.annotationId);
-      const anchorId = annotationAnchorId(annotation);
-      if (anchorId) return anchorId;
-    }
-  }
-  if (toolName === "paperpilot.apply_graph") {
-    for (const operation of input.operations || []) {
-      const sourceAnchorIds = operation.node?.sourceAnchorIds || operation.edge?.sourceAnchorIds || operation.set?.sourceAnchorIds;
-      const issuedAnchor = sourceAnchorIds?.find((anchorId) => state.anchors.has(anchorId));
-      if (issuedAnchor) return issuedAnchor;
-    }
-  }
-  return state.focusAnchorId;
 }
 
 function resetAgentCursorClasses() {
@@ -645,27 +599,9 @@ function placeAgentCursor(anchorId, phase, label, announcement = label) {
   elements.agentAnnouncement.textContent = announcement;
 }
 
-function createObservedTrace(toolName, input, result, phase = "complete") {
-  const anchorId = resolveToolAnchor(toolName, input, result);
-  const anchor = state.anchors.get(anchorId);
-  return {
-    toolName,
-    anchorId,
-    pageLabel: anchor?.pageLabel || "unknown",
-    sourceKind: anchor?.sourceKind || "paper context",
-    phase,
-    status: result?.status || "returned",
-    code: result?.code || null,
-    callbackReceiptId: result?.callbackReceiptId || null,
-    revisionId: result?.revisionId || null,
-    replayed: result?.replayed === true || result?.status === "replayed",
-    observedAt: timestamp(),
-  };
-}
-
 function showToolRequest(toolName, input) {
-  const copy = TOOL_COPY[toolName] || { action: "Running page callback" };
-  const anchorId = resolveToolAnchor(toolName, input, {});
+  const copy = TOOL_PRESENTATION_COPY[toolName] || { action: "Running page callback" };
+  const anchorId = resolveObservedAnchor(state, toolName, input, {});
   placeAgentCursor(
     anchorId,
     toolName.startsWith("paperpilot.apply_") ? "editing" : "working",
@@ -675,8 +611,8 @@ function showToolRequest(toolName, input) {
 }
 
 function showToolResult(toolName, input, result) {
-  const trace = createObservedTrace(toolName, input, result);
-  const copy = TOOL_COPY[toolName] || { complete: "Page callback returned" };
+  const trace = createObservedTrace({ state, toolName, input, result });
+  const copy = TOOL_PRESENTATION_COPY[toolName] || { complete: "Page callback returned" };
   const replayCopy = trace.status === "rejected"
     ? `Callback rejected · ${humanReadable(trace.code || "invalid request")}`
     : trace.replayed
@@ -742,19 +678,13 @@ function appendTextListItem(list, text, className) {
 
 function renderActivity() {
   elements.activityList.replaceChildren();
-  const visible = activity.slice(-80).reverse();
+  const visible = boundActivityForDisplay(activity);
   if (visible.length === 0) {
     appendTextListItem(elements.activityList, "No page or tool activity observed yet.");
     return;
   }
   for (const event of visible) {
-    const actor = event.actor ? ` · ${presentedActor(event.actor)}` : "";
-    const tool = event.toolName ? ` · ${event.toolName}` : "";
-    const outcome = event.status ? ` · ${event.status}` : "";
-    appendTextListItem(
-      elements.activityList,
-      `${event.observedAt} · ${humanReadable(event.eventType)}${actor}${tool}${outcome}`,
-    );
+    appendTextListItem(elements.activityList, formatActivityEvent(event));
   }
 }
 
@@ -1055,31 +985,14 @@ function renderCriticalIdeaMap() {
 
 function renderGraphOutline() {
   elements.graphOutline.replaceChildren();
-  const orderedNodeKeys = state.graph.nodes().sort((left, right) => {
-    const leftRank = criticalIdeaByNodeKey.get(left)?.rank ?? Number.MAX_SAFE_INTEGER;
-    const rightRank = criticalIdeaByNodeKey.get(right)?.rank ?? Number.MAX_SAFE_INTEGER;
-    if (leftRank !== rightRank) return leftRank - rightRank;
-    const leftSalience = Number(state.graph.getNodeAttribute(left, "salience")) || 0;
-    const rightSalience = Number(state.graph.getNodeAttribute(right, "salience")) || 0;
-    return rightSalience - leftSalience || left.localeCompare(right);
-  });
-  for (const key of orderedNodeKeys) {
-    const attributes = state.graph.getNodeAttributes(key);
-    const sources = attributes.sourceAnchorIds?.join(", ") ||
-      attributes.structuralCoverage?.map((coverage) => coverage.primaryAnchorId).join(", ") ||
-      "structural provenance";
-    const candidate = criticalIdeaByNodeKey.get(key);
-    const candidateContext = candidate
-      ? ` · critical candidate rank ${candidate.rank} · ${attributes.origin === "agent" ? "agent refined" : "automatically ranked, unreviewed"}`
-      : "";
-    const item = appendTextListItem(
-      elements.graphOutline,
-      `Node · ${attributes.label || key} · ${humanReadable(attributes.kind || "concept")} · ${humanReadable(attributes.authority || "unknown authority")} · ${humanReadable(attributes.origin || "unknown origin")} · ${humanReadable(attributes.status || "unknown status")}${candidateContext} · source ${sources}`,
-    );
+  const outline = projectAccessibleGraphOutline(state.graph, criticalIdeaByNodeKey);
+  for (const node of outline.nodes) {
+    const key = node.key;
+    const item = appendTextListItem(elements.graphOutline, node.text);
     item.dataset.graphNodeKey = key;
     const actions = document.createElement("div");
     actions.className = "graph-outline-actions";
-    if (attributes.status === "active") {
+    if (node.status === "active") {
       const arrangeButton = document.createElement("button");
       arrangeButton.type = "button";
       arrangeButton.dataset.graphNodeKey = key;
@@ -1088,7 +1001,7 @@ function renderGraphOutline() {
       arrangeButton.addEventListener("click", () => { void focusGraphNodeEvidence(key); });
       actions.append(arrangeButton);
     }
-    const primaryAnchorId = attributes.sourceAnchorIds?.[0] || attributes.structuralCoverage?.[0]?.primaryAnchorId;
+    const primaryAnchorId = node.primarySourceId;
     if (primaryAnchorId && state.anchors.has(primaryAnchorId)) {
       const button = document.createElement("button");
       button.type = "button";
@@ -1102,14 +1015,7 @@ function renderGraphOutline() {
     }
     if (actions.childElementCount) item.append(actions);
   }
-  state.graph.forEachEdge((key, attributes, source, target) => {
-    const relation = attributes.relation || attributes.kind || "relates to";
-    const sources = attributes.sourceAnchorIds?.join(", ") || "structural provenance";
-    appendTextListItem(
-      elements.graphOutline,
-      `Edge · ${source} → ${target} · ${humanReadable(relation)} · ${humanReadable(attributes.status || "unknown status")} · source ${sources}`,
-    );
-  });
+  for (const edge of outline.edges) appendTextListItem(elements.graphOutline, edge.text);
   updateGraphSelectionPresentation();
 }
 
@@ -1147,11 +1053,20 @@ function renderAnnotations() {
   for (const [orderIndex, key] of annotationOrder.entries()) {
     const annotation = state.annotations.get(key);
     if (!annotation) continue;
-    const anchor = annotationAnchorId(annotation) || "unknown anchor";
-    const body = annotation.body || annotation.text || annotation.label || annotation.note || "Annotation";
-    const isFixture = key.startsWith("annotation:fixture:");
-    const isAutomatic = key.startsWith("annotation:auto:");
     const nodeKey = linkedGraphNode(annotation);
+    const issuedAnchorId = annotationAnchorId(annotation) || "unknown anchor";
+    const issuedAnchor = state.anchors.get(issuedAnchorId);
+    const annotationView = projectAccessibleAnnotationSummary({
+      annotationId: key,
+      annotation,
+      anchor: issuedAnchor,
+      linkedNodeKey: nodeKey,
+      criticalIdeaRank: nodeKey ? criticalIdeaByNodeKey.get(nodeKey)?.rank : null,
+    });
+    const anchor = annotationView.anchorId;
+    const body = annotationView.body;
+    const isFixture = annotationView.isFixture;
+    const isAutomatic = annotationView.isAutomatic;
     const item = document.createElement("li");
     item.className = `annotation-item${annotation.authority === "agent" ? " is-agent" : annotation.authority === "reader" ? " is-reader" : isAutomatic ? " is-automatic" : ""}`;
     item.dataset.annotationId = key;
@@ -1170,23 +1085,13 @@ function renderAnnotations() {
     dragHandle.setAttribute("aria-hidden", "true");
     const summary = document.createElement("span");
     summary.className = "annotation-card-summary";
-    const provenance = isFixture
-      ? "deterministic demo fixture"
-      : isAutomatic
-        ? "automatically ranked, unreviewed paper candidate"
-      : annotation.authority === "agent"
-        ? "created through WebMCP"
-        : annotation.authority === "reader"
-          ? "created by the reader and linked to the graph"
-          : `${annotation.authority || "unknown"} origin`;
-    summary.textContent = `${body} · ${humanReadable(annotation.kind)} · ${provenance} · ${annotation.status}`;
+    summary.textContent = annotationView.summaryText;
     head.append(dragHandle, summary);
     item.append(head);
-    const issuedAnchor = state.anchors.get(anchor);
-    if (issuedAnchor?.exactText) {
+    if (annotationView.sourceSummary) {
       const sourceSummary = document.createElement("small");
       sourceSummary.className = "annotation-source-summary";
-      sourceSummary.textContent = `Page ${issuedAnchor.pageLabel} · ${issuedAnchor.anchorId} · “${issuedAnchor.exactText}”`;
+      sourceSummary.textContent = annotationView.sourceSummary;
       item.append(sourceSummary);
     }
 
@@ -1271,10 +1176,9 @@ function renderAnnotations() {
     target.classList.add("has-annotations");
     const chip = document.createElement("span");
     chip.className = `annotation-chip runtime-annotation-pin ${isFixture ? "is-fixture" : annotation.authority === "agent" ? "is-agent" : annotation.authority === "reader" ? "is-reader" : ""}`.trim();
-    const automaticRank = isAutomatic && nodeKey ? criticalIdeaByNodeKey.get(nodeKey)?.rank : null;
-    chip.textContent = automaticRank ? `Idea ${automaticRank}` : body;
-    chip.title = `${body} · ${provenance}`;
-    chip.setAttribute("aria-label", `${body} · ${provenance}`);
+    chip.textContent = annotationView.chipText;
+    chip.title = annotationView.chipLabel;
+    chip.setAttribute("aria-label", annotationView.chipLabel);
     chip.setAttribute("role", "listitem");
     if (target === elements.textSource) elements.paperAnnotationSummary.append(chip);
     else target.append(chip);
@@ -1423,62 +1327,57 @@ function renderState() {
 }
 
 function instrumentTools(rawTools) {
-  return rawTools.map((tool) => ({
-    ...tool,
-    async execute(input = {}, options = {}) {
+  return instrumentWebmcpTools(rawTools, {
+    async beforeExecute({ tool, input }) {
       recordActivity("webmcp_request_reached_page", { actor: "WebMCP caller", toolName: tool.name });
-      await ensureAnchorVisible(resolveToolAnchor(tool.name, input, {}), {
+      await ensureAnchorVisible(resolveObservedAnchor(state, tool.name, input, {}), {
         moveKeyboardFocus: false,
         scrollIntoView: false,
       });
       showToolRequest(tool.name, input);
-      try {
-        const result = await tool.execute(input, options);
-        recordActivity("page_callback_returned", {
-          actor: "PaperPilot page",
-          toolName: tool.name,
-          status: result?.status || "returned",
-        });
-        renderLastResult(result);
-        if (tool.name === "paperpilot.read_focus" && result?.focus?.sourceKind === "visual_region") {
-          visualTrialObserved = true;
-          elements.revealVisualKey.disabled = false;
-          elements.visualKey.textContent = "A visual-region callback completed. This proves a locator was returned, not that pixels were used. Record the client's independent answer, then reveal the key.";
-          recordActivity("visual_region_callback_returned", { actor: "WebMCP caller", toolName: tool.name });
-        }
-        if (
-          (tool.name === "paperpilot.apply_graph" || tool.name === "paperpilot.apply_annotation")
-          && result?.status === "applied_reversible"
-        ) {
-          markSnapshotDirty();
-        }
-        if (tool.name === "paperpilot.focus_source" && result?.status === "focused") {
-          markSnapshotDirty();
-        }
-        if (tool.name === "paperpilot.stage_explain" && result?.status === "staged") {
-          elements.mentorExplanationStatus.textContent = "Explanation ready for your review. Save or discard it; the browser agent cannot make that decision.";
-          elements.agentAnnouncement.textContent = "A source-grounded mentor explanation is ready for human review.";
-        }
-        renderState();
-        showToolResult(tool.name, input, result);
-        return result;
-      } catch (error) {
-        recordActivity("page_callback_threw", {
-          actor: "PaperPilot page",
-          toolName: tool.name,
-          status: error?.name || "error",
-        });
-        renderLastResult({ status: "threw", name: error?.name, message: error?.message });
-        placeAgentCursor(
-          resolveToolAnchor(tool.name, input, {}),
-          "error",
-          "Page callback failed",
-          `PaperPilot callback ${tool.name} failed with ${error?.name || "an error"}.`,
-        );
-        throw error;
-      }
     },
-  }));
+    onResult({ tool, input, result }) {
+      recordActivity("page_callback_returned", {
+        actor: "PaperPilot page",
+        toolName: tool.name,
+        status: result?.status || "returned",
+      });
+      renderLastResult(result);
+      if (tool.name === "paperpilot.read_focus" && result?.focus?.sourceKind === "visual_region") {
+        visualTrialObserved = true;
+        elements.revealVisualKey.disabled = false;
+        elements.visualKey.textContent = "A visual-region callback completed. This proves a locator was returned, not that pixels were used. Record the client's independent answer, then reveal the key.";
+        recordActivity("visual_region_callback_returned", { actor: "WebMCP caller", toolName: tool.name });
+      }
+      if (
+        (tool.name === "paperpilot.apply_graph" || tool.name === "paperpilot.apply_annotation")
+        && result?.status === "applied_reversible"
+      ) {
+        markSnapshotDirty();
+      }
+      if (tool.name === "paperpilot.focus_source" && result?.status === "focused") markSnapshotDirty();
+      if (tool.name === "paperpilot.stage_explain" && result?.status === "staged") {
+        elements.mentorExplanationStatus.textContent = "Explanation ready for your review. Save or discard it; the browser agent cannot make that decision.";
+        elements.agentAnnouncement.textContent = "A source-grounded mentor explanation is ready for human review.";
+      }
+      renderState();
+      showToolResult(tool.name, input, result);
+    },
+    onError({ tool, input, error }) {
+      recordActivity("page_callback_threw", {
+        actor: "PaperPilot page",
+        toolName: tool.name,
+        status: error?.name || "error",
+      });
+      renderLastResult({ status: "threw", name: error?.name, message: error?.message });
+      placeAgentCursor(
+        resolveObservedAnchor(state, tool.name, input, {}),
+        "error",
+        "Page callback failed",
+        `PaperPilot callback ${tool.name} failed with ${error?.name || "an error"}.`,
+      );
+    },
+  });
 }
 
 async function registerSuite({ automatic = false } = {}) {
@@ -1929,23 +1828,22 @@ function wireHumanControls() {
   });
 
   elements.saveExplanation.addEventListener("click", async () => {
-    const explanation = state.explanations.at(-1);
-    if (!explanation) return;
-    const takeaway = elements.mentorTakeaway.value.trim();
-    const savedAt = state.now();
-    const saved = {
-      ...structuredClone(explanation),
-      savedAt,
-      humanDecision: "saved",
-      ...(takeaway ? { takeaway } : {}),
-    };
-    savedExplanations = [
-      ...savedExplanations.filter((item) => item.explanationId !== saved.explanationId),
-      saved,
-    ].slice(-200);
+    const decision = applyHumanMentorDecision({
+      actor: "human",
+      decision: "save",
+      stagedExplanations: state.explanations,
+      savedExplanations,
+      takeaway: elements.mentorTakeaway.value,
+      savedAt: state.now(),
+    });
+    if (!decision.changed) return;
+    state.explanations = decision.stagedExplanations;
+    savedExplanations = decision.savedExplanations;
     state.savedExplanations = structuredClone(savedExplanations);
-    state.explanations = state.explanations.filter((item) => item.explanationId !== saved.explanationId);
-    recordHumanEvidenceEvent("explanation_saved", { explanationId: saved.explanationId, responseDigest: saved.responseDigest });
+    recordHumanEvidenceEvent(decision.event.eventType, {
+      explanationId: decision.event.explanationId,
+      responseDigest: decision.event.responseDigest,
+    });
     snapshotDirty = true;
     renderMentorExplanation();
     const result = await persistBrowserWorkspace({ enable: true, reason: "mentor note saved" });
@@ -1955,10 +1853,19 @@ function wireHumanControls() {
   });
 
   elements.discardExplanation.addEventListener("click", () => {
-    const explanation = state.explanations.at(-1);
-    if (!explanation) return;
-    state.explanations = state.explanations.filter((item) => item.explanationId !== explanation.explanationId);
-    recordHumanEvidenceEvent("explanation_discarded", { explanationId: explanation.explanationId, responseDigest: explanation.responseDigest });
+    const decision = applyHumanMentorDecision({
+      actor: "human",
+      decision: "discard",
+      stagedExplanations: state.explanations,
+      savedExplanations,
+    });
+    if (!decision.changed) return;
+    state.explanations = decision.stagedExplanations;
+    savedExplanations = decision.savedExplanations;
+    recordHumanEvidenceEvent(decision.event.eventType, {
+      explanationId: decision.event.explanationId,
+      responseDigest: decision.event.responseDigest,
+    });
     renderMentorExplanation();
     elements.mentorExplanationStatus.textContent = "Mentor draft discarded. The paper, graph, and annotations were not changed.";
     if (snapshotEnabled) markSnapshotDirty();
@@ -2376,8 +2283,11 @@ async function beginWithPaper(pdfFile = null) {
   }
 }
 
-const forceUploadMode = new URLSearchParams(globalThis.location.search).has("upload");
-const localFixtureMode = !forceUploadMode && ["localhost", "127.0.0.1", "::1"].includes(globalThis.location.hostname);
+const startupParameters = new URLSearchParams(globalThis.location.search);
+const forceUploadMode = startupParameters.has("upload");
+const localFixtureMode = !forceUploadMode
+  && startupParameters.has("fixture")
+  && ["localhost", "127.0.0.1", "::1"].includes(globalThis.location.hostname);
 
 if (localFixtureMode) {
   elements.paperSourceGate.hidden = true;

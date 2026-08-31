@@ -8,13 +8,17 @@ const defaultOutputRoot = path.join(repositoryRoot, ".paperpilot-pages");
 const spikeRoot = path.join(repositoryRoot, "spikes", "webmcp-contract");
 
 const demoFiles = Object.freeze([
+  "accessibility-projection.mjs",
+  "activity-ledger.mjs",
   "index.html",
   "app.mjs",
   "browser-snapshot.mjs",
   "contracts.mjs",
+  "mentor-review.mjs",
   "paper-analysis.mjs",
   "pdf-viewer.mjs",
   "presentation-layout.mjs",
+  "webmcp-observer.mjs",
   "spike.css",
 ]);
 

@@ -52,4 +52,4 @@ The saved public workspace was reopened from the exact paper fingerprint. It res
 - This proof is fully exercised with one public demo paper; broad two-paper, rotated-page, 200% zoom, figure-region, and screen-reader walkthrough coverage remains open in the formal checklist.
 - Arbitrary born-digital PDFs are accepted, but OCR for scanned PDFs is not included.
 - Recovery is private to the current browser and exact PDF fingerprint. Authenticated Supabase persistence, Zotero, crawling, collaboration, and cross-paper graphs remain later serverless work.
-- The module set is testable, but `app.mjs` still carries too many UI responsibilities to close checklist item 2's modular-architecture acceptance criteria.
+- A same-day modular follow-up closed checklist item 2: `app.mjs` remains the browser composition root, while mentor review, activity/provenance, callback observation, and accessible graph/annotation projections are strict JSDoc-typed, browser-independent modules. The Pages packager now proves two byte-identical clean outputs and rejects PDFs, source maps, and credential-shaped artifacts.
