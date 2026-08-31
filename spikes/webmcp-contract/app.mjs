@@ -22,10 +22,16 @@ import {
   resolvePrimaryGraphNodeKey,
 } from "./presentation-layout.mjs";
 import { analyzePaperPages } from "./paper-analysis.mjs";
+import {
+  clearBrowserSnapshot,
+  loadBrowserSnapshot,
+  saveBrowserSnapshot,
+} from "./browser-snapshot.mjs";
 
 const byId = (id) => document.getElementById(id);
 
 const elements = {
+  skipLink: byId("skip-link"),
   webmcpStatus: byId("webmcp-status"),
   workspaceStatus: byId("workspace-status"),
   focusStatus: byId("focus-status"),
@@ -35,6 +41,7 @@ const elements = {
   paperSourceGate: byId("paper-source-gate"),
   paperFileInput: byId("paper-file-input"),
   paperSourceGateStatus: byId("paper-source-gate-status"),
+  loadAttentionDemo: byId("load-attention-demo"),
   rendererStatus: byId("renderer-status"),
   sigmaContainer: byId("sigma-container"),
   graphCanvasShell: byId("graph-canvas-shell"),
@@ -93,6 +100,17 @@ const elements = {
   criticalIdeaCount: byId("critical-idea-count"),
   criticalIdeaList: byId("critical-idea-list"),
   primarySourceButton: byId("primary-source-button"),
+  mentorExplanationBody: byId("mentor-explanation-body"),
+  mentorExplanationState: byId("mentor-explanation-state"),
+  mentorExplanationActions: byId("mentor-explanation-actions"),
+  mentorExplanationStatus: byId("mentor-explanation-status"),
+  saveExplanation: byId("save-explanation"),
+  discardExplanation: byId("discard-explanation"),
+  mentorTakeaway: byId("mentor-takeaway"),
+  browserSaveCard: document.querySelector(".browser-save-card"),
+  saveWorkspace: byId("save-workspace"),
+  clearSavedWorkspace: byId("clear-saved-workspace"),
+  browserSaveStatus: byId("browser-save-status"),
   workspace: document.querySelector(".workspace"),
 };
 
@@ -117,11 +135,31 @@ let draggedAnnotationNodeKey = null;
 let draggedGraphNodeKey = null;
 let graphDragStartPosition = null;
 let paperAnalysis = null;
+let savedExplanations = [];
+let snapshotEnabled = false;
+let snapshotDirty = false;
+let snapshotStored = false;
+let snapshotStatusKind = "idle";
+let snapshotStatusMessage = "Not saved · active tab only";
+let snapshotSaveQueue = Promise.resolve();
+let clearSavedCopyArmed = false;
 const criticalIdeaByNodeKey = new Map();
 const initialGraphPositions = new Map();
 const graphLayoutPositions = new Map();
 
 const reducedMotionQuery = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)");
+
+const ATTENTION_DEMO_URL = "https://arxiv.org/pdf/1706.03762";
+const ATTENTION_DEMO_FILENAME = "Attention Is All You Need.pdf";
+const MENTOR_SECTION_LABELS = Object.freeze({
+  quickTake: "Quick take",
+  paperFit: "Where this fits in the paper",
+  prerequisites: "What you need first",
+  howItWorks: "How it works",
+  paperEvidence: "Evidence in the paper",
+  relatedIdeas: "Related ideas in the map",
+  limitations: "Limits and uncertainty",
+});
 
 const TOOL_COPY = Object.freeze({
   "paperpilot.read_focus": { action: "Focus request reached page", complete: "Focus returned" },
@@ -169,6 +207,218 @@ function setPdfIdentity(label) {
   dot.className = "pdf-dot";
   dot.setAttribute("aria-hidden", "true");
   elements.pdfIdentity.replaceChildren(dot, document.createTextNode(label));
+}
+
+function browserStorageAdapter() {
+  try {
+    return globalThis.localStorage || null;
+  } catch {
+    return null;
+  }
+}
+
+function sourceThreadToken(anchorId) {
+  const anchor = state?.anchors?.get(anchorId);
+  if (!anchor) return "Source unavailable";
+  const sourceIndex = [...state.anchors.keys()].sort().indexOf(anchorId) + 1;
+  return `P${anchor.pageLabel} · source ${String(Math.max(1, sourceIndex)).padStart(2, "0")}`;
+}
+
+function latestMentorExplanation() {
+  const staged = state?.explanations?.at(-1) || null;
+  return staged || savedExplanations.at(-1) || null;
+}
+
+function isSavedExplanation(explanationId) {
+  return savedExplanations.some((explanation) => explanation.explanationId === explanationId);
+}
+
+function renderMentorExplanation() {
+  const explanation = latestMentorExplanation();
+  elements.mentorExplanationBody.replaceChildren();
+  elements.mentorExplanationState.className = "review-state is-empty";
+  elements.mentorExplanationActions.hidden = true;
+  if (!explanation) {
+    const empty = document.createElement("p");
+    empty.textContent = "Select a difficult passage, then ask the browser agent to explain it. PaperPilot will keep the paper’s claims separate from mentor background knowledge.";
+    elements.mentorExplanationBody.append(empty);
+    elements.mentorExplanationState.textContent = "Waiting";
+    elements.mentorExplanationStatus.textContent = "Nothing has been staged yet.";
+    elements.mentorTakeaway.value = "";
+    delete elements.mentorTakeaway.dataset.explanationId;
+    return;
+  }
+
+  const saved = isSavedExplanation(explanation.explanationId);
+  const takeawayChangedExplanation = elements.mentorTakeaway.dataset.explanationId !== explanation.explanationId;
+  elements.mentorTakeaway.dataset.explanationId = explanation.explanationId;
+  elements.mentorExplanationState.textContent = saved ? "Saved" : "Draft";
+  elements.mentorExplanationState.className = `review-state${saved ? " is-saved" : ""}`;
+  const quickTake = document.createElement("p");
+  quickTake.className = "mentor-quick-take";
+  quickTake.textContent = explanation.sections?.quickTake || "The mentor returned a structured draft without a quick take.";
+  elements.mentorExplanationBody.append(quickTake);
+
+  for (const [key, label] of Object.entries(MENTOR_SECTION_LABELS)) {
+    if (key === "quickTake") continue;
+    const section = document.createElement("details");
+    section.className = "mentor-section";
+    if (key === "paperEvidence") section.open = true;
+    const summary = document.createElement("summary");
+    summary.textContent = label;
+    const authority = document.createElement("span");
+    authority.className = `mentor-authority ${key === "paperEvidence" ? "is-paper" : "is-mentor"}`;
+    authority.textContent = key === "paperEvidence" ? "Paper evidence" : "Mentor synthesis";
+    const content = document.createElement("p");
+    content.textContent = explanation.sections?.[key] || "No content was provided for this section.";
+    section.append(summary, authority, content);
+    elements.mentorExplanationBody.append(section);
+  }
+
+  const chips = document.createElement("div");
+  chips.className = "mentor-evidence-chips";
+  for (const anchorId of explanation.sourceAnchorIds || []) {
+    if (!state.anchors.has(anchorId)) continue;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = sourceThreadToken(anchorId);
+    button.setAttribute("aria-label", `Go to ${sourceThreadToken(anchorId)} used by this mentor note`);
+    button.addEventListener("click", async () => {
+      state.focusAnchorId = anchorId;
+      recordActivity("mentor_evidence_focused", { actor: "human", status: anchorId });
+      await ensureAnchorVisible(anchorId, { moveKeyboardFocus: true, scrollIntoView: true });
+    });
+    chips.append(button);
+  }
+  for (const graphKey of explanation.graphEntityKeys || []) {
+    if (!state.graph.hasNode(graphKey)) continue;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = `Map · ${graphNodeLabel(graphKey)}`;
+    button.setAttribute("aria-label", `Select ${graphNodeLabel(graphKey)} in the knowledge graph and go to its paper evidence`);
+    button.addEventListener("click", () => focusGraphNodeEvidence(graphKey));
+    chips.append(button);
+  }
+  if (chips.childElementCount) elements.mentorExplanationBody.append(chips);
+
+  if (saved) {
+    if (explanation.takeaway) {
+      const takeaway = document.createElement("p");
+      takeaway.className = "reader-takeaway";
+      takeaway.textContent = `My takeaway: ${explanation.takeaway}`;
+      elements.mentorExplanationBody.append(takeaway);
+    }
+    elements.mentorExplanationStatus.textContent = `Saved by the reader · ${explanation.savedAt ? new Date(explanation.savedAt).toLocaleString() : "this session"} · AI-generated, not scientifically verified.`;
+    if (takeawayChangedExplanation) elements.mentorTakeaway.value = explanation.takeaway || "";
+  } else {
+    elements.mentorExplanationActions.hidden = false;
+    elements.mentorExplanationStatus.textContent = `Mentor draft · AI-generated · ${(explanation.sourceAnchorIds || []).length} cited ${(explanation.sourceAnchorIds || []).length === 1 ? "source" : "sources"} · not saved or verified.`;
+    if (takeawayChangedExplanation) elements.mentorTakeaway.value = "";
+  }
+}
+
+function renderBrowserSaveState() {
+  elements.browserSaveCard.classList.toggle("is-saved", snapshotStatusKind === "saved" || snapshotStatusKind === "restored");
+  elements.browserSaveCard.classList.toggle("is-dirty", snapshotDirty && snapshotStatusKind !== "error");
+  elements.browserSaveCard.classList.toggle("is-error", snapshotStatusKind === "error");
+  elements.browserSaveStatus.textContent = snapshotStatusMessage;
+  elements.saveWorkspace.textContent = snapshotStored ? "Save changes" : "Save in this browser";
+  elements.clearSavedWorkspace.disabled = !snapshotStored;
+}
+
+function snapshotPresentation() {
+  return {
+    annotationOrder: [...annotationOrder],
+  };
+}
+
+function markSnapshotDirty({ saveIfEnabled = true } = {}) {
+  if (!state) return;
+  snapshotDirty = true;
+  if (!snapshotStored) {
+    snapshotStatusKind = "idle";
+    snapshotStatusMessage = "Not saved · active tab only";
+  } else {
+    snapshotStatusKind = "dirty";
+    snapshotStatusMessage = "Changes since the last browser save";
+  }
+  renderBrowserSaveState();
+  if (snapshotEnabled && saveIfEnabled) void persistBrowserWorkspace({ enable: false, reason: "automatic update" });
+}
+
+function snapshotFailureMessage(result) {
+  if (result?.status === "too_large") return "Not saved in this browser — the workspace exceeded the 4 MiB recovery limit. Keep this tab open.";
+  if (result?.reason === "quota_exceeded") return "Not saved in this browser — browser storage is full. Keep this tab open.";
+  if (result?.status === "invalid_state") return "Not saved in this browser — PaperPilot rejected an unsafe recovery snapshot. Keep this tab open.";
+  return "Not saved in this browser — storage is unavailable. Keep this tab open.";
+}
+
+async function persistBrowserWorkspace({ enable = false, reason = "manual save" } = {}) {
+  const wasEnabled = snapshotEnabled;
+  if (enable) snapshotEnabled = true;
+  const task = async () => {
+    const storage = browserStorageAdapter();
+    if (!storage) {
+      if (!wasEnabled) snapshotEnabled = false;
+      snapshotStatusKind = "error";
+      snapshotStatusMessage = snapshotFailureMessage({ status: "storage_error" });
+      renderBrowserSaveState();
+      return { status: "storage_error", reason: "storage_unavailable" };
+    }
+    const result = await saveBrowserSnapshot({
+      storage,
+      state,
+      savedExplanations,
+      presentation: snapshotPresentation(),
+    });
+    if (result.status === "saved") {
+      snapshotStored = true;
+      snapshotDirty = false;
+      snapshotStatusKind = "saved";
+      snapshotStatusMessage = `Saved in this browser · ${new Date(result.savedAt).toLocaleString()} · exact PDF fingerprint only`;
+      recordActivity("browser_workspace_saved", { actor: "human", status: `${reason} · revision ${state.workspaceRevision}` });
+    } else {
+      if (!wasEnabled) snapshotEnabled = false;
+      snapshotStatusKind = "error";
+      snapshotStatusMessage = snapshotFailureMessage(result);
+      recordActivity("browser_workspace_save_failed", { actor: "page", status: result.reason || result.status });
+    }
+    renderBrowserSaveState();
+    return result;
+  };
+  snapshotSaveQueue = snapshotSaveQueue.then(task, task);
+  return snapshotSaveQueue;
+}
+
+async function restoreBrowserWorkspace() {
+  const storage = browserStorageAdapter();
+  if (!storage) {
+    snapshotStatusKind = "error";
+    snapshotStatusMessage = "Browser recovery is unavailable. This workspace will remain in the active tab only.";
+    renderBrowserSaveState();
+    return { status: "storage_error" };
+  }
+  const result = await loadBrowserSnapshot({ storage, state });
+  if (result.status === "restored") {
+    savedExplanations = result.savedExplanations || [];
+    annotationOrder = Object.freeze(result.presentation?.annotationOrder || []);
+    snapshotEnabled = true;
+    snapshotStored = true;
+    snapshotDirty = false;
+    snapshotStatusKind = "restored";
+    snapshotStatusMessage = `Restored from this browser · ${new Date(result.savedAt).toLocaleString()} · revision ${state.workspaceRevision}`;
+    recordActivity("browser_workspace_restored", { actor: "page", status: `revision ${state.workspaceRevision}` });
+  } else if (result.status === "not_found") {
+    snapshotStatusKind = "idle";
+    snapshotStatusMessage = "Not saved · active tab only";
+  } else {
+    snapshotStored = true;
+    snapshotStatusKind = "error";
+    snapshotStatusMessage = "A saved copy was found but failed validation. The fresh verified paper is active; no stored state was applied.";
+    recordActivity("browser_workspace_restore_rejected", { actor: "page", status: result.reason || result.status });
+  }
+  renderBrowserSaveState();
+  return result;
 }
 
 function mergeExactRangeRectsByLine(rectangles) {
@@ -595,7 +845,7 @@ function updateGraphSelectionPresentation() {
     item.classList.toggle("is-selected", selected);
     if (item.matches("button")) item.setAttribute("aria-pressed", String(selected));
   }
-  sigmaRenderer?.scheduleRefresh();
+  if (sigmaRenderer && sigmaGraph === state.graph) sigmaRenderer.scheduleRefresh();
 }
 
 function selectGraphNode(nodeKey, { announce = true } = {}) {
@@ -611,6 +861,20 @@ function selectGraphNode(nodeKey, { announce = true } = {}) {
   if (announce) {
     elements.graphLayoutStatus.textContent = `Selected “${graphNodeLabel(nodeKey)}.” Drag it in the map or use the arrow controls. Evidence stays fixed.`;
   }
+  return true;
+}
+
+async function focusGraphNodeEvidence(nodeKey) {
+  if (!selectGraphNode(nodeKey)) return false;
+  const attributes = state.graph.getNodeAttributes(nodeKey);
+  const anchorId = attributes.sourceAnchorIds?.[0] || attributes.structuralCoverage?.[0]?.primaryAnchorId;
+  if (!anchorId || !state.anchors.has(anchorId)) {
+    elements.graphLayoutStatus.textContent = `Selected “${graphNodeLabel(nodeKey)},” but it has no navigable paper source.`;
+    return true;
+  }
+  state.focusAnchorId = anchorId;
+  recordActivity("graph_node_source_focused", { actor: "human", status: nodeKey });
+  await ensureAnchorVisible(anchorId, { moveKeyboardFocus: true, scrollIntoView: true });
   return true;
 }
 
@@ -637,6 +901,7 @@ function setGraphNodePosition(nodeKey, position, { announce = true, record = tru
       actor: "human",
       status: `${nodeKey} · presentation only`,
     });
+    markSnapshotDirty();
   }
   return true;
 }
@@ -658,6 +923,7 @@ function resetGraphLayout() {
     ? `Reset ${restored} ${restored === 1 ? "node" : "nodes"} to the initial view. Evidence and WebMCP facts were not changed.`
     : "The graph is already in its initial view. Evidence and WebMCP facts were not changed.";
   recordActivity("graph_layout_reset", { actor: "human", status: `${restored} presentation positions` });
+  if (restored) markSnapshotDirty();
 }
 
 function clearAnnotationDropIndicators() {
@@ -700,6 +966,7 @@ function reorderAnnotation(annotationId, targetId, placement, { direction = null
     status: `${annotationId} · presentation only`,
   });
   renderAnnotations();
+  markSnapshotDirty();
   if (direction) focusReorderButton(annotationId, direction);
   return true;
 }
@@ -756,7 +1023,7 @@ function renderCriticalIdeaMap() {
     selectButton.textContent = "Select in graph";
     selectButton.disabled = !isActive;
     selectButton.setAttribute("aria-pressed", String(candidate.key === selectedGraphNodeKey));
-    selectButton.addEventListener("click", () => selectGraphNode(candidate.key));
+    selectButton.addEventListener("click", () => { void focusGraphNodeEvidence(candidate.key); });
     actions.append(selectButton);
     if (seeded?.anchorId && state.anchors.has(seeded.anchorId)) {
       const sourceButton = document.createElement("button");
@@ -807,7 +1074,7 @@ function renderGraphOutline() {
       arrangeButton.dataset.graphNodeKey = key;
       arrangeButton.textContent = "Arrange this node";
       arrangeButton.setAttribute("aria-pressed", String(key === selectedGraphNodeKey));
-      arrangeButton.addEventListener("click", () => selectGraphNode(key));
+      arrangeButton.addEventListener("click", () => { void focusGraphNodeEvidence(key); });
       actions.append(arrangeButton);
     }
     const primaryAnchorId = attributes.sourceAnchorIds?.[0] || attributes.structuralCoverage?.[0]?.primaryAnchorId;
@@ -919,6 +1186,7 @@ function renderAnnotations() {
       focusButton.type = "button";
       focusButton.textContent = "Go to source";
       focusButton.addEventListener("click", async () => {
+        if (nodeKey) selectGraphNode(nodeKey, { announce: false });
         state.focusAnchorId = anchor;
         recordActivity("annotation_source_focused", { actor: "human", status: key });
         await ensureAnchorVisible(anchor, { moveKeyboardFocus: true, scrollIntoView: true });
@@ -992,8 +1260,10 @@ function renderAnnotations() {
     target.classList.add("has-annotations");
     const chip = document.createElement("span");
     chip.className = `annotation-chip runtime-annotation-pin ${isFixture ? "is-fixture" : annotation.authority === "agent" ? "is-agent" : annotation.authority === "reader" ? "is-reader" : ""}`.trim();
-    chip.textContent = body;
+    const automaticRank = isAutomatic && nodeKey ? criticalIdeaByNodeKey.get(nodeKey)?.rank : null;
+    chip.textContent = automaticRank ? `Idea ${automaticRank}` : body;
     chip.title = `${body} · ${provenance}`;
+    chip.setAttribute("aria-label", `${body} · ${provenance}`);
     chip.setAttribute("role", "listitem");
     if (target === elements.textSource) elements.paperAnnotationSummary.append(chip);
     else target.append(chip);
@@ -1031,12 +1301,13 @@ function finishGraphNodeDrag(renderer = sigmaRenderer) {
   if (moved) {
     elements.graphLayoutStatus.textContent = `Placed “${graphNodeLabel(nodeKey)}.” Only its view position changed; provenance and WebMCP facts are unchanged.`;
     recordActivity("graph_layout_changed", { actor: "human", status: `${nodeKey} · presentation only` });
+    markSnapshotDirty();
   }
   renderer?.refresh();
 }
 
 function bindSigmaInteractions(renderer) {
-  renderer.on("clickNode", ({ node }) => selectGraphNode(node));
+  renderer.on("clickNode", ({ node }) => { void focusGraphNodeEvidence(node); });
   renderer.on("enterNode", () => elements.graphCanvasShell.classList.add("is-node-hovered"));
   renderer.on("leaveNode", () => elements.graphCanvasShell.classList.remove("is-node-hovered"));
   renderer.on("downNode", ({ node, event, preventSigmaDefault }) => {
@@ -1091,7 +1362,7 @@ function renderSigma() {
       labelRenderedSizeThreshold: 7,
       stagePadding: 28,
       nodeReducer(node, data) {
-        if (state.graph.getNodeAttribute(node, "status") !== "active") {
+        if (!state.graph.hasNode(node) || state.graph.getNodeAttribute(node, "status") !== "active") {
           return { ...data, hidden: true };
         }
         if (node !== selectedGraphNodeKey) return data;
@@ -1104,6 +1375,7 @@ function renderSigma() {
         };
       },
       edgeReducer(edge, data) {
+        if (!state.graph.hasEdge(edge)) return { ...data, hidden: true };
         const source = state.graph.source(edge);
         const target = state.graph.target(edge);
         const hidden = state.graph.getEdgeAttribute(edge, "status") !== "active"
@@ -1133,6 +1405,8 @@ function renderState() {
   renderCriticalIdeaMap();
   renderGraphOutline();
   renderAnnotations();
+  renderMentorExplanation();
+  renderBrowserSaveState();
   if (elements.graphSearchQuery.value.trim()) renderGraphSearch();
   renderSigma();
 }
@@ -1161,6 +1435,19 @@ function instrumentTools(rawTools) {
           elements.visualKey.textContent = "A visual-region callback completed. This proves a locator was returned, not that pixels were used. Record the client's independent answer, then reveal the key.";
           recordActivity("visual_region_callback_returned", { actor: "WebMCP caller", toolName: tool.name });
         }
+        if (
+          (tool.name === "paperpilot.apply_graph" || tool.name === "paperpilot.apply_annotation")
+          && result?.status === "applied_reversible"
+        ) {
+          markSnapshotDirty();
+        }
+        if (tool.name === "paperpilot.focus_source" && result?.status === "focused") {
+          markSnapshotDirty();
+        }
+        if (tool.name === "paperpilot.stage_explain" && result?.status === "staged") {
+          elements.mentorExplanationStatus.textContent = "Explanation ready for your review. Save or discard it; the browser agent cannot make that decision.";
+          elements.agentAnnouncement.textContent = "A source-grounded mentor explanation is ready for human review.";
+        }
         renderState();
         showToolResult(tool.name, input, result);
         return result;
@@ -1187,7 +1474,8 @@ async function registerSuite({ automatic = false } = {}) {
   if (suiteHandle || registrationClosed) return;
   const modelContext = document.modelContext;
   if (!modelContext || typeof modelContext.registerTool !== "function") {
-    elements.webmcpStatus.textContent = "Unavailable in this client";
+    elements.webmcpStatus.textContent = "Local review — WebMCP was not invoked";
+    elements.agentActionStatus.textContent = "Local review only · no WebMCP callback observed";
     elements.registerTools.disabled = false;
     elements.disposeTools.disabled = true;
     recordActivity("webmcp_unavailable", { actor: automatic ? "page" : "human" });
@@ -1413,6 +1701,31 @@ function selectedReaderCapture(rawCapture) {
   };
 }
 
+function syncPersistedAnnotationOverlays() {
+  if (!paperViewer?.upsertAnchorOverlay || !state?.annotations) return;
+  for (const [annotationId, annotation] of state.annotations) {
+    if (annotation.status !== "active") continue;
+    const anchorId = annotationAnchorId(annotation);
+    const anchor = state.anchors.get(anchorId);
+    if (!anchor || !Array.isArray(anchor.normalizedBounds) || anchor.normalizedBounds.length === 0) continue;
+    const isAutomatic = annotationId.startsWith("annotation:auto:");
+    const className = annotation.authority === "reader"
+      ? "is-reader"
+      : annotation.authority === "agent"
+        ? "is-agent"
+        : isAutomatic
+          ? "pdf-automatic-map-anchor"
+          : "is-system";
+    paperViewer.upsertAnchorOverlay({
+      anchorId,
+      pageIndex: anchor.pageIndex,
+      normalizedBounds: anchor.normalizedBounds,
+      className,
+      ariaLabel: `${annotation.body || annotation.label || "PaperPilot annotation"}, ${humanReadable(annotation.authority || "system")} source on page ${anchor.pageLabel}`,
+    });
+  }
+}
+
 async function captureReaderSelection({ announceFailure = false } = {}) {
   if (typeof paperViewer?.captureSelection !== "function") {
     if (announceFailure) elements.readerSelectionStatus.textContent = "Selection capture is unavailable in this viewer build.";
@@ -1474,7 +1787,7 @@ function renderGraphSearch(query = elements.graphSearchQuery.value) {
     arrangeButton.dataset.graphNodeKey = key;
     arrangeButton.textContent = "Arrange this node";
     arrangeButton.setAttribute("aria-pressed", String(key === selectedGraphNodeKey));
-    arrangeButton.addEventListener("click", () => selectGraphNode(key));
+    arrangeButton.addEventListener("click", () => { void focusGraphNodeEvidence(key); });
     actions.append(arrangeButton);
     const anchorId = attributes.sourceAnchorIds?.[0] || attributes.structuralCoverage?.[0]?.primaryAnchorId;
     if (anchorId && state.anchors.has(anchorId)) {
@@ -1529,6 +1842,20 @@ function currentDraggedAnnotationNode() {
   return currentNodeKey === draggedAnnotationNodeKey ? currentNodeKey : null;
 }
 
+function recordHumanEvidenceEvent(eventType, details = {}) {
+  const record = {
+    eventId: state.id("event"),
+    observedAt: state.now(),
+    paperRef: state.paper.paperRef,
+    eventType,
+    actor: "human",
+    ...details,
+  };
+  state.events.push(record);
+  state.onEvent(record);
+  return record;
+}
+
 function wireHumanControls() {
   for (const button of document.querySelectorAll("[data-focus-anchor]")) {
     button.addEventListener("click", async () => {
@@ -1543,6 +1870,88 @@ function wireHumanControls() {
   elements.registerTools.addEventListener("click", () => registerSuite({ automatic: false }));
   elements.disposeTools.addEventListener("click", () => disposeSuite("manual"));
   elements.replayAgentAction.addEventListener("click", () => enqueueObservedTraceReplay(lastObservedTrace));
+
+  elements.saveWorkspace.addEventListener("click", async () => {
+    elements.saveWorkspace.disabled = true;
+    snapshotStatusKind = "dirty";
+    snapshotStatusMessage = "Saving this paper’s in-app workspace…";
+    renderBrowserSaveState();
+    try {
+      await persistBrowserWorkspace({ enable: true, reason: "explicit reader save" });
+    } finally {
+      elements.saveWorkspace.disabled = false;
+    }
+  });
+
+  elements.clearSavedWorkspace.addEventListener("click", () => {
+    if (!clearSavedCopyArmed) {
+      clearSavedCopyArmed = true;
+      elements.clearSavedWorkspace.textContent = "Confirm clear";
+      snapshotStatusMessage = "Clear only the browser-saved copy? The active paper, annotations, graph, and PDF will stay open.";
+      renderBrowserSaveState();
+      setTimeout(() => {
+        if (!clearSavedCopyArmed) return;
+        clearSavedCopyArmed = false;
+        elements.clearSavedWorkspace.textContent = "Clear saved copy";
+        renderBrowserSaveState();
+      }, 6_000);
+      return;
+    }
+    clearSavedCopyArmed = false;
+    elements.clearSavedWorkspace.textContent = "Clear saved copy";
+    const storage = browserStorageAdapter();
+    const result = storage
+      ? clearBrowserSnapshot({ storage, documentSha256: state.paper.documentSha256 })
+      : { status: "storage_error", reason: "storage_unavailable" };
+    if (result.status === "cleared" || result.status === "not_found") {
+      snapshotEnabled = false;
+      snapshotStored = false;
+      snapshotDirty = true;
+      snapshotStatusKind = "idle";
+      snapshotStatusMessage = "Saved copy cleared · this active tab and the original PDF are unchanged";
+      recordHumanEvidenceEvent("browser_workspace_cleared", { status: result.status });
+    } else {
+      snapshotStatusKind = "error";
+      snapshotStatusMessage = "The saved copy could not be cleared because browser storage is unavailable.";
+    }
+    renderBrowserSaveState();
+  });
+
+  elements.saveExplanation.addEventListener("click", async () => {
+    const explanation = state.explanations.at(-1);
+    if (!explanation) return;
+    const takeaway = elements.mentorTakeaway.value.trim();
+    const savedAt = state.now();
+    const saved = {
+      ...structuredClone(explanation),
+      savedAt,
+      humanDecision: "saved",
+      ...(takeaway ? { takeaway } : {}),
+    };
+    savedExplanations = [
+      ...savedExplanations.filter((item) => item.explanationId !== saved.explanationId),
+      saved,
+    ].slice(-200);
+    state.savedExplanations = structuredClone(savedExplanations);
+    state.explanations = state.explanations.filter((item) => item.explanationId !== saved.explanationId);
+    recordHumanEvidenceEvent("explanation_saved", { explanationId: saved.explanationId, responseDigest: saved.responseDigest });
+    snapshotDirty = true;
+    renderMentorExplanation();
+    const result = await persistBrowserWorkspace({ enable: true, reason: "mentor note saved" });
+    elements.mentorExplanationStatus.textContent = result.status === "saved"
+      ? "Mentor note saved in this browser. Its source text and AI response remain distinct from your takeaway."
+      : "Mentor note is kept in this tab, but browser recovery failed. Keep this tab open.";
+  });
+
+  elements.discardExplanation.addEventListener("click", () => {
+    const explanation = state.explanations.at(-1);
+    if (!explanation) return;
+    state.explanations = state.explanations.filter((item) => item.explanationId !== explanation.explanationId);
+    recordHumanEvidenceEvent("explanation_discarded", { explanationId: explanation.explanationId, responseDigest: explanation.responseDigest });
+    renderMentorExplanation();
+    elements.mentorExplanationStatus.textContent = "Mentor draft discarded. The paper, graph, and annotations were not changed.";
+    if (snapshotEnabled) markSnapshotDirty();
+  });
 
   const recaptureSelection = () => {
     queueMicrotask(() => captureReaderSelection({ announceFailure: false }));
@@ -1601,6 +2010,7 @@ function wireHumanControls() {
       renderLastResult(result);
       renderState();
       await ensureAnchorVisible(result.anchorId, { moveKeyboardFocus: false, scrollIntoView: false });
+      markSnapshotDirty();
     } catch (error) {
       elements.readerSelectionStatus.textContent = error?.message || "The reader annotation could not be added.";
       recordActivity("reader_annotation_graph_failed", { actor: "human", status: error?.code || error?.name || "error" });
@@ -1659,6 +2069,7 @@ function wireHumanControls() {
     recordActivity("human_undo_control", { actor: "human", status: result.status });
     renderLastResult(result);
     renderState();
+    if (result.status === "undone") markSnapshotDirty();
   });
 
   elements.humanRedo.addEventListener("click", async () => {
@@ -1666,6 +2077,7 @@ function wireHumanControls() {
     recordActivity("human_redo_control", { actor: "human", status: result.status });
     renderLastResult(result);
     renderState();
+    if (result.status === "redone") markSnapshotDirty();
   });
 
   elements.confirmVisualProof.addEventListener("click", () => {
@@ -1863,6 +2275,7 @@ async function boot({ pdfFile = null } = {}) {
     if (!state.graph.hasNode(position.nodeKey)) continue;
     state.graph.mergeNodeAttributes(position.nodeKey, { x: position.x, y: position.y });
   }
+  await restoreBrowserWorkspace();
   let groundedCount = 0;
   for (const seeded of state.automaticMap?.candidates || []) {
     const anchor = state.anchors.get(seeded.anchorId);
@@ -1879,6 +2292,7 @@ async function boot({ pdfFile = null } = {}) {
     setAnalysisProgress(groundedCount, paperAnalysis.candidateCount, `${groundedCount} of ${paperAnalysis.candidateCount} candidates grounded`);
     elements.paperAnalysisStatus.textContent = `Grounding ${groundedCount} / ${paperAnalysis.candidateCount} candidates`;
   }
+  syncPersistedAnnotationOverlays();
   const textLimitedPages = state.automaticMap?.coverage.filter((entry) => (
     entry.textCapability === "no_text" || entry.textCapability === "visual_only" || entry.textCapability === "failed"
     || entry.textCapability === "weak_text"
@@ -1924,11 +2338,15 @@ function reportInitializationFailure(error) {
 async function beginWithPaper(pdfFile = null) {
   elements.workspace.inert = false;
   document.body.classList.remove("is-waiting-for-paper");
+  elements.skipLink.href = "#contract-workspace";
+  elements.skipLink.textContent = "Skip to PaperPilot workspace";
   try {
     await boot({ pdfFile });
     if (pdfFile) {
-      elements.paperSourceGateStatus.textContent = `${pdfFile.name} is active in this tab. Reload the page to choose a different paper.`;
+      elements.paperSourceGateStatus.textContent = `${pdfFile.name} is active in this tab.`;
       elements.paperFileInput.disabled = true;
+      elements.loadAttentionDemo.disabled = true;
+      elements.paperSourceGate.hidden = true;
     }
   } catch (error) {
     reportInitializationFailure(error);
@@ -1936,10 +2354,13 @@ async function beginWithPaper(pdfFile = null) {
       paperViewer?.destroy();
       paperViewer = null;
       elements.paperFileInput.disabled = false;
+      elements.loadAttentionDemo.disabled = false;
       elements.paperFileInput.value = "";
       elements.paperSourceGateStatus.textContent = `${error?.message || "The PDF could not be opened."} Choose another PDF.`;
       elements.workspace.inert = true;
       document.body.classList.add("is-waiting-for-paper");
+      elements.skipLink.href = "#paper-source-gate";
+      elements.skipLink.textContent = "Skip to paper intake";
     }
   }
 }
@@ -1955,6 +2376,26 @@ if (localFixtureMode) {
   renderToolList();
   void renderContractManifest();
   renderActivity();
+  elements.loadAttentionDemo.addEventListener("click", async () => {
+    elements.loadAttentionDemo.disabled = true;
+    elements.paperFileInput.disabled = true;
+    elements.paperSourceGateStatus.textContent = "Fetching the official arXiv v7 Attention paper into this tab…";
+    try {
+      const response = await fetch(ATTENTION_DEMO_URL, { mode: "cors", credentials: "omit", redirect: "follow" });
+      if (!response.ok) throw new Error(`arXiv returned HTTP ${response.status}.`);
+      const contentType = response.headers.get("content-type") || "";
+      if (!contentType.toLowerCase().includes("application/pdf")) throw new Error("arXiv did not return a PDF response.");
+      const blob = await response.blob();
+      if (blob.size === 0 || blob.size > 64 * 1024 * 1024) throw new Error("The demo paper was empty or exceeded the 64 MiB browser limit.");
+      const pdfFile = new File([blob], ATTENTION_DEMO_FILENAME, { type: "application/pdf", lastModified: 0 });
+      elements.paperSourceGateStatus.textContent = "Opening the verified Attention paper locally—nothing is being uploaded.";
+      await beginWithPaper(pdfFile);
+    } catch (error) {
+      elements.loadAttentionDemo.disabled = false;
+      elements.paperFileInput.disabled = false;
+      elements.paperSourceGateStatus.textContent = `${error?.message || "The demo paper could not be fetched."} Choose a local PDF instead.`;
+    }
+  });
   elements.paperFileInput.addEventListener("change", () => {
     const [pdfFile] = elements.paperFileInput.files || [];
     if (!pdfFile) return;
@@ -1969,6 +2410,7 @@ if (localFixtureMode) {
       return;
     }
     elements.paperFileInput.disabled = true;
+    elements.loadAttentionDemo.disabled = true;
     elements.paperSourceGateStatus.textContent = `Opening ${pdfFile.name} locally—nothing is being uploaded.`;
     void beginWithPaper(pdfFile);
   });

@@ -10,6 +10,7 @@ const spikeRoot = path.join(repositoryRoot, "spikes", "webmcp-contract");
 const demoFiles = Object.freeze([
   "index.html",
   "app.mjs",
+  "browser-snapshot.mjs",
   "contracts.mjs",
   "paper-analysis.mjs",
   "pdf-viewer.mjs",

@@ -60,7 +60,7 @@ const securityHeaders = Object.freeze({
   "Content-Security-Policy": [
     "default-src 'none'",
     "base-uri 'none'",
-    "connect-src 'self'",
+    "connect-src 'self' blob: https://arxiv.org https://export.arxiv.org",
     "font-src 'self'",
     "form-action 'none'",
     "frame-ancestors 'none'",

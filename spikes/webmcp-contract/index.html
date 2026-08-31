@@ -3,12 +3,12 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="description" content="Removable PaperPilot WebMCP six-capability contract spike." />
+    <meta name="description" content="PaperPilot turns difficult scientific PDFs into source-grounded explanations, annotations, and a WebMCP knowledge graph." />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; base-uri 'none'; connect-src 'self' blob:; font-src 'self'; form-action 'none'; img-src 'self' data: blob:; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; worker-src 'self' blob:"
+      content="default-src 'none'; base-uri 'none'; connect-src 'self' blob: https://arxiv.org https://export.arxiv.org; font-src 'self'; form-action 'none'; img-src 'self' data: blob:; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; worker-src 'self' blob:"
     />
-    <title>PaperPilot — WebMCP contract spike</title>
+    <title>PaperPilot — Read the paper, keep the proof</title>
     <link rel="stylesheet" href="../vendor/pdfjs/pdf_viewer.css" />
     <link rel="stylesheet" href="./spike.css" />
     <script src="../vendor/graphology/graphology.umd.min.js"></script>
@@ -16,33 +16,40 @@
     <script type="module" src="./app.mjs"></script>
   </head>
   <body class="is-waiting-for-paper">
-    <a class="skip-link" href="#contract-workspace">Skip to contract workspace</a>
+    <a id="skip-link" class="skip-link" href="#paper-source-gate">Skip to paper intake</a>
     <header class="topbar">
       <div>
-        <p class="eyebrow">PaperPilot development diagnostic</p>
-        <h1>Watch a paper become an evidence-backed idea map</h1>
+        <p class="eyebrow">PaperPilot · WebMCP research mentor</p>
+        <h1>Read the paper. Keep the proof.</h1>
       </div>
       <p id="paper-boundary" class="boundary">Browser-local PDF bytes · real PDF.js text geometry · no PDF export</p>
     </header>
 
     <section id="paper-source-gate" class="paper-source-gate" aria-labelledby="paper-source-heading">
       <div>
-        <p class="eyebrow">Private, browser-local intake</p>
-        <h2 id="paper-source-heading">Drop in any research PDF</h2>
+        <p class="eyebrow">Private, in-app reading</p>
+        <h2 id="paper-source-heading">Start with a paper</h2>
         <p>
           PaperPilot reads the file only in this tab, fingerprints the exact bytes, and builds a reviewable
-          critical-idea map with page-owned provenance. Nothing is uploaded, exported, or saved.
+          critical-idea map with page-owned provenance. Nothing is uploaded or written back into the PDF.
         </p>
       </div>
-      <label class="paper-file-picker" for="paper-file-input">
-        <span>Choose a PDF</span>
-        <input id="paper-file-input" type="file" accept="application/pdf,.pdf" />
-      </label>
+      <div class="paper-start-actions">
+        <button id="load-attention-demo" class="attention-demo-button" type="button">
+          <span>Open the live demo</span>
+          <strong>Attention Is All You Need</strong>
+          <small>Official arXiv v7 · fetched only when you choose it</small>
+        </button>
+        <label class="paper-file-picker" for="paper-file-input">
+          <span>Or choose your own PDF</span>
+          <input id="paper-file-input" type="file" accept="application/pdf,.pdf" />
+        </label>
+      </div>
       <p id="paper-source-gate-status" role="status" aria-live="polite">Waiting for a PDF from this device.</p>
     </section>
 
     <main id="contract-workspace" tabindex="-1">
-      <section class="status-grid" aria-label="Contract status">
+      <section class="status-grid" aria-label="PaperPilot status">
         <div><span>WebMCP</span><strong id="webmcp-status" role="status" aria-live="polite">Connecting…</strong></div>
         <div><span>Workspace</span><strong id="workspace-status">Revision 1</strong></div>
         <div><span>Paper focus</span><strong id="focus-status">Exact text</strong></div>
@@ -54,7 +61,7 @@
         <article class="paper-panel" aria-labelledby="paper-heading">
           <header class="panel-heading">
             <div>
-              <p class="eyebrow">Browser-local PDF render</p>
+              <p class="eyebrow">Continuous evidence reader</p>
               <h2 id="paper-heading">Upload a paper to begin</h2>
             </div>
               <p>The publication stays centered as one continuous paper. Provenance marks bind to its real selectable text.</p>
@@ -187,8 +194,41 @@
         <aside class="activity-panel" aria-labelledby="activity-heading">
           <header>
             <p class="eyebrow">Research mentor</p>
-            <h2 id="activity-heading">Observed callback work</h2>
+            <h2 id="activity-heading">Explain what I’m reading</h2>
           </header>
+          <section class="mentor-explanation" aria-labelledby="mentor-explanation-heading">
+            <div class="mentor-explanation-heading">
+              <div>
+                <p class="source-kicker">Source-grounded draft</p>
+                <h3 id="mentor-explanation-heading">Mentor note</h3>
+              </div>
+              <span id="mentor-explanation-state" class="review-state is-empty">Waiting</span>
+            </div>
+            <div id="mentor-explanation-body" class="mentor-explanation-body">
+              <p>Select a difficult passage, then ask the browser agent to explain it. PaperPilot will keep the paper’s claims separate from mentor background knowledge.</p>
+            </div>
+            <div id="mentor-explanation-actions" class="mentor-explanation-actions" hidden>
+              <label class="mentor-takeaway" for="mentor-takeaway">
+                My takeaway <span>(optional, always labeled as yours)</span>
+                <textarea id="mentor-takeaway" rows="3" maxlength="1200" placeholder="Put the idea in your own words…"></textarea>
+              </label>
+              <button id="save-explanation" type="button">Save mentor note</button>
+              <button id="discard-explanation" type="button">Discard draft</button>
+            </div>
+            <p id="mentor-explanation-status" class="mentor-explanation-status" role="status" aria-live="polite">Nothing has been staged yet.</p>
+          </section>
+          <section class="browser-save-card" aria-labelledby="browser-save-heading">
+            <div>
+              <p class="source-kicker">Private recovery</p>
+              <h3 id="browser-save-heading">Keep this workspace</h3>
+              <p>The PDF bytes stay out of storage. PaperPilot saves only this paper’s fingerprint, graph, in-app annotations, layout, Undo/Redo history, and mentor notes in this browser.</p>
+            </div>
+            <div class="browser-save-actions">
+              <button id="save-workspace" type="button">Save in this browser</button>
+              <button id="clear-saved-workspace" type="button" disabled>Clear saved copy</button>
+            </div>
+            <p id="browser-save-status" role="status" aria-live="polite">Not saved · active tab only</p>
+          </section>
           <section class="agent-action-card" aria-labelledby="agent-action-heading">
             <div class="agent-action-title">
               <span class="agent-badge" aria-hidden="true">PP</span>
@@ -210,7 +250,10 @@
             Ask the browser agent to inspect the ranked critical-idea candidates, navigate to one,
             refine or remove a node, and add one grounded relation. Undo is deliberately UI-only.
           </p>
-          <ol id="activity-list" tabindex="0" aria-label="Observed WebMCP callback receipts"></ol>
+          <details class="activity-trail" open>
+            <summary>Evidence trail · observed WebMCP callbacks</summary>
+            <ol id="activity-list" tabindex="0" aria-label="Observed WebMCP callback receipts"></ol>
+          </details>
           <details>
             <summary>Frozen tool surface</summary>
             <ol id="tool-list"></ol>
@@ -235,6 +278,36 @@
             <p class="eyebrow">Graphology model · Sigma renderer</p>
             <h2 id="graph-heading">Graph &amp; annotations</h2>
           </header>
+          <section class="graph-arranger" aria-labelledby="graph-arranger-heading">
+            <div class="graph-arranger-copy">
+              <p class="eyebrow">Evidence desk</p>
+              <h3 id="graph-arranger-heading">Arrange the map</h3>
+              <p>Drag a node, or drop an annotation card onto the map to place its linked idea. Layout changes the view only—paper evidence and WebMCP facts stay fixed.</p>
+            </div>
+            <div class="graph-arranger-actions">
+              <p id="graph-layout-status" role="status" aria-live="polite">Choose a graph node or annotation to arrange it.</p>
+              <div class="graph-nudge-row" role="group" aria-label="Move the selected graph node">
+                <button type="button" data-graph-nudge="left" aria-label="Move selected graph node left" disabled>←</button>
+                <button type="button" data-graph-nudge="up" aria-label="Move selected graph node up" disabled>↑</button>
+                <button type="button" data-graph-nudge="down" aria-label="Move selected graph node down" disabled>↓</button>
+                <button type="button" data-graph-nudge="right" aria-label="Move selected graph node right" disabled>→</button>
+                <button id="graph-layout-reset" type="button">Reset graph</button>
+              </div>
+            </div>
+          </section>
+          <div id="graph-canvas-shell" class="graph-canvas-shell">
+            <div id="sigma-container" class="sigma-container" aria-hidden="true"></div>
+            <div id="graph-drop-hint" class="graph-drop-hint" aria-hidden="true">Drop to place the linked idea</div>
+          </div>
+          <section aria-labelledby="annotation-heading">
+            <div class="section-heading-row">
+              <h3 id="annotation-heading">Annotations</h3>
+              <span id="annotation-count" class="count-chip">0</span>
+            </div>
+            <p class="annotation-boundary">Annotations stay inside PaperPilot. Use “Save in this browser” to recover them after reopening the same exact PDF; the original file is never rewritten.</p>
+            <p id="annotation-layout-status" class="annotation-layout-status" role="status" aria-live="polite">Drag a card to reorder it, or drag it onto the map. Keyboard controls are inside each card.</p>
+            <ul id="annotation-list"><li>Loading annotations…</li></ul>
+          </section>
           <section class="critical-map" aria-labelledby="critical-map-heading">
             <div class="critical-map-heading">
               <div>
@@ -268,39 +341,9 @@
             <p id="graph-search-status" role="status" aria-live="polite">Showing the whole map.</p>
             <ul id="graph-search-results" aria-label="Graph search results"></ul>
           </form>
-          <section class="graph-arranger" aria-labelledby="graph-arranger-heading">
-            <div class="graph-arranger-copy">
-              <p class="eyebrow">Evidence desk</p>
-              <h3 id="graph-arranger-heading">Arrange the map</h3>
-              <p>Drag a node, or drop an annotation card onto the map to place its linked idea. Layout changes the view only—paper evidence and WebMCP facts stay fixed.</p>
-            </div>
-            <div class="graph-arranger-actions">
-              <p id="graph-layout-status" role="status" aria-live="polite">Choose a graph node or annotation to arrange it.</p>
-              <div class="graph-nudge-row" role="group" aria-label="Move the selected graph node">
-                <button type="button" data-graph-nudge="left" aria-label="Move selected graph node left" disabled>←</button>
-                <button type="button" data-graph-nudge="up" aria-label="Move selected graph node up" disabled>↑</button>
-                <button type="button" data-graph-nudge="down" aria-label="Move selected graph node down" disabled>↓</button>
-                <button type="button" data-graph-nudge="right" aria-label="Move selected graph node right" disabled>→</button>
-                <button id="graph-layout-reset" type="button">Reset graph</button>
-              </div>
-            </div>
-          </section>
-          <div id="graph-canvas-shell" class="graph-canvas-shell">
-            <div id="sigma-container" class="sigma-container" aria-hidden="true"></div>
-            <div id="graph-drop-hint" class="graph-drop-hint" aria-hidden="true">Drop to place the linked idea</div>
-          </div>
           <section aria-labelledby="outline-heading">
             <h3 id="outline-heading">Accessible graph outline</h3>
             <ul id="graph-outline"></ul>
-          </section>
-          <section aria-labelledby="annotation-heading">
-            <div class="section-heading-row">
-              <h3 id="annotation-heading">Annotations</h3>
-              <span id="annotation-count" class="count-chip">0</span>
-            </div>
-            <p class="annotation-boundary">Automatic candidates and live agent edits remain browser-memory only in this prototype.</p>
-            <p id="annotation-layout-status" class="annotation-layout-status" role="status" aria-live="polite">Drag a card to reorder it, or drag it onto the map. Keyboard controls are inside each card.</p>
-            <ul id="annotation-list"><li>Loading annotation fixture…</li></ul>
           </section>
         </aside>
       </section>
