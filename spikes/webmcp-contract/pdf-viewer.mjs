@@ -17,7 +17,7 @@ GlobalWorkerOptions.workerSrc = PDFJS_ASSET_URLS.worker;
 
 const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
 const DEFAULT_ZOOM_STEP = 0.15;
-const DEFAULT_MIN_ZOOM = 0.45;
+const DEFAULT_MIN_ZOOM = 0.25;
 const DEFAULT_MAX_ZOOM = 3;
 const MAX_DEVICE_PIXEL_RATIO = 2;
 const DEFAULT_PAGE_GAP = 24;
@@ -88,6 +88,48 @@ function rounded(value, precision = 6) {
 
 function clamp(value, minimum, maximum) {
   return Math.min(maximum, Math.max(minimum, value));
+}
+
+/** Fit a PDF page to the scrollport's actual content box. */
+export function calculatePdfFitWidthScale({
+  clientWidth,
+  pageWidth,
+  horizontalPadding = 0,
+  minZoom = DEFAULT_MIN_ZOOM,
+  maxZoom = DEFAULT_MAX_ZOOM,
+} = {}) {
+  const width = Number(clientWidth);
+  const sourceWidth = Number(pageWidth);
+  const padding = Number(horizontalPadding);
+  const minimum = Number(minZoom);
+  const maximum = Number(maxZoom);
+  if (
+    !Number.isFinite(width)
+    || width <= 0
+    || !Number.isFinite(sourceWidth)
+    || sourceWidth <= 0
+    || !Number.isFinite(padding)
+    || padding < 0
+    || !Number.isFinite(minimum)
+    || !Number.isFinite(maximum)
+    || minimum <= 0
+    || maximum < minimum
+  ) {
+    throw new PaperPdfError("PDF_FIT_WIDTH_INVALID", "Fit-width geometry requires positive finite dimensions and zoom bounds.");
+  }
+  return clamp(Math.max(1, width - padding) / sourceWidth, minimum, maximum);
+}
+
+function resolveViewerHorizontalPadding(viewer, fallback = 24) {
+  try {
+    const style = globalThis.getComputedStyle?.(viewer);
+    const left = Number.parseFloat(style?.paddingLeft ?? "");
+    const right = Number.parseFloat(style?.paddingRight ?? "");
+    if (Number.isFinite(left) && left >= 0 && Number.isFinite(right) && right >= 0) return left + right;
+  } catch {
+    // Non-browser tests and detached surfaces use the conservative fallback.
+  }
+  return fallback;
 }
 
 function asPositiveInteger(value, fallback) {
@@ -600,6 +642,35 @@ function pdfTextItemNormalizedBounds(item, viewport) {
   return normalizeViewportRectangle(viewport, [x, baselineY, x + width, baselineY + height]);
 }
 
+function pdfTextItemFlow(item, viewport) {
+  if (!item || typeof item !== "object" || !Array.isArray(item.transform)) return null;
+  const transform = item.transform.map(Number);
+  const width = Number(item.width);
+  if (transform.length < 6 || transform.some((value) => !Number.isFinite(value)) || !Number.isFinite(width) || width <= 0) {
+    return null;
+  }
+  const viewportPoint = (x, y) => {
+    if (typeof viewport?.convertToViewportPoint === "function") {
+      return viewport.convertToViewportPoint(x, y).map(Number);
+    }
+    if (!Array.isArray(viewport?.transform) || viewport.transform.length < 6) return null;
+    const [a, b, c, d, e, f] = viewport.transform.map(Number);
+    if ([a, b, c, d, e, f].some((value) => !Number.isFinite(value))) return null;
+    return [a * x + c * y + e, b * x + d * y + f];
+  };
+  const start = viewportPoint(transform[4], transform[5]);
+  const end = viewportPoint(transform[4] + width, transform[5]);
+  if (!start || !end || [...start, ...end].some((value) => !Number.isFinite(value))) return null;
+  const deltaX = end[0] - start[0];
+  const deltaY = end[1] - start[1];
+  const axis = Math.abs(deltaY) > Math.abs(deltaX) ? "vertical" : "horizontal";
+  const baselineReversed = axis === "vertical" ? deltaY < 0 : deltaX < 0;
+  return Object.freeze({
+    axis,
+    reversed: item.dir === "rtl" ? !baselineReversed : baselineReversed,
+  });
+}
+
 function shouldStartNewTextLine(currentLine, itemBounds) {
   if (!currentLine || !itemBounds || currentLine.rects.length === 0) return false;
   const currentBounds = unionNormalizedRects(currentLine.rects);
@@ -644,6 +715,10 @@ function normalizedLineParts(parts) {
         normalizedBounds: part.bounds,
         sourceItemIndex: part.sourceItemIndex,
         direction: part.direction === "rtl" ? "rtl" : "ltr",
+        textAxis: part.textAxis === "vertical" ? "vertical" : "horizontal",
+        flowReversed: typeof part.flowReversed === "boolean"
+          ? part.flowReversed
+          : part.direction === "rtl",
       });
     }
   }
@@ -693,9 +768,20 @@ function clippedSegmentRectangle(segment, startOffset, endOffset) {
   const localEnd = clamp((endOffset - segment.startOffset) / segmentLength, 0, 1);
   if (localEnd <= localStart) return null;
   const bounds = segment.normalizedBounds;
-  const leftFraction = segment.direction === "rtl" ? 1 - localEnd : localStart;
+  const reversed = typeof segment.flowReversed === "boolean"
+    ? segment.flowReversed
+    : segment.direction === "rtl";
+  const startFraction = reversed ? 1 - localEnd : localStart;
+  if (segment.textAxis === "vertical") {
+    return Object.freeze({
+      x: bounds.x,
+      y: rounded(bounds.y + (bounds.height * startFraction)),
+      width: bounds.width,
+      height: rounded(bounds.height * (localEnd - localStart)),
+    });
+  }
   return Object.freeze({
-    x: rounded(bounds.x + (bounds.width * leftFraction)),
+    x: rounded(bounds.x + (bounds.width * startFraction)),
     y: bounds.y,
     width: rounded(bounds.width * (localEnd - localStart)),
     height: bounds.height,
@@ -830,6 +916,7 @@ export function buildPdfPageTextRecord({
     if (!item || typeof item !== "object" || typeof item.str !== "string") continue;
     const itemText = item.str.normalize("NFKC");
     const itemBounds = pdfTextItemNormalizedBounds(item, viewport);
+    const itemFlow = pdfTextItemFlow(item, viewport);
     if (currentLine && shouldStartNewTextLine(currentLine, itemBounds)) flushLine();
     if (!currentLine) {
       currentLine = {
@@ -849,6 +936,8 @@ export function buildPdfPageTextRecord({
         bounds: itemBounds,
         sourceItemIndex,
         direction: item.dir,
+        textAxis: itemFlow?.axis,
+        flowReversed: itemFlow?.reversed,
         syntheticSpace: false,
       });
     }
@@ -1081,7 +1170,9 @@ export async function initializePaperPdfViewer(options = {}) {
   const minZoom = Number.isFinite(options.minZoom) ? options.minZoom : DEFAULT_MIN_ZOOM;
   const maxZoom = Number.isFinite(options.maxZoom) ? options.maxZoom : DEFAULT_MAX_ZOOM;
   const zoomStep = Number.isFinite(options.zoomStep) ? options.zoomStep : DEFAULT_ZOOM_STEP;
-  const horizontalPadding = Number.isFinite(options.horizontalPadding) ? options.horizontalPadding : 24;
+  const horizontalPadding = Number.isFinite(options.horizontalPadding)
+    ? Math.max(0, Number(options.horizontalPadding))
+    : null;
   const pageGap = Number.isFinite(options.pageGap) ? Math.max(0, options.pageGap) : DEFAULT_PAGE_GAP;
   const renderRadius = Number.isInteger(options.renderRadius)
     ? Math.max(0, options.renderRadius)
@@ -1266,8 +1357,13 @@ export async function initializePaperPdfViewer(options = {}) {
 
   const calculateFitWidthScale = (pageNumber = state.currentPage) => {
     const record = pageRecords.get(clampPdfPageNumber(pageNumber, state.pdfDocument.numPages));
-    const availableWidth = Math.max(1, viewer.clientWidth - horizontalPadding);
-    return clamp(availableWidth / record.baseViewport.width, minZoom, maxZoom);
+    return calculatePdfFitWidthScale({
+      clientWidth: viewer.clientWidth,
+      pageWidth: record.baseViewport.width,
+      horizontalPadding: horizontalPadding ?? resolveViewerHorizontalPadding(viewer),
+      minZoom,
+      maxZoom,
+    });
   };
 
   const resolveSourceAnchor = (record, textLayer, viewport) => {

@@ -171,6 +171,130 @@ test("PDF.js 6 viewport transforms produce normalized text-item geometry without
   assert.equal(geometry.normalizedBounds.length, 1);
 });
 
+test("fit-width scale subtracts the scrollport's complete computed inline padding", () => {
+  const scale = viewerModule.calculatePdfFitWidthScale({
+    clientWidth: 546,
+    pageWidth: 612,
+    horizontalPadding: 44,
+    minZoom: 0.45,
+    maxZoom: 3,
+  });
+  assert.equal(Number(scale.toFixed(6)), 0.820261);
+  assert.throws(
+    () => viewerModule.calculatePdfFitWidthScale({ clientWidth: 0, pageWidth: 612 }),
+    (error) => error?.code === "PDF_FIT_WIDTH_INVALID",
+  );
+});
+
+test("rotation metadata and PDF.js affine transforms keep page geometry normalized", () => {
+  const cases = [
+    {
+      rotation: 0,
+      width: 100,
+      height: 200,
+      transform: [1, 0, 0, -1, 0, 200],
+      expected: { x: 0.1, y: 0.85, width: 0.3, height: 0.05 },
+      expectedFirstHalf: { x: 0.1, y: 0.85, width: 0.15, height: 0.05 },
+    },
+    {
+      rotation: 90,
+      width: 200,
+      height: 100,
+      transform: [0, 1, 1, 0, 0, 0],
+      expected: { x: 0.1, y: 0.1, width: 0.05, height: 0.3 },
+      expectedFirstHalf: { x: 0.1, y: 0.1, width: 0.05, height: 0.15 },
+    },
+    {
+      rotation: 180,
+      width: 100,
+      height: 200,
+      transform: [-1, 0, 0, 1, 100, 0],
+      expected: { x: 0.6, y: 0.1, width: 0.3, height: 0.05 },
+      expectedFirstHalf: { x: 0.75, y: 0.1, width: 0.15, height: 0.05 },
+    },
+    {
+      rotation: 270,
+      width: 200,
+      height: 100,
+      transform: [0, -1, -1, 0, 200, 100],
+      expected: { x: 0.85, y: 0.6, width: 0.05, height: 0.3 },
+      expectedFirstHalf: { x: 0.85, y: 0.75, width: 0.05, height: 0.15 },
+    },
+  ];
+
+  for (const fixture of cases) {
+    const record = viewerModule.buildPdfPageTextRecord({
+      pageIndex: 4,
+      pageLabel: "5",
+      pageViewBox: [0, 0, 100, 200],
+      pageRotation: fixture.rotation,
+      viewport: {
+        width: fixture.width,
+        height: fixture.height,
+        rotation: fixture.rotation,
+        viewBox: [0, 0, 100, 200],
+        transform: fixture.transform,
+      },
+      textItems: [{
+        str: "Rotated source",
+        transform: [1, 0, 0, 1, 10, 20],
+        width: 30,
+        height: 10,
+        hasEOL: true,
+        dir: "ltr",
+      }],
+    });
+
+    assert.equal(record.pageRotation, fixture.rotation);
+    assert.deepEqual(record.pageViewBox, [0, 0, 100, 200]);
+    assert.deepEqual(record.lines[0].segments[0].normalizedBounds, fixture.expected);
+    const fullRange = viewerModule.resolvePdfTextRangeGeometry(record, {
+      startOffset: 0,
+      endOffset: "Rotated source".length,
+      exactText: "Rotated source",
+    });
+    assert.deepEqual(fullRange.normalizedBounds, [fixture.expected]);
+    assert.equal(fullRange.geometryCoverage, 1);
+    const firstHalf = viewerModule.resolvePdfTextRangeGeometry(record, {
+      startOffset: 0,
+      endOffset: "Rotated".length,
+      exactText: "Rotated",
+    });
+    assert.deepEqual(firstHalf.normalizedBounds, [fixture.expectedFirstHalf]);
+  }
+});
+
+test("proportional source clipping preserves right-to-left reading order", () => {
+  const record = viewerModule.buildPdfPageTextRecord({
+    pageIndex: 0,
+    pageViewBox: [0, 0, 100, 200],
+    pageRotation: 0,
+    viewport: {
+      width: 100,
+      height: 200,
+      rotation: 0,
+      viewBox: [0, 0, 100, 200],
+      transform: [1, 0, 0, -1, 0, 200],
+    },
+    textItems: [{
+      str: "abcdefghij",
+      transform: [1, 0, 0, 1, 10, 20],
+      width: 30,
+      height: 10,
+      hasEOL: true,
+      dir: "rtl",
+    }],
+  });
+  const firstHalf = viewerModule.resolvePdfTextRangeGeometry(record, {
+    startOffset: 0,
+    endOffset: 5,
+    exactText: "abcde",
+  });
+  assert.deepEqual(firstHalf.normalizedBounds, [
+    { x: 0.25, y: 0.85, width: 0.15, height: 0.05 },
+  ]);
+});
+
 test("PDF.js text items become an immutable page index with line provenance", () => {
   const viewport = {
     width: 100,
@@ -315,6 +439,29 @@ test("continuous scroll selects the page under the reader-oriented viewport line
   }), 3);
 });
 
+test("continuous active-page selection rejects malformed shells and resolves page gaps deterministically", () => {
+  const pages = [
+    { pageNumber: 2, top: 500, height: 400 },
+    { pageNumber: 99, top: Number.NaN, height: 400 },
+    { pageNumber: 1, top: 0, height: 400 },
+    { pageNumber: 3, top: 920, height: 0 },
+  ];
+
+  assert.equal(viewerModule.selectActivePageNumber(pages, {
+    scrollTop: 350,
+    viewportHeight: 200,
+  }), 1, "equal overlap in a gap should choose the page nearest the reading line");
+  assert.equal(viewerModule.selectActivePageNumber(pages, {
+    scrollTop: 400,
+    viewportHeight: 200,
+  }), 2, "greater viewport overlap should win when the reading line is in a gap");
+  assert.equal(viewerModule.selectActivePageNumber(pages, {
+    scrollTop: 1_000,
+    viewportHeight: 200,
+  }), 2, "an off-stack viewport should choose the nearest valid page");
+  assert.equal(viewerModule.selectActivePageNumber([], { fallbackPage: 7 }), 7);
+});
+
 test("page scroll targets honor start, center, and nearest behavior", () => {
   const base = {
     pageTop: 1_000,
@@ -333,8 +480,46 @@ test("page scroll targets honor start, center, and nearest behavior", () => {
   }), 1_912);
 });
 
+test("page locator math handles end alignment, tall pages, and both nearest directions", () => {
+  assert.equal(viewerModule.calculatePageScrollTop({
+    pageTop: 1_000,
+    pageHeight: 800,
+    scrollTop: 900,
+    viewportHeight: 1_000,
+    margin: 12,
+    block: "end",
+  }), 812);
+  assert.equal(viewerModule.calculatePageScrollTop({
+    pageTop: 1_000,
+    pageHeight: 1_200,
+    scrollTop: 0,
+    viewportHeight: 600,
+    block: "center",
+  }), 1_300);
+  assert.equal(viewerModule.calculatePageScrollTop({
+    pageTop: 100,
+    pageHeight: 200,
+    scrollTop: 900,
+    viewportHeight: 500,
+    margin: 12,
+    block: "nearest",
+  }), 88);
+  assert.equal(viewerModule.calculatePageScrollTop({
+    pageTop: 1_500,
+    pageHeight: 200,
+    scrollTop: 900,
+    viewportHeight: 500,
+    margin: 12,
+    block: "nearest",
+  }), 1_212);
+});
+
 test("virtual render windows pin provenance page 1 and bound work around the active page", () => {
   assert.deepEqual(viewerModule.pageNumbersForRenderWindow(1, 15, 2), [1, 2, 3]);
   assert.deepEqual(viewerModule.pageNumbersForRenderWindow(8, 15, 2), [1, 6, 7, 8, 9, 10]);
   assert.deepEqual(viewerModule.pageNumbersForRenderWindow(15, 15, 2), [1, 13, 14, 15]);
+  assert.deepEqual(viewerModule.pageNumbersForRenderWindow(8, 15, 0), [1, 8]);
+  assert.deepEqual(viewerModule.pageNumbersForRenderWindow(99, 3, 1), [1, 2, 3]);
+  assert.deepEqual(viewerModule.pageNumbersForRenderWindow(0, 5, 1), [1, 2]);
+  assert.ok(viewerModule.pageNumbersForRenderWindow(150, 300, 3).length <= 8);
 });
