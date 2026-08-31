@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "paper": {
+    "title": "Attention Is All You Need",
+    "authors": [
+      "Ashish Vaswani",
+      "Noam Shazeer",
+      "Niki Parmar",
+      "Jakob Uszkoreit",
+      "Llion Jones",
+      "Aidan N. Gomez",
+      "Lukasz Kaiser",
+      "Illia Polosukhin"
+    ],
+    "doi": "10.48550/arXiv.1706.03762",
+    "arxivId": "1706.03762v7",
+    "pageCount": 15
+  },
+  "source": {
+    "recordUrl": "https://arxiv.org/abs/1706.03762",
+    "pdfUrl": "https://arxiv.org/pdf/1706.03762v7",
+    "version": "v7",
+    "lastRevisedUtc": "2023-08-02T00:41:18Z",
+    "licenseUrl": "https://arxiv.org/licenses/nonexclusive-distrib/1.0/"
+  },
+  "localFixture": {
+    "filename": "attention-is-all-you-need-1706.03762v7.pdf",
+    "pdfByteLength": 2215244,
+    "pdfByteSha256": "bdfaa68d8984f0dc02beaca527b76f207d99b666d31d1da728ee0728182df697",
+    "digestMethod": "SHA-256 computed independently over the downloaded PDF response bytes"
+  },
+  "transportObservation": {
+    "observedAtUtc": "2026-08-31T01:08:56Z",
+    "contentLengthBytes": 2215244,
+    "etag": "\"sha256:2dec5e68ae1f3fd90a82678deab4944bef4114beab661b04bd8b9ee725273072\"",
+    "note": "The transport ETag is recorded as an observation only and is not used as the PDF-byte integrity digest."
+  }
+}

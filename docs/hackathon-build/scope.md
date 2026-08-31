@@ -1,202 +1,261 @@
 # Project Scope
 
-Status: approved guided-build scope for The WebMCP Challenge, 2026-08-29.
+**Status:** Approved redesign baseline for The WebMCP Challenge, 2026-08-30
+**Owner decision:** The knowledge graph, spatial PDF annotation, and a substantially richer WebMCP surface are now the first implementation priority. Networking, Zotero, crawler expansion, and broad service plumbing remain later work.
 
-This is the canonical product scope for the current hackathon build. It supersedes earlier webpage-first demo priorities where they conflict, while preserving the security, provenance, actor-privacy, and human-authority work already completed in the repository.
+This document is the canonical product scope for the current PaperPilot hackathon build. It supersedes the earlier transcript-led, two-tool Reader plan wherever the two conflict. Earlier live-demo evidence remains valid as historical proof of WebMCP registration and callbacks; it is not the target product experience.
 
-## Project Name Candidates
+The public flow is paper-agnostic: a previously unseen admitted PDF follows the same parser, map, anchor, graph, WebMCP, and reducer paths, and paper-specific application logic is prohibited.
 
-- **PaperPilot** — confirmed by the participant; no rename is in scope.
+## Project Name
+
+- **PaperPilot** — confirmed.
 
 ## One-Line Summary
 
-PaperPilot turns a previously unseen, user-uploaded scientific PDF that meets its published admission limits into an accessible, WebMCP-powered learning surface where a browser agent explains selected words, equations, passages, figures, and figure regions while every explanation carries a visible evidence trail.
+PaperPilot is a paper-centered WebMCP research mentor that lets a reader point directly at difficult text, mathematics, or figures, understand it in place, and build a source-grounded knowledge graph whose agent edits are visible, reversible, and traceable to the paper.
+
+## North Star
+
+> Read the real paper in the middle. Point at the hard part. Let a research mentor explain and map it. Follow every idea back to its source—and undo any agent edit you do not want.
 
 ## Target User
 
-The first user is a general reader at approximately undergraduate level encountering an early difficult scientific paper. They have basic prior knowledge and enough motivation to read the paper, but they are not fluent in its specialized vocabulary, mathematical notation, research methods, or visual conventions.
+The first user is a general reader at approximately undergraduate level encountering an early difficult scientific paper. They have basic prior knowledge and enough motivation to read the paper, but not the paper's assumed vocabulary, mathematics, methods, or visual literacy.
 
-The user should not need to know how to prompt an expert model, search for prerequisite material across many sites, or understand provenance terminology before receiving help. PaperPilot should feel hip, calm, contemporary, and easy to navigate rather than institutional or intimidating.
+The user should not need to copy text into a disconnected chatbot, learn graph terminology, understand WebMCP, or reconstruct where an explanation came from. PaperPilot should feel hip, calm, modern, and approachable, with accessibility treated as part of the core interaction rather than a compatibility pass.
 
 ## Problem
 
-Scientific papers are still largely static reading surfaces. A reader who gets stuck on one word, line, equation, passage, figure, or part of a figure must leave the document, search across unrelated resources, reconstruct missing prerequisite knowledge, judge which explanation is trustworthy, and then find their place again.
+Scientific papers are spatial documents, but most AI reading tools detach answers from that spatial context. A reader highlights a sentence, asks a question elsewhere, receives an answer, and then has to determine:
 
-Existing paper-explanation products often produce an answer without a sufficiently inspectable boundary between:
+- where the relevant statement appears on the actual page;
+- how the statement connects to the paper's other ideas;
+- which parts of the answer come from the paper;
+- which parts are mentor background or interpretation; and
+- whether an agent changed the reader's notes or conceptual model correctly.
 
-- what the paper directly says;
-- what was extracted or inferred from a rendered page;
-- what the agent supplied from general background knowledge;
-- what came from an additional external source; and
-- what the reader chose to keep.
+The current PaperPilot prototype proves a bounded WebMCP read/stage loop, but its visible transcript separates selection from the PDF, its graph is absent, and its two tools cannot navigate or evolve the reader's understanding. The redesign closes those gaps.
 
-That ambiguity creates both a literacy barrier and a trust barrier. PaperPilot does not promise that an agent can never hallucinate. It makes hallucination and unsupported interpretation easier to detect by retaining the exact material supplied to the agent and labeling every other authority separately.
+## Core Experience
 
-## Core Workflow
+1. The user uploads a previously unseen scientific PDF that meets the published admission limits.
+2. PaperPilot renders the actual PDF as one continuous vertical document in the dominant middle workspace. There is no persistent visible transcript pane or page-at-a-time carousel.
+3. While the PDF loads, PaperPilot automatically creates a whole-paper structural map from trustworthy document structure: title, outline, detected headings, page ranges, figures or visual-only pages when available. If structure is weak, every page still receives honest map coverage.
+4. The user highlights words where they appear on the page or draws/selects a figure, equation, or visual region. PaperPilot creates a spatial source anchor and visible annotation overlay.
+5. The user asks the browser research mentor for an explanation, a prerequisite, a comparison, or a graph change.
+6. WebMCP tools let the agent read only the active anchored source and a bounded graph view, navigate to existing source anchors, stage a structured mentor explanation, and apply bounded graph or annotation patches.
+7. Explanations appear in the left mentor rail without moving the paper. Selecting an explanation citation, annotation, or graph node returns the user to the exact page region.
+8. Agent graph edits apply immediately but reversibly. A visible revision notice describes what changed, and human-only **Undo** and **Redo** controls provide the soft check. Deletion creates a reversible tombstone rather than destroying history.
+9. The right rail switches between **Knowledge graph** and **Evidence trail**. The graph helps the reader think; the trail shows what source, tool callback, graph revision, and human action produced the current state.
+10. The public no-login `/webmcp/` vertical slice ships first. The same contracts then move into the authenticated Supabase-backed service.
 
-1. The user uploads a scientific PDF that PaperPilot has never seen before.
-2. PaperPilot validates and renders the document without using paper-specific or hard-coded content.
-3. In Reader, the user selects one learning surface or deliberately assembles a bounded same-paper source set:
-   - a word or technical term;
-   - a line, equation, or passage;
-   - a whole figure and available caption; or
-   - an optional rectangular region within a figure or page.
-4. The user asks their WebMCP-capable browser agent to explain the active selection.
-5. A PaperPilot WebMCP read tool returns a bounded representation of the selected source and its provenance—not the user's whole library.
-6. The browser agent responds as a supportive research mentor. It may explain jargon, prerequisites, mathematics, mechanisms, within-paper relationships, or visual content and may consult authoritative external sources.
-7. The agent calls a PaperPilot WebMCP write tool to stage one structured explanation. Staging cannot accept, verify, or silently file the result.
-8. PaperPilot shows the source on the left, the mentor explanation in the center, and the evidence trail on the right.
-9. The user chooses **Save to notes** or **Discard**. The friendly interface labels map to an explicit retained human accept/reject decision.
-10. A saved explanation survives refresh and remains reopenable with its source selection, authority labels, agent proposal, citations, and human decision intact.
+## Product Layout
+
+At wide widths:
+
+```text
+┌────────────────────┬──────────────────────────────────────┬──────────────────────┐
+│ Research mentor    │                Paper                 │ Graph | Evidence     │
+│                    │                                      │                      │
+│ Active question    │ Actual PDF pages                     │ Whole-paper map      │
+│ Explanation        │ Selectable PDF.js text layer         │ Main ideas           │
+│ Terms / math       │ Highlight + annotation overlay       │ Relationships        │
+│ Source citations   │ Figure/region selection              │ Provenance trail     │
+│                    │ Page navigation + zoom               │ Undo / Redo          │
+└────────────────────┴──────────────────────────────────────┴──────────────────────┘
+```
+
+- The paper owns roughly 55–60% of the usable width and is always the visual center.
+- The mentor rail sits on the left.
+- The right rail uses Graph/Evidence tabs rather than adding a fourth narrow column.
+- At narrow widths, the paper remains primary and the rails become accessible tabs or drawers.
+- Logical reading order remains paper → mentor → graph/evidence even when wide-screen CSS places the mentor visually on the left.
 
 ## What We Are Building
 
-### Arbitrary-PDF support contract
+### 1. A central, spatially annotated PDF Reader
 
-The core experience must work from user-uploaded PDFs and may not recognize or depend on curated paper content.
+- PDF.js renders a continuous vertical page stack with bounded mounting, active-page tracking, a direct page locator, zoom, and honest loading/error states.
+- A synchronized transparent text layer lets users select words where they appear in the PDF.
+- A PaperPilot-owned DOM/SVG annotation layer renders text highlights, equation marks, figure bounds, and arbitrary regions.
+- Text anchors retain page, rotation, PDF-space quad points, normalized bounds, exact quote, bounded prefix/suffix, admitted extraction identity when available, and digests.
+- Visual anchors retain the exact rendered page/region identity, page, rotation, normalized bounds, renderer recipe, and artifact digest when persisted.
+- The original uploaded PDF remains immutable.
+- The visible transcript window is removed. An accessible semantic page/annotation outline may support assistive technology, but it is not a second visual reading surface.
 
-- Accept syntactically valid, non-encrypted PDFs within published byte and page limits.
-- Render every admitted page so visual-region interaction does not depend on a clean embedded text layer.
-- When reliable embedded text exists, retain exact word, line, equation-text, and passage selections with page identity, surrounding context, offsets, and content digests.
-- When embedded text is unavailable or unreliable, support rectangular page-region interaction. Any OCR- or vision-derived text is labeled **Derived from page image**, never presented as exact embedded text.
-- Support image-only or scanned papers through visual-region explanation even when exact text selection is unavailable.
-- Reject corrupted, encrypted, unsupported, or oversized files with an explicit reason and no substituted fixture content.
-- Rehearsal may use a real paper selected in advance, but no application behavior may be conditional on that paper's identity or contents.
+### 2. An automatic whole-paper knowledge map
 
-### Equal first-class text and figure interaction
+Every admitted PDF gets a map immediately.
 
-Text and figures share one explanation and provenance model.
+- The initial map is structural and honest: one paper node, section or heading nodes where confidently detected, and page/visual-only fallback nodes for uncovered material.
+- The map shows coverage progress so “whole paper” means every page belongs to a visible structural region, not that an agent has already understood every claim.
+- Semantic nodes—main ideas, concepts, terms, methods, results, prerequisites, figures, and equations—are added or refined by the browser mentor and the reader.
+- Paper-grounded nodes and edges require one or more valid source anchors.
+- Mentor-background nodes are allowed for prerequisites but remain visibly labeled **Mentor background** and cannot masquerade as paper claims.
+- Layout position is a presentation preference, not scientific meaning or provenance.
 
-- Text selections range from one term to a bounded multi-line passage.
-- Mathematics may be selected from the text layer when reliable or as a rendered visual region when layout is significant.
-- Figure interaction supports both a manually selected whole figure and an optional rectangular subregion. Automatic figure detection is helpful but is not required for the first release.
-- Preserve the full figure bounds, selected subregion, page number, crop coordinates, available caption, bounded page context, and digests of the retained visual artifacts.
-- A figure explanation includes a screen-reader-friendly description as well as interpretation of the selected visual content.
+### 3. A Graphology-backed graph model
 
-### WebMCP as the essential interaction layer
+- Use Graphology's `MultiDirectedGraph` with self-loops disabled.
+- Use stable explicit string keys for nodes and edges; never treat insertion order as identity.
+- Canonical PaperPilot records—not a Graphology memory dump—are the persistence and audit authority.
+- Supported first-release node types: `paper`, `section`, `main_idea`, `concept`, `term`, `method`, `result`, `prerequisite`, `figure`, and `equation`.
+- Supported first-release edge types: `contains`, `defines`, `depends_on`, `uses`, `enables`, `supports`, `contrasts_with`, `produces`, `evidenced_by`, and `appears_in`.
+- The rendered graph has an equivalent keyboard-operable outline. Graph visualization is never the only way to inspect or edit it.
 
-The browser agent performs the explanation; PaperPilot provides tools, source custody, review, and persistence.
+### 4. A richer WebMCP interface
 
-- Register actual tools through `document.modelContext.registerTool` on the signed-in Reader surface.
-- Expose a read-only tool that describes the active selection and returns only the bounded source context needed for the explanation.
-- Expose a mutation tool that stages one closed, structured mentor explanation and its declared external sources for private human review.
-- Keep tool descriptions and schemas concise enough for reliable browser-agent use; trusted client code computes identifiers, timestamps, offsets, and digests rather than asking the model to perform those transformations.
-- Do not expose an accept, approve, or verify tool. Only the authenticated user may save the explanation as a note.
-- Detect unsupported or failed WebMCP registration explicitly. A local fallback may exercise the same review UI but must say that WebMCP was not invoked.
+PaperPilot will register a focused suite rather than only a source read and explanation stage:
 
-### Canonical research-mentor explanation
+- `paperpilot.read_focus` — read the active human-minted text/region anchor and its bounded context.
+- `paperpilot.read_graph` — read a bounded whole-map overview, focused neighborhood, issued-node neighborhood, or plain-text graph search result.
+- `paperpilot.stage_explain` — stage one structured research-mentor explanation bound to the active source and graph revision.
+- `paperpilot.apply_graph` — add, update, connect, unlink, or tombstone graph items as one reversible revision.
+- `paperpilot.apply_annotation` — label or link an existing trusted anchor without accepting model-authored coordinates.
+- `paperpilot.focus_source` — navigate the central paper to an existing source anchor and announce it.
 
-Every staged response uses one accessible, predictable structure with progressive disclosure:
+The tool surface is deliberately capable enough for the agent to traverse the paper, inspect the current conceptual model, explain material, and make visible graph changes. It still cannot replace the original PDF, export a modified PDF, hard-delete history, claim verification, or activate Undo/Redo for the reader.
 
-1. **In plain language**
-2. **Key terms**
-3. **How it works / step by step**
-4. **Connection to the paper**
-5. **Background knowledge**
-6. **External sources**
-7. **Uncertainty or limitations**
+### 5. Reversible agent mutations as the soft user check
 
-The default voice is a patient, precise research mentor speaking to an undergraduate reader with basic prior knowledge. The answer may teach prerequisite concepts and communicate difficult mathematics, but it must not present mentor knowledge as if the paper stated it.
+- `apply_graph` and `apply_annotation` may change the working map immediately.
+- Each mutation records actor, tool, base revision, forward patch, inverse patch, affected keys, source anchors, reason, timestamp, and before/after digests.
+- A graph mutation is visibly announced and highlighted.
+- **Undo** and **Redo** are ordinary human UI controls and remain outside the WebMCP tool list.
+- Delete operations create tombstones and include all affected incident edges in the same inverse patch.
+- A stale base revision is rejected; the agent must reread instead of silently rebasing.
+- A new edit after Undo clears the redo branch.
+- Reversible application is not verification. Graph items retain their authority labels and uncertainty.
 
-Within-paper synthesis is in scope in two forms: contextual explanation of one selection using bounded, identified context, and deliberate selected-evidence synthesis across multiple user-visible passages, equations, figures, or regions from the same document. The complete source set is shown and frozen before submission. The response must explain a meaningful relationship among the items or state that the supplied evidence does not support one. Unbounded whole-paper, whole-library, or cross-paper synthesis is not.
+### 6. A graph-aware research-mentor explanation
 
-### Visible evidence trail
+The default mentor response uses:
 
-The product visibly separates five kinds of authority:
+1. **Quick take**
+2. **Where this fits in the paper**
+3. **What you need first**
+4. **How it works**
+5. **Evidence in the paper**
+6. **Related ideas in the map**
+7. **Limits and uncertainty**
 
-| Trail lane | What it may contain | What PaperPilot may claim |
-| --- | --- | --- |
-| Document evidence | exact embedded text, rendered page or crop, caption, document/page identity, offsets or coordinates, digests | PaperPilot retained this exact source artifact from the uploaded document |
-| Derived source context | OCR, vision-derived text, inferred caption or region description | derived from the retained page image; not exact embedded text |
-| Agent activity | WebMCP calls, agent proposal, declared transformations and citations | client-asserted activity plus server-observed PaperPilot tool receipt |
-| Teaching knowledge | general explanation and prerequisite concepts | useful mentor background; not directly stated by the paper unless separately grounded |
-| Human decision | save/discard actor, unchanged mentor proposal, optional separately labeled user takeaway, database time | an authenticated user explicitly kept or rejected this proposal |
+The voice is a patient, precise research mentor speaking to an undergraduate reader. Paper evidence, rendered-page observation, derived context, mentor interpretation, mentor background, and external sources remain distinct at the point of use.
 
-External authoritative sources remain distinct from both the uploaded paper and uncited mentor background. PaperPilot retains their URLs, titles when available, access context, and association with the relevant explanation section. A citation improves traceability but is not itself proof that the source or claim is correct.
+### 7. Bidirectional paper ↔ graph navigation
 
-### Accessibility baseline
+- Selecting an annotation focuses linked graph nodes.
+- Selecting a graph node highlights its source anchors and moves the paper to the primary one.
+- Selecting an edge shows the anchors that justify the relationship.
+- An explanation citation navigates to the matching annotation.
+- Missing or stale sources remain visible as **Source incomplete** rather than silently disappearing.
 
-- Semantic headings, landmarks, controls, tables, and status messages.
-- Complete keyboard operation for Reader navigation, text selection alternatives, figure-region controls, explanation review, and save/discard.
-- Visible focus, sufficient contrast, reduced-motion respect, and no color-only provenance distinctions.
-- Screen-reader announcements for upload/processing state, active selection, agent staging, errors, and save/discard outcomes.
-- Accessible names and descriptions for figures, regions, provenance steps, and source links.
-- Mentor-generated figure descriptions that remain labeled as agent interpretations.
-- Calm progressive disclosure so the main explanation is readable without hiding the evidence trail from users who need it.
+### 8. An evidence trail that includes graph history
 
-### Judge-ready experience
+The evidence trail records:
 
-- Public HTTPS deployment usable in a supported WebMCP client.
-- A real, previously unseen admitted PDF upload during the judge flow; no fixture-specific product logic.
-- One rehearsed text or equation explanation and one rehearsed figure-region explanation using the same general implementation available to every upload.
-- Refresh proof showing the saved note and evidence trail remain durable.
-- Truthful unsupported-browser and unsupported-PDF states.
-- Public repository, open-source license, setup instructions, short demo video, dated new-work disclosure, and post-deadline release freeze as required by the repository compliance gate.
+- PDF identity and page/region anchor;
+- automatic structural-map derivation;
+- WebMCP registration and observed callbacks;
+- explanation proposal and source coverage;
+- graph/annotation revision with before/after digest;
+- Undo or Redo action;
+- authority and uncertainty for each node/edge; and
+- any later authenticated persistence decision.
 
-### Definition of done for Scope
+The trail does not claim that a digest proves truth, a graph relation is scientifically correct, or an agent used context correctly merely because a callback occurred.
 
-PaperPilot's hackathon proof of concept is done when:
+### 9. Arbitrary-PDF and accessibility contracts
 
-- multiple unrelated, valid scientific PDFs can be uploaded without paper-specific configuration;
-- a reliable-text PDF completes the exact text-selection flow;
-- a figure-rich PDF completes both whole-figure and region-selection flows;
-- a weak-text or scanned PDF can still use visual-region explanation with derived authority labeled correctly;
-- real WebMCP tools carry bounded selection context to the browser agent and stage the structured response back into PaperPilot;
-- a bounded, visible same-paper source set can produce selected-evidence synthesis without silently adding or omitting source items;
-- the app never exposes an agent-callable approval path;
-- document evidence, derived context, agent activity, mentor knowledge, external sources, and human decisions remain visually and durably distinguishable;
-- the primary flow is keyboard operable and understandable with a screen reader;
-- saved explanations survive refresh; and
-- no fallback, OCR result, agent assertion, or citation is presented with stronger authority than the system actually has.
+- No application path may recognize a rehearsal paper by filename, title, DOI, digest, or content.
+- Born-digital papers use spatial text selection when the text layer can be reconciled honestly.
+- Weak-text and scanned papers retain page/figure/region anchors and a structural page map.
+- Corrupt, encrypted, oversized, or non-renderable inputs fail explicitly with no fixture substitution.
+- Keyboard users can upload, move pages, zoom, create supported anchors, navigate annotations, inspect/edit the graph outline, request mentor help, and use Undo/Redo.
+- Screen-reader users receive named regions, source summaries, graph structure, graph changes, status announcements, and source-navigation results.
+- Proposed, agent-applied, user-authored, system-derived, and tombstoned states differ by text/icon/pattern as well as color.
+- The full flow remains usable at 200% zoom, 320 CSS pixels, and with reduced motion.
 
-## What We Are Not Building
+### 10. Public vertical slice first, durable service second
 
-- Curated, deterministic, or paper-specific demo logic.
-- Support for corrupt, encrypted, malicious, or unbounded PDFs.
-- Perfect embedded-text recovery, OCR, equation parsing, caption detection, or reading-order reconstruction for every PDF producer.
-- New Zotero, crawler, literature-discovery, networking, collaboration, or broad project-management features.
-- Autonomous acceptance, verification, or project filing by an agent.
-- Cross-paper or whole-library synthesis.
-- A complete prerequisite-concept graph or adaptive course curriculum.
-- Multilingual translation, text-to-speech, or full audio tutoring in this release.
-- Multiple model-provider integration or model-routing infrastructure inside PaperPilot.
-- Automatic proof that an external citation is authoritative or that an explanation is true.
-- Full mobile feature parity beyond a usable responsive judge experience.
+The first release target is the public no-login `/webmcp/` experience because it is the fastest judge-visible proof of the new interaction. It may use browser memory/localStorage, clearly labeled as prototype persistence.
 
-These features are deferred by name because each is valuable enough to distract from the one sharp promise: understand any admitted paper through direct text and figure interaction without losing the evidence trail.
+After that vertical slice is proven, the same anchor, graph, revision, explanation, and evidence contracts move into the authenticated Next.js/Supabase service. The serverless production topology remains Vercel Functions + Workflow + disposable Sandbox + Supabase PostgreSQL/Storage. Infrastructure work that does not unblock the public graph/annotation/WebMCP proof is deprioritized.
 
-## Inspiration And References
+### 11. Future-ready, not prematurely cross-paper
 
-- **Explainpaper:** borrow the direct highlight-to-explain gesture; go beyond it with figures, structured teaching, and inspectable authority boundaries.
-- **Perplexity:** borrow the proximity of sources to explanatory text; avoid treating a citation list as sufficient provenance.
-- **Notion:** borrow calm document surfaces, strong typography, progressive disclosure, and an interface that feels approachable even when the content is difficult.
-- **Research mentorship:** the agent should feel like a patient mentor sitting beside the reader, not a generic chatbot floating above the document.
+Current graph interaction remains within one uploaded paper. Records use stable document-scoped keys plus optional canonical concept keys so a later workspace graph can connect ideas across papers without rewriting anchor provenance.
+
+Cross-paper relationships, global deduplication, embeddings, and literature retrieval are explicitly later work. No current UI may imply those connections exist.
+
+## `pdfAnnotate` Decision
+
+The project evaluated [`highkite/pdfAnnotate`](https://github.com/highkite/pdfAnnotate) at commit `b5e5bc2a4947d604610d15d78f47289074a0f2b7`.
+
+- Its package is a PDF annotation byte writer/parser, not a viewer or live overlay.
+- Because annotated-PDF export is explicitly out of scope, the package has no runtime responsibility in this release and will not sit on the critical path.
+- PaperPilot adopts interoperable PDF-style rectangles and quad points in its owned anchor contract and records the library as the evaluated future export adapter.
+- If export returns later, it requires a maintained attributed fork, worker isolation, Unicode fixes, output validation, and explicit human initiation. The original PDF is never overwritten.
+
+This is a deliberate use of the repository's design constraints without pretending it can provide the in-window experience it does not implement.
+
+## Definition of Done
+
+The redesigned hackathon proof is done when:
+
+- the actual PDF is the dominant middle surface and no visible transcript pane remains;
+- two unrelated valid PDFs create automatic structural maps covering all admitted pages without paper-specific code;
+- a user can spatially highlight text and select a figure/region directly on the paper;
+- anchors remain visibly aligned through zoom and page navigation;
+- the graph shows multiple node/edge types, source grounding, and mentor-background distinction;
+- the browser agent autonomously calls read, explanation, navigation, and reversible graph-mutation tools in a recorded supported client;
+- the agent can add and tombstone nodes, and human Undo/Redo visibly restores the correct graph and source links;
+- graph nodes, edges, annotations, explanations, and activity link back to exact source anchors;
+- a graph node can focus its paper location and an annotation can focus its graph neighborhood;
+- the evidence trail distinguishes automatic structure, document evidence, agent interpretation, graph revision, and human reversal;
+- the primary path is keyboard operable and screen-reader understandable;
+- unsupported PDFs, absent WebMCP, stale graph revisions, missing sources, and failed mutations stop honestly; and
+- the public repository, MIT license, live URL, demo plan, and release claims reflect the redesigned product rather than the historical transcript prototype.
+
+## What We Are Not Building Now
+
+- A persistent visible transcript beside or beneath the PDF.
+- Annotated-PDF download, PDF byte rewriting, or overwriting the uploaded original.
+- A crawler, Google Scholar scraper, new Zotero flow, or broader networking work.
+- Cross-paper graph interaction, whole-library synthesis, or collaboration on the graph.
+- A vector database, embeddings pipeline, or RAG index for the hackathon proof.
+- A second server-side explanation model; the WebMCP browser agent remains the mentor.
+- Perfect semantic understanding from automatic structural parsing.
+- Automatic scientific verification, citation authority scoring, or a guarantee against hallucination.
+- Agent-controlled Undo/Redo, permanent hard deletion, or silent graph rebasing.
+- Perfect figure, equation, caption, or heading detection across every PDF producer.
+- Full native annotation import/export compatibility with every PDF implementation.
+- Multilingual translation, text-to-speech, or an adaptive curriculum in this release.
 
 ## Demo Path
 
 The target presentation is one continuous flow under three minutes:
 
-1. Upload a real scientific PDF not recognized by the application.
-2. Open Reader and select a difficult term, equation, or short passage.
-3. Ask the browser agent to explain it. Show the PaperPilot selection-read and explanation-stage WebMCP tools being used.
-4. Reveal the structured mentor card and briefly distinguish paper-grounded text, mentor background, and any external source.
-5. Select a complete figure, narrow to one region, and request a screen-reader-friendly description plus an explanation of what the region means.
-6. Open the evidence trail and show the retained document/page/crop, hashes, agent activity, explanation authorities, and uncertainty.
-7. Choose **Save to notes**, refresh, and reopen the result to prove persistence and human authority.
-8. Close with: “The agent teaches; PaperPilot proves what it saw; the reader decides what to keep.”
-
-The exact rehearsal paper is replaceable. The same steps must work with another admitted PDF without changing code or configuration.
+1. Upload a previously unseen scientific PDF.
+2. Open the Reader: the paper is centered and the whole-paper structural map appears automatically.
+3. Highlight a difficult sentence where it appears on the PDF. Show the spatial annotation and graph focus.
+4. Ask the browser mentor to explain it and improve the map.
+5. Show autonomous `read_focus`, `read_graph`, `stage_explain`, and `apply_graph` callbacks.
+6. Reveal the graph-aware explanation, a new grounded main-idea node, and its exact source link.
+7. Ask the agent to remove or change a node; show the reversible revision, then press **Undo** and **Redo**.
+8. Select a figure or visual region and show the same anchor/evidence mechanism.
+9. Click a graph node to jump back to the paper and open the evidence trail.
+10. Close with: “The paper stays central, the agent can teach and organize, every idea points back to evidence, and the reader can always undo.”
 
 ## Submission Story
 
-PaperPilot addresses a common reason people abandon scientific reading: the paper assumes vocabulary, mathematics, methods, and visual literacy that the reader has not yet acquired. WebMCP turns the Reader into an agent-native teaching surface. Instead of copying fragments into an unrelated chatbot, the user points at the exact thing they do not understand, the browser agent receives bounded source context through structured tools, and PaperPilot stages the explanation back beside the source.
+PaperPilot turns WebMCP from a two-call integration into an agentic reading environment. The browser mentor can inspect the exact spatial focus, understand the reader's evolving paper map, navigate the document, explain difficult material, and modify the map through typed tools. The app gives those mutations real product effect while keeping them reversible and auditable.
 
-The distinctive contribution is provenance-aware teaching. PaperPilot preserves where the explanation came from without making the false promise that agents cannot hallucinate. It distinguishes exact document evidence, image-derived interpretation, mentor background, external citations, agent activity, and the reader's decision. The result is more accessible than a static paper and more inspectable than generic PDF chat.
+The distinctive visual is immediate: mentor on the left, real paper in the middle, knowledge graph and evidence on the right. A judge sees the source, agent action, graph change, Undo/Redo, and provenance in one frame.
 
-PaperPilot is an existing application. The submission must clearly identify the post-2026-08-25 WebMCP Reader, text-and-figure selection, structured mentor explanation, evidence trail, accessibility work, and judge experience as the new challenge work.
+## Timebox And Priority
 
-## Timebox
-
-- **By Tuesday, 2026-09-01:** feature-complete text, figure, WebMCP, evidence-trail, and accessibility proof of concept.
-- **Wednesday, 2026-09-02:** cross-PDF verification, public deployment, README/judge-flow reconciliation, and demo rehearsal.
-- **Before Thursday, 2026-09-03 13:00 PT:** record and publish the demo, complete the Devpost entry, tag the exact release, verify the public artifacts, and freeze the submitted repository and live site through judging.
+- **First:** redesign and redeploy the public `/webmcp/` vertical slice with central PDF annotation, automatic whole-paper map, richer WebMCP tools, reversible graph edits, and evidence.
+- **Second:** prove text, figure/region, graph mutation, Undo/Redo, accessibility, and failure behavior across unrelated PDFs.
+- **Third:** fold the proven contracts into the authenticated Supabase-backed service.
+- **Later:** cross-paper knowledge links, Zotero/crawler/networking expansion, vector retrieval, and PDF export.

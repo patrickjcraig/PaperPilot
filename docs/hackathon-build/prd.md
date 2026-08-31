@@ -1,709 +1,681 @@
 # Product Requirements Document
 
-Status: guided-build PRD for The WebMCP Challenge, 2026-08-29.
+**Status:** Approved redesign PRD for The WebMCP Challenge, 2026-08-30
 
-This document translates the approved [`scope.md`](scope.md) into user-visible behavior and testable outcomes. It defines what PaperPilot must do and how it should feel. Technical architecture, schemas, APIs, and implementation sequencing belong in the later Spec and Checklist.
+**Product contract:** [`scope.md`](./scope.md)
+**Primary release path:** anonymous public `/webmcp/` vertical slice first; authenticated service port second
+
+This PRD defines what PaperPilot must do and how the redesigned experience must feel. It supersedes the earlier transcript-led Reader and two-tool-only WebMCP requirements wherever they conflict. It intentionally separates user-visible behavior from technical architecture.
 
 ## Product Summary
 
-PaperPilot is an accessibility-first scientific reading workspace for people encountering difficult papers without expert fluency in the paper's field. A user uploads a previously unseen scientific PDF that meets PaperPilot's published admission limits, points directly at a word, equation, passage, figure, or figure region, and asks a WebMCP-capable browser agent for help. The agent acts as a supportive research mentor; PaperPilot keeps the explanation beside the source and makes its evidence trail inspectable.
+PaperPilot is an accessibility-first scientific reading workspace for people encountering a difficult paper without expert fluency in its field. The real PDF stays in the middle of the experience. A reader highlights text where it appears on the page or marks a figure, equation, or region; a WebMCP browser agent explains the material as a supportive research mentor and helps build a knowledge graph of the paper.
 
-The product does not promise that an agent cannot hallucinate. It makes the boundary around an explanation legible by distinguishing:
+Every uploaded paper receives an immediate whole-paper structural map. The map begins with honest document structure and becomes more semantic as the agent and reader add main ideas, concepts, prerequisites, methods, findings, and relationships. Every claim presented as paper-grounded must return to a spatial source anchor. Mentor background remains visibly separate.
 
-- exact embedded document text;
-- a retained rendered page, figure, or crop;
-- OCR- or vision-derived source context;
-- mentor background knowledge not directly stated by the paper;
-- additional external sources;
-- observed PaperPilot WebMCP activity and client-asserted agent activity; and
-- the authenticated reader's save or discard decision.
+The browser agent may make real graph and annotation changes through WebMCP. Those edits apply immediately to keep the interaction fluid, but every change is visible, attributed, revisioned, and reversible with human-only Undo and Redo controls. The original PDF is never rewritten, and annotated-PDF export is not part of this release.
 
 ### Product promise
 
-> Point at what you do not understand. Learn without leaving the paper. Follow the evidence behind the explanation.
+> Understand the hard part in place. See how it connects. Follow every idea back to the paper. Undo anything the agent gets wrong.
 
 ### Product principles
 
-1. **Point, do not retype.** The user starts from the difficult material itself rather than reconstructing it in a generic chat prompt.
-2. **Teach in place.** The explanation appears beside the source without losing the reading position or active selection.
-3. **Make depth optional.** Plain language is immediate; definitions, mathematical detail, paper context, sources, and technical provenance are progressively disclosed.
-4. **Trace, do not overclaim.** Every authority is labeled. Digests and citations improve traceability but are never described as proof of truth.
-5. **The agent proposes; the reader decides.** WebMCP tools may read bounded context and stage explanations. They may not save, accept, verify, or discard on the user's behalf.
-6. **Arbitrary means paper-agnostic.** The product may impose honest file and resource limits, but no workflow may recognize or depend on a particular paper's identity or content.
-7. **Accessibility is part of the primary flow.** Keyboard and screen-reader users receive an intentional explanation path, not a later compatibility layer.
-8. **Calm beats crowded.** The default experience borrows Notion-like clarity and keeps diagnostic detail available without making it the first thing a new reader sees.
+1. **The paper is home.** The PDF—not a transcript or generic chat—is the primary reading surface.
+2. **Spatial context is evidence.** Text, equations, figures, and regions remain tied to their page geometry.
+3. **Map the whole paper honestly.** Every page receives structural coverage; semantic completeness is never implied before it is earned.
+4. **Teach, do not merely summarize.** The mentor explains jargon, prerequisites, mathematics, mechanisms, and connections at an undergraduate level.
+5. **Let the agent act.** WebMCP can navigate, explain, annotate, and evolve the map rather than only returning one payload.
+6. **Make action reversible.** Agent graph changes apply without a blocking Save modal, but a reader can Undo or Redo them and inspect the full revision.
+7. **Ground claims, not just answers.** Paper-grounded nodes, edges, and explanation blocks require source anchors.
+8. **Label background knowledge.** Useful mentor prerequisites are welcome but cannot masquerade as statements made by the paper.
+9. **Trace without overclaiming.** Callbacks and digests prove observed operations and identity, not scientific truth or hidden model reasoning.
+10. **Accessibility is a primary route.** The PDF, annotations, graph, revisions, and mentor interaction all have keyboard and screen-reader paths.
+11. **Prototype truth matters.** Browser-local state in the public slice is labeled browser-local; durable service behavior is claimed only after the Supabase-backed port exists.
 
 ## Target User
 
 ### Primary persona: the first hard-paper reader
 
-The primary user is a general reader at approximately undergraduate level reading an early difficult scientific paper. They have basic domain knowledge and genuine interest, but the paper assumes vocabulary, mathematics, methods, or visual literacy they have not yet acquired.
+The primary user is a general reader at roughly undergraduate level reading an early difficult scientific paper. They have basic prior knowledge and genuine interest, but the authors assume vocabulary, mathematics, methods, or visual conventions they have not yet acquired.
 
 They may be:
 
 - an undergraduate reading a paper for a course or first research project;
 - a technically capable person crossing into an unfamiliar field;
-- a member of the public trying to understand scientific evidence; or
-- a reader who benefits from screen-reader access or reduced visual/cognitive complexity.
+- a member of the public trying to understand scientific evidence;
+- a researcher entering an adjacent discipline; or
+- a reader who benefits from screen-reader access, keyboard operation, or reduced cognitive clutter.
 
 ### Primary jobs to be done
 
-- “Help me understand this exact thing without making me leave the paper.”
-- “Define the jargon and prerequisite concepts the authors assume I know.”
-- “Walk me through this equation or technical mechanism without erasing the real details.”
-- “Describe this figure accessibly and explain what its selected region means.”
-- “Connect several parts of this paper so I can synthesize the authors' argument.”
-- “Show me which parts of the explanation come from the paper and which parts come from elsewhere.”
-- “Let me keep the explanations that help, with my own takeaway, and return to them later.”
+- “Explain this exact thing without making me leave the page.”
+- “Define the jargon and prerequisites the authors assume I know.”
+- “Walk me through this equation without erasing the real detail.”
+- “Describe this figure and explain why it matters.”
+- “Show me where this idea fits into the rest of the paper.”
+- “Build me a map I can use to navigate the paper.”
+- “Let the agent organize the map, but let me undo a bad change.”
+- “Show me which ideas come from the paper and which come from background knowledge.”
 
 ### What PaperPilot must not assume
 
-- The user knows how to write a high-quality model prompt.
-- The user knows what WebMCP, provenance, OCR, a digest, or a browser tool is.
-- The PDF has a clean text layer, simple reading order, detectable figures, or accessible captions.
-- The user can use a mouse, perceive a visual crop, distinguish colors, or tolerate unexpected focus movement.
-- The browser agent or external network is always available.
-- A cited external page is accessible, authoritative, or correct.
+- The user knows how to write a model-quality prompt.
+- The user knows what WebMCP, provenance, a graph revision, a digest, or OCR means.
+- The PDF has a clean text layer, useful outline, simple reading order, or accessible figures.
+- A detected heading is a scientifically meaningful main idea.
+- The user can use a mouse, see a crop, distinguish colors, or use the Sigma canvas.
+- A browser agent is always available or calls every registered tool correctly.
+- A paper-grounded-looking graph edge is scientifically correct merely because an agent created it.
+- Browser-local prototype data is synchronized across browsers or devices.
 
-## Core User Journey
+## Canonical User Journey
 
 ### First use
 
-1. The user opens a calm library screen with one dominant **Upload a paper** action and the promise: “Highlight anything. Ask your research mentor. Follow the evidence.”
-2. The user chooses a PDF through drag-and-drop or a file picker. Before selection, the screen states the supported file type, published size/page limits, and privacy posture.
-3. The paper appears immediately with human-readable states such as **Checking file**, **Preparing pages**, **Finding selectable text**, and **Ready to read**.
-4. When the first page is renderable, PaperPilot exposes a prominent **Open paper** action. It does not navigate or move focus unexpectedly.
-5. Reader opens at the first available page. If selectable text is still processing or unavailable, visual-region interaction remains available and the limitation is explained.
-6. The user highlights a term, line, equation-text, or passage, or enters **Select region** and chooses a whole figure or rectangular region.
-7. PaperPilot keeps the selection visibly active and shows a compact sharing preview: document, page, selected text or image region, nearby context, and caption when available.
-8. PaperPilot displays **Ready for your research mentor** and suggests a request such as: “Explain this at an undergraduate level and show what comes from the paper versus background knowledge.”
-9. The user asks the browser agent in its normal conversation surface. PaperPilot moves through truthful states: **Selection ready**, **Mentor reading**, and **Explanation ready for review**.
-10. The explanation opens beside the paper without changing the page or original selection. A screen reader receives an announcement and an explicit **Go to explanation** action; focus is not moved automatically.
-11. The mentor card opens with **In plain language** and progressively reveals terms, steps, paper context, background knowledge, external sources, and limitations.
-12. The user may request **Make it simpler**, **Go deeper**, or **Show the math**. Each follow-up becomes a separate response tied to the same selection rather than overwriting an earlier response.
-13. The user opens the simple evidence trail—**From the paper → Added by the mentor → Saved by you**—and may expand **Show evidence details**.
-14. The user optionally writes **My takeaway**, then chooses **Save to notes** or **Discard**.
-15. A saved note remains attached to the paper and reopens with the exact source selection, mentor response, citations, trail, and user takeaway.
+1. The user opens a calm landing state with one dominant **Upload a paper** action and the promise: “Read the paper. Ask your mentor. Map the ideas. Follow the evidence.”
+2. The user chooses a PDF through a file picker or drag-and-drop. Supported limits and browser-local custody are stated before selection.
+3. PaperPilot validates the file enough for the public slice to load it, computes its digest, and opens the actual PDF in the middle of the workspace.
+4. The continuous paper scroll, direct page locator, and zoom become usable as soon as the first page renders. Indexing continues without blocking reading.
+5. PaperPilot automatically creates a structural whole-paper map: paper root, outline/section nodes when reliable, and page-range or visual-only fallback nodes for all remaining pages. A visible coverage indicator distinguishes structural coverage from semantic enrichment.
+6. The user highlights a difficult phrase directly on the PDF text layer. The highlight becomes a spatial annotation with a concise accessible label.
+7. The user asks the browser mentor: “Explain this at an undergraduate level and add the idea to the map.”
+8. The agent reads the active focus and bounded graph, stages an explanation, and applies one source-grounded graph revision through WebMCP.
+9. The mentor explanation appears in the left rail. The new or changed graph entities pulse in the right rail, and a notice says **Agent changed the map · Undo · Review changes**.
+10. The user selects the new graph node. PaperPilot moves the centered PDF to the exact source annotation and announces the page and selection.
+11. The user asks the agent to rename, connect, or remove a node. The agent applies another reversible graph revision.
+12. The user presses **Undo** and **Redo** to demonstrate the soft check. The evidence trail retains the original mutation and both compensating actions.
+13. The user selects a figure or region and requests a description/explanation. The same anchor, graph, and evidence model applies.
+14. The user optionally keeps an explanation card in browser-local notes or discards it. Graph changes remain governed by the separate reversible revision history.
 
-### Returning use
+### Returning use in the public slice
 
-1. The library shows recent papers and **Continue reading** while keeping upload prominent.
-2. Reopening a paper restores the last durable page position, saved notes, valid pending mentor responses, and evidence trails.
-3. PaperPilot does not restore an unfinished drag selection or a browser-agent request that never produced a valid staged response.
-4. Selecting a saved note reopens its source position and explanation without replacing the user's current reading state until they choose to navigate.
+1. Reuploading a byte-identical PDF may restore its versioned browser-local map, annotations, explanations, and evidence trail.
+2. A same-name PDF with a different digest creates a new workspace and never inherits the old graph.
+3. Restored content is labeled **Saved in this browser** and never described as account-synchronized.
+4. Corrupt or incompatible local state is ignored safely with an explanation; the PDF still opens normally.
 
-### Within-article synthesis
+### Authenticated service use later
 
-1. For ordinary explanation, the active selection may be interpreted with bounded, identified context from its section and the paper's stated purpose.
-2. For deliberate synthesis, the user chooses **Add to Connect ideas** on multiple passages, equations, whole figures, or figure regions from the same paper.
-3. A visible **Connect ideas** tray lists every selected item with its type, page, short preview, and remove action.
-4. The user asks the mentor to compare, reconcile, or synthesize those items.
-5. The resulting response identifies every source item it used and preserves a separate trail edge to each one.
-6. Connect ideas never silently includes another paper, the user's whole library, or unlisted document content.
+The authenticated port preserves the same visible flow while replacing browser-local authority with actor-private Supabase records, durable revision conflicts, and exact admitted-text/visual custody. That port is not a blocker for the public hackathon proof and must not be claimed before implementation.
 
 ## Experience Vocabulary
 
-The interface uses reader language by default and reveals technical language only in evidence details.
-
-| Product concept | Default label | Detailed label when needed |
+| Technical concept | Reader-facing label | Evidence-detail label |
 | --- | --- | --- |
 | WebMCP-capable browser agent | Research mentor | Browser agent / WebMCP client |
-| Staged agent output | Explanation ready for review | Pending mentor proposal |
-| Accepted human decision | Save to notes | Accepted by authenticated reader |
-| Rejected human decision | Discard | Rejected by authenticated reader |
-| Exact PDF text | From the paper | Exact embedded document text |
-| OCR or vision result | Derived from page image | OCR/vision-derived source context |
-| Model prior knowledge | Mentor background | Not directly stated by the paper |
-| Other websites or publications | External sources | Client-declared external citations |
-| Tool lifecycle | Mentor activity | PaperPilot WebMCP registration and invocation activity |
-| Cryptographic/content details | Evidence details | Digests, locators, coordinates, timestamps, and policy versions |
+| PDF text/region anchor | Highlight / selected source | Spatial source anchor |
+| Automatic structural graph | Paper map | System-derived structural map |
+| Semantic graph | Knowledge graph | Versioned paper concept graph |
+| Graph mutation | Agent changed the map | WebMCP graph revision |
+| Logical deletion | Removed from map | Reversible tombstone |
+| Compensating revision | Undo / Redo | Inverse/reapplied graph revision |
+| Exact document text | From the paper | Exact text reconciled to source anchor |
+| Rendered visual source | From the page image | Client-rendered PDF region |
+| Agent prerequisite knowledge | Mentor background | Not directly stated by the paper |
+| Staged mentor output | Explanation ready | Pending explanation proposal |
+| Browser-local persistence | Saved in this browser | Local versioned snapshot keyed by PDF digest |
+| Technical provenance | Evidence details | Anchors, callbacks, revisions, digests, timestamps |
 
 ## Epics And User Stories
 
-### Epic 1: Begin without friction
+### Epic 1: Start with the real paper
 
-#### US-1.1 — Understand the empty state
+#### US-1.1 — Upload an arbitrary admitted PDF
 
-- As a first-time reader, I want one obvious starting action so that I do not need to understand PaperPilot before using it.
-
-Acceptance criteria:
-
-- With no papers present, **Upload a paper** is the dominant action and receives a meaningful accessible name.
-- The empty state contains the one-sentence promise and no fake papers, fabricated activity, or preloaded demonstration content.
-- File type, size/page limits, and a short privacy explanation are available before the user opens the file picker.
-- Drag-and-drop and file-picker paths are both present; neither is the only accessible path.
-- Keyboard focus enters the page at a meaningful heading and reaches the upload action in a predictable order.
-
-#### US-1.2 — Resume a recent paper
-
-- As a returning reader, I want to continue a recent paper so that I can return to learning with minimal navigation.
+- As a reader, I want to upload my own scientific PDF so that PaperPilot works on the material I actually need to understand.
 
 Acceptance criteria:
 
-- When at least one paper exists, recent papers show title, readiness, last durable reading position, and **Continue reading**.
-- **Upload a paper** remains visible without requiring the user to open another screen.
-- A paper that is still processing displays its current human-readable state rather than appearing ready.
-- A paper with a recoverable problem exposes a clear next action; it does not look identical to a successful paper.
+- The empty state has one dominant **Upload a paper** action with an accessible name.
+- File-picker and drag-and-drop paths are both available.
+- The public slice states its file/page limits and browser-local custody before selection.
+- The application does not branch on filename, title, DOI, digest, authors, or known contents.
+- A selected PDF displays its filename and meaningful loading/indexing states.
+- Non-PDF, encrypted, corrupted, oversized, or non-renderable input produces a specific safe failure and no sample replacement.
 
-### Epic 2: Upload and enter Reader honestly
+#### US-1.2 — Read while the rest of the paper indexes
 
-#### US-2.1 — See meaningful preparation states
-
-- As a reader, I want to know what PaperPilot is doing with my PDF so that I can decide whether to read, wait, or fix a problem.
-
-Acceptance criteria:
-
-- A selected file appears immediately with its display name and one of the approved reader-facing states.
-- The user can distinguish file validation, page preparation, selectable-text preparation, ready, and terminal failure.
-- A page-ready paper exposes **Open paper** even if selectable-text preparation continues.
-- State changes are announced without repeatedly interrupting a screen-reader user.
-- The interface never displays a permanent indeterminate spinner without explanatory text.
-
-#### US-2.2 — Continue when text is weak
-
-- As a reader of a scanned or structurally difficult PDF, I want to use rendered-page selection so that a weak text layer does not end the reading session.
+- As a reader, I want the first page quickly so that whole-paper analysis does not make me wait before reading.
 
 Acceptance criteria:
 
-- If rendered pages are usable but selectable text is absent or unreliable, Reader displays **Selectable text is limited in this document**.
-- Whole-page and visual-region explanation remain available.
-- OCR- or vision-derived wording displays **Derived from page image** wherever it is quoted or used as context.
-- Derived wording never receives exact-text styling or a claim that it was embedded in the document.
-- A user can learn what the limitation changes without reading technical extraction diagnostics.
+- The first renderable page opens before whole-document indexing is complete.
+- Page navigation, zoom, and fit-width controls remain available during indexing.
+- The status distinguishes **Paper ready**, **Indexing paper**, **Building structural map**, **Map ready**, **Map partial**, and **Map failed**.
+- Index progress is announced at meaningful milestones, not on every page/token update.
+- Cancelling or failing map work does not discard the readable PDF.
 
-#### US-2.3 — Recover from an unsupported file
+### Epic 2: Keep the PDF in the middle
 
-- As a reader, I want a specific explanation when PaperPilot cannot admit my PDF so that I know what to try next.
+#### US-2.1 — Use a paper-dominant workspace
 
-Acceptance criteria:
-
-- Encrypted, damaged, oversized, over-page-limit, non-PDF, and non-renderable inputs produce distinguishable user-facing outcomes.
-- Explanation and selection actions remain disabled for a page that cannot be rendered.
-- PaperPilot never loads sample content or a different paper after an upload failure.
-- Error text contains a safe next step, such as choosing an unlocked copy or a smaller document, when a recovery is possible.
-- Internal storage paths, credentials, provider responses, or security diagnostics never appear in the user message.
-
-### Epic 3: Point at difficult material
-
-#### US-3.1 — Select exact text
-
-- As a reader, I want to highlight a term, line, equation-text, or passage so that the mentor receives the exact material I am reading.
+- As a reader, I want the actual paper to remain visually central so that explanations and graphs never replace what I am reading.
 
 Acceptance criteria:
 
-- A reliable text layer supports selections from one non-whitespace term through a published bounded passage length.
-- After selection, the chosen text remains visibly marked and exposes **Explain** and **Add to Connect ideas**.
-- Before mentor use, PaperPilot shows the selected text, page, and bounded context that will be shared.
-- The preview makes it clear when mathematical layout may be better handled as a visual region.
-- Reversing or adjusting a selection updates the preview before a mentor request begins.
-- Once a mentor request begins, its source snapshot is frozen; later selection changes do not retarget it.
+- At wide widths, the visual order is mentor left, paper center, Graph/Evidence right.
+- The paper occupies approximately 55–60% of the usable width when both rails are open.
+- The PDF is one continuous vertical document across more than page 1, with ordinary cross-page scrolling, active-page indication, a direct page locator, zoom, and fit-width.
+- Using the page locator, a graph source, or an annotation scrolls the existing document to the destination rather than replacing the visible page.
+- Opening an explanation, graph detail, or evidence detail does not navigate away from the paper.
+- At narrow widths or high zoom, the paper remains the primary view and the two rails become accessible tabs/drawers.
+- The app avoids whole-page horizontal scrolling; a bounded PDF viewport may pan when zoom requires it.
 
-#### US-3.2 — Select a figure or visual region
+#### US-2.2 — Remove the duplicate transcript
 
-- As a reader, I want to choose a whole figure or part of a page so that diagrams, charts, images, and visually significant mathematics are teachable surfaces.
-
-Acceptance criteria:
-
-- **Select region** creates a clear mode with instructions, visible focus, cancel, and completion actions.
-- A pointer user can draw and adjust one rectangle within the rendered page bounds.
-- **Use whole figure** is available when a whole figure has been identified or manually bounded; automatic figure detection is not required for success.
-- The sharing preview shows the full retained visual context, selected subregion, page, and caption when available.
-- The selected region stays outlined while the request is pending and can be reopened from the resulting explanation.
-- Coordinates or technical image metadata are not required reading in the default view.
-
-#### US-3.3 — Know what will be shared
-
-- As a reader, I want to inspect the bounded selection before agent access so that I do not unknowingly expose unrelated paper or workspace content.
+- As a reader, I want to select content where it appears in the paper so that I do not have to correlate a detached transcript with the PDF.
 
 Acceptance criteria:
 
-- The preview lists every source item that will be made available to the mentor.
-- The preview distinguishes exact document text, rendered imagery, and derived wording.
-- The preview does not include another paper, another user's data, unrelated notes, or the full library.
-- The user can cancel without creating a mentor proposal or human decision.
-- Starting a request preserves the exact preview as the request's source snapshot.
+- There is no persistent visible transcript textarea, transcript column, or duplicate text panel.
+- A synchronized PDF text layer supports direct spatial selection when reliable.
+- The selected words remain highlighted at their page location.
+- An optional semantic page/annotation outline may support accessibility without becoming a second visible reading surface.
+- Textless or unreliable-text pages remain usable through page/region selection and never display fabricated exact text.
 
-### Epic 4: Use the primary flow without relying on sight or pointer input
+### Epic 3: Mark the exact source
 
-#### US-4.1 — Operate Reader and selection by keyboard
+#### US-3.1 — Create a spatial text highlight
 
-- As a keyboard user, I want to navigate pages and create supported selections without a pointer so that I can use the primary learning workflow independently.
-
-Acceptance criteria:
-
-- Upload, page navigation, zoom controls, text selection alternatives, visual-selection alternatives, sharing preview, mentor handoff, explanation review, evidence inspection, follow-up, save, and discard all have keyboard-operable paths.
-- Focus is visibly apparent and follows a stable order that does not depend on the visual left/center/right layout.
-- The active selection is communicated by both a visual outline and persistent text naming its type, page, and short preview.
-- Region mode supplies keyboard-operable cancel and confirm controls and never traps focus in the PDF viewport.
-- No required status, selection, authority, warning, or decision is communicated by color or motion alone.
-
-#### US-4.2 — Ask about visual content nonvisually
-
-- As a screen-reader user, I want a labeled way to request visual explanation so that arbitrary rectangle drawing is not my only path.
+- As a reader, I want to highlight a word, equation-text, line, or passage on the PDF so that the mentor and graph share the exact location I mean.
 
 Acceptance criteria:
 
-- Reader offers **Describe this page** for every renderable page.
-- When a figure or caption is identified, Reader presents it as a named choice and allows the user to request an explanation of that item.
-- If no labeled figure or caption can be identified, PaperPilot says so and still offers page-level description; it never invents a caption.
-- PaperPilot does not claim that choosing a labeled item is equivalent to selecting an arbitrary visual subregion.
-- The resulting figure or page description is labeled **Mentor interpretation** and any OCR/vision wording is labeled **Derived from page image**.
+- A nonempty bounded selection creates an annotation only after it resolves to one page or a supported multi-rectangle range.
+- The annotation retains PDF digest, page, rotation, normalized bounds, PDF-style quad points, exact quote when reliable, bounded prefix/suffix, and source/quote digests.
+- Multiline and multicolumn selections preserve separate rectangles rather than one misleading bounding box.
+- Zoom, fit-width, resize, and rerender keep the highlight aligned.
+- A text/geometry mismatch downgrades the anchor to rendered-region authority and states the limitation.
+- The agent never supplies the source geometry.
 
-#### US-4.3 — Experience one coherent three-region workspace
+#### US-3.2 — Select a page, equation, figure, or arbitrary region
 
-- As an assistive-technology or zoomed user, I want the source, explanation, and evidence trail to remain one coherent journey regardless of layout.
-
-Acceptance criteria:
-
-- Source, explanation, and evidence have meaningful region names and one stable logical reading order.
-- At narrow widths or browser zoom, the regions stack or switch views without losing content, controls, status, or the source-to-response relationship.
-- The overall application avoids two-direction page scrolling; the PDF viewport may remain a clearly bounded pan/zoom surface.
-- Reduced-motion preferences are respected and motion is never required to understand mentor activity.
-- Streaming or repeated status updates are announced sparingly; users do not hear every incremental token or progress repaint.
-
-### Epic 5: Ask a real WebMCP research mentor
-
-#### US-5.1 — Know when PaperPilot tools are actually available
-
-- As a reader, I want an honest readiness state so that I know whether my browser mentor can interact with PaperPilot.
+- As a reader, I want to mark visual content so that charts, diagrams, images, and spatial mathematics can enter the same mentor and graph flow.
 
 Acceptance criteria:
 
-- Successful registration displays **Tools ready for your browser mentor**.
-- This state means PaperPilot made tools available; it does not claim that an agent discovered or invoked them.
-- If the client exposes an independently observable discovery event, the interface may display it as a separate event. Otherwise, discovery is shown only in the browser-agent interface during the judge demonstration.
-- Before a source-read callback occurs, PaperPilot displays **Waiting for your browser mentor—nothing has been shared yet** rather than **Mentor reading**.
-- The normal reading and saved-note experience remains usable when tools are unavailable.
+- **Select region** has clear entry, instructions, confirm, and cancel actions.
+- A pointer user can draw and adjust a rectangle inside the rendered page.
+- **Use whole page** is always available for a renderable page.
+- **Use whole figure** is available when the user has manually bounded or selected a figure; automatic figure detection is not required.
+- The anchor retains page/rotation, normalized geometry, renderer recipe, and digest-bearing visual identity.
+- No caption is invented. Missing caption context says **No caption identified**.
+- Removing an overlay never mutates the original PDF bytes.
 
-#### US-5.2 — See the real WebMCP activity sequence
+#### US-3.3 — Use annotations without sight or a pointer
 
-- As a reader or judge, I want visible proof of the interaction PaperPilot actually observed so that a simulated or local path cannot masquerade as WebMCP.
-
-Acceptance criteria:
-
-- The default evidence trail includes **Tools ready**, **Selection read through WebMCP**, **Explanation received through WebMCP**, and **Awaiting your decision / Saved by you / Discarded by you** as applicable.
-- **Selection read through WebMCP** appears only after PaperPilot observes the bounded source-read callback.
-- The read event names the paper, page, selection type, and number of shared source items and states that no other papers or library content were shared.
-- **Explanation received through WebMCP** appears only after PaperPilot accepts a valid structured staged response.
-- Tool names, timestamps, locators, coordinates, digests, and payload details remain available under **Show evidence details**.
-- PaperPilot never claims to observe the agent's hidden reasoning, model identity, or correct use of returned context unless the client supplies an explicitly labeled assertion.
-
-#### US-5.3 — Keep requests bound to frozen sources
-
-- As a reader, I want each request to remain attached to the source I submitted so that a later selection cannot corrupt the explanation trail.
+- As a keyboard or screen-reader user, I want a reliable source-selection alternative so that spatial interaction is not pointer-only.
 
 Acceptance criteria:
 
-- Starting a request freezes one source selection or one visible same-paper Connect ideas set.
-- Changing the current selection or synthesis tray after submission does not change the in-flight request.
-- PaperPilot continues to identify the frozen source while the request is pending.
-- The user may cancel the request without losing the underlying source selection.
-- A late result after cancellation or navigation stays separate, remains bound to its original source, and does not auto-open or auto-save.
-- Duplicate valid responses are shown as the same proposal or clearly separate proposals; they never overwrite another response silently.
+- Keyboard users can choose the focused text item/paragraph, current page, or a labeled identified item.
+- Region geometry has optional labeled numeric controls with bounds, units, validation, and a concise summary.
+- **Describe this page** exists for every renderable page.
+- Every annotation appears in a keyboard-focusable list with type, page, short quote/description, authority, state, and linked graph count.
+- Selecting an annotation from the list moves the visual viewer and graph focus without trapping focus.
 
-#### US-5.4 — Recover from mentor and WebMCP failures
+### Epic 4: See an automatic whole-paper map
 
-- As a reader, I want actionable and truthful failure states so that I know what happened and can retry without losing my work.
+#### US-4.1 — Receive immediate structural coverage
 
-Acceptance criteria:
-
-- PaperPilot distinguishes **WebMCP unavailable**, **Tool registration failed**, **Mentor cancelled**, **Connection interrupted**, **Selection shared; no explanation received**, and **Mentor response could not be verified**.
-- A tool-registration failure never displays **Tools ready**.
-- A source read without a staged explanation stops at the last confirmed event and does not imply success.
-- A malformed or invalid staged response does not appear as an explanation, creates no saved note, and leaves the source available for retry.
-- Reading and existing notes remain usable throughout the failure.
-- A local-review path displays **Local review—WebMCP was not invoked** in the status area, explanation, evidence trail, and any saved note created from that path.
-
-### Epic 6: Learn from a structured research mentor
-
-#### US-6.1 — Receive a predictable explanation
-
-- As an undergraduate reader, I want every mentor response organized the same way so that I can find the level of help I need.
+- As a reader, I want a map as soon as I upload the paper so that I can orient myself before I know what to ask.
 
 Acceptance criteria:
 
-- Every valid staged response contains, in order: **In plain language**, **Key terms**, **How it works / step by step**, **Connection to the paper**, **Background knowledge**, **External sources**, and **Uncertainty or limitations**.
-- **In plain language** is expanded when the response opens; later sections use real headings and progressive disclosure.
-- An empty section says that nothing was supplied or used rather than disappearing in a way that implies evidence exists.
-- Paper-grounded statements, page-image-derived interpretation, mentor background, and external material retain visible authority labels at the point of use even when evidence details are collapsed.
-- The explanation avoids an unexplained expert term when that term is central to the selected content; such terms appear in **Key terms**.
-- Uncertainty is not hidden because the user chose a simpler reading level.
+- Upload automatically creates one paper root.
+- Paper outline entries become section nodes when available and safely bounded.
+- Heading heuristics may create provisional section nodes when confidence is sufficient and label them as system-derived.
+- Every admitted page belongs to a section/page-range node; weak-text pages receive explicit visual-only page coverage.
+- A coverage indicator reports pages indexed, structurally mapped, limited, and failed.
+- **Whole-paper structural map ready** never means every scientific claim has been understood.
 
-#### US-6.2 — Understand difficult mathematics
+#### US-4.2 — Enrich the structure into a semantic map
 
-- As a reader of mathematical or technical material, I want a step-by-step explanation that preserves the paper's meaning so that simplification does not become distortion.
-
-Acceptance criteria:
-
-- A math response identifies the selected equation or visual region before explaining it.
-- **How it works / step by step** defines symbols used in the explanation and describes the reasoning in words, not only rendered notation.
-- When layout matters, the response remains bound to the retained visual region rather than claiming exact text authority.
-- **Connection to the paper** explains the role the mathematics plays in the selected paper context, or says when the available context is insufficient.
-- The mentor may state prerequisites under **Background knowledge** but cannot label them as statements made by the paper without a separate paper source.
-
-#### US-6.3 — Understand figures accessibly
-
-- As a reader, I want both a description and an interpretation of selected visual material so that I can understand what is shown and why it matters.
+- As a reader, I want the mentor to add main ideas and relationships so that the map becomes a learning tool rather than only a table of contents.
 
 Acceptance criteria:
 
-- A figure response includes a screen-reader-friendly description labeled **Mentor interpretation**.
-- The response distinguishes visible features, inferred relationships, caption-grounded claims, and broader interpretation.
-- The whole retained figure context and any selected subregion can be reopened from the response.
-- If no caption was found, the response and evidence trail say **No caption identified** rather than fabricating one.
-- A figure spanning pages or containing ambiguous labels is described with an explicit limitation.
+- The map supports `paper`, `section`, `main idea`, `concept`, `term`, `method`, `result`, `prerequisite`, `figure`, and `equation` nodes.
+- It supports the approved directed relationship vocabulary.
+- Paper-grounded semantic nodes and edges require at least one valid source anchor.
+- Mentor-background nodes may omit paper anchors only when persistently labeled **Mentor background**.
+- The agent can progressively enrich one section or the full structural map through bounded reads.
+- Map progress identifies structurally covered versus semantically enriched sections.
+- A partial or failed semantic pass remains labeled partial/failed and never fabricates coverage.
 
-#### US-6.4 — Adjust explanation depth without losing history
+### Epic 5: Understand and navigate the graph
 
-- As a reader, I want to make an explanation simpler or deeper so that the mentor can meet me where I am.
+#### US-5.1 — Explore main ideas without graph expertise
 
-Acceptance criteria:
-
-- **Make it simpler**, **Go deeper**, and **Show the math** are available for a valid response.
-- Each action creates a suggested follow-up for the browser mentor and remains bound to the same frozen source or source set.
-- Each returned follow-up is a separate proposal with its own activity and evidence trail.
-- An earlier response remains readable and is never silently rewritten.
-- The user may save more than one response about the same source; each saved note remains distinguishable.
-
-### Epic 7: Connect ideas within one paper
-
-#### US-7.1 — Build a visible same-paper source set
-
-- As a reader, I want to collect several relevant items from one paper so that I can ask how they relate.
+- As a first-time reader, I want a calm graph view so that relationships help me rather than overwhelm me.
 
 Acceptance criteria:
 
-- **Add to Connect ideas** is available for supported text, equation, whole-figure, and region selections.
-- The tray identifies every item by type, page, authority, and short preview and provides a remove action.
-- Keyboard and screen-reader users can add, inspect, and remove items.
-- Duplicate items are prevented or visibly identified rather than silently counted twice.
-- An item from another paper is rejected with an explanation; Connect ideas is never cross-paper in this release.
-- The published item/size limit is shown before the user exceeds it, and PaperPilot never silently omits an item.
+- The default graph emphasizes roughly 5–15 high-salience visible items for a normal paper, with supporting detail progressively disclosed.
+- Node type, authority, and agent/system/reader origin are visible without relying on color alone.
+- Selecting a node shows its label, short summary, type, authority, linked sources, and relevant relations.
+- Search across node labels and summaries plus type/authority filters are available without requiring graph syntax; the same bounded search semantics are exposed to the WebMCP graph-read API.
+- Layout motion is restrained and respects reduced motion.
+- Layout coordinates never appear as evidence of meaning.
 
-#### US-7.2 — Ask for genuine selected-evidence synthesis
+#### US-5.2 — Move from graph to paper and back
 
-- As a reader, I want the mentor to explain a meaningful relationship among selected items so that I can understand an argument, mechanism, or apparent tension within the paper.
-
-Acceptance criteria:
-
-- The sharing preview lists the complete frozen source set before the request starts.
-- A synthesis response addresses every included source item and identifies the relationship it found.
-- Independent mini-summaries with no relationship do not satisfy a successful synthesis response.
-- If the supplied evidence does not support a defensible relationship, the mentor response says so rather than filling the gap with unlabeled background knowledge.
-- The response may use mentor background and external sources, but those remain separate from claims about what the selected paper evidence supports.
-- PaperPilot never labels selected-evidence synthesis as a complete whole-paper analysis.
-
-#### US-7.3 — Preserve the synthesis source set
-
-- As a reader, I want the complete source set retained with the response so that I can audit the synthesis later.
+- As a reader, I want concepts and relationships to return me to the paper so that the map never becomes an ungrounded diagram.
 
 Acceptance criteria:
 
-- Each source item has its own edge in the simple and detailed evidence trail.
-- Editing the current Connect ideas tray after submission does not alter the submitted set.
-- Reopening a saved synthesis identifies and reopens every still-available source item.
-- If one retained source becomes unavailable, the note displays **Source incomplete** and identifies the missing item rather than presenting a complete trail.
+- Selecting a grounded node focuses its primary annotation and offers all other source anchors.
+- Selecting an edge lists and focuses the anchors that justify that relationship.
+- Selecting an annotation focuses every linked node/edge.
+- The page/region is visibly marked and announced after navigation.
+- A missing source shows **Source incomplete** and keeps the graph item visible for audit.
+- The same navigation actions exist in the accessible graph outline; the Sigma canvas is not required.
 
-### Epic 8: Follow the evidence without becoming a provenance expert
+### Epic 6: Give the browser mentor useful WebMCP tools
 
-#### US-8.1 — Understand the simple trail
+#### US-6.1 — Know what tools are actually ready
 
-- As a reader, I want an immediate explanation of where the answer came from so that I can evaluate it without reading technical metadata.
-
-Acceptance criteria:
-
-- The default trail presents document/source, WebMCP mentor activity, and human decision in a stable order.
-- Before decision, it ends with **Awaiting your decision**; after action, it displays **Saved by you** or **Discarded by you**.
-- Exact document content, derived visual/OCR context, mentor background, and external sources remain distinguishable in the explanation itself, not only in detailed metadata.
-- The trail does not describe the mentor response as verified or true.
-- Labels, icons, text, and accessible names communicate authority without relying on color.
-
-#### US-8.2 — Inspect evidence details
-
-- As a reader or judge, I want technical detail on demand so that I can audit the selected source and actual WebMCP handoff.
+- As a reader, I want an honest readiness state so that registration is not confused with agent action.
 
 Acceptance criteria:
 
-- **Show evidence details** reveals the document identity, page, exact-text offsets or image crop coordinates, retained context, authority, citations, observable WebMCP events, timestamps, and digests.
-- Client-asserted times or agent labels are visibly distinguished from PaperPilot receipt and human-decision records.
-- A digest is described as an integrity/identity aid, not proof that a claim is correct or publicly available.
-- Each response and follow-up has its own details; evidence is not pooled across responses.
-- The details remain understandable and operable at narrow widths, browser zoom, and with a screen reader.
+- Successful registration lists the exact available PaperPilot tool count and names under details.
+- **Tools ready for your research mentor** means registration completed only.
+- A read, graph inspection, navigation, explanation stage, graph mutation, or annotation mutation appears only after PaperPilot observes that callback.
+- Partial registration aborts/disposes the complete suite and shows **Tool registration failed**.
+- WebMCP-unavailable mode preserves the local PDF, map, annotations, Undo/Redo, and saved browser state without native styling.
 
-#### US-8.3 — Evaluate external sources honestly
+#### US-6.2 — Let the agent inspect bounded context
 
-- As a reader, I want external citations separated from paper evidence so that I can decide how much weight to give them.
-
-Acceptance criteria:
-
-- **External sources** says **No external sources used** when the mentor supplies none.
-- Every supplied source shows a destination and its verification/access warning when applicable.
-- Missing, malformed, inaccessible, or unverified citations remain visible beside the citation and in a saved note.
-- A citation warning never prevents an informed save, but it cannot be removed by saving.
-- Opening an external source preserves the PaperPilot reading state and does not include document text, selection content, or workspace context in the destination.
-- PaperPilot does not certify that the source is authoritative or that it proves the mentor's statement.
-
-### Epic 9: Keep only what helps
-
-#### US-9.1 — Review before retaining
-
-- As a reader, I want every response to remain a proposal until I decide so that the browser agent cannot author my notes autonomously.
+- As a reader, I want the mentor to read my active source and map without exposing unrelated content.
 
 Acceptance criteria:
 
-- A valid mentor response first appears as **Explanation ready for review** and does not appear in saved notes.
-- Only **Save to notes** creates a saved note and changes the human-decision trail to **Saved by you**.
-- No WebMCP-visible action, browser-agent message, or follow-up can represent the user's save decision.
-- **Discard** removes the proposal from active review, records and announces **Discarded by you**, and creates no saved note.
-- A discarded-items archive and undo workflow are not required for this release.
-- Citation warnings and uncertainty remain visible during review and after save.
+- `read_focus` returns only the active trusted anchor, bounded context, its authority, and related issued IDs.
+- `read_graph` returns a bounded overview, focus/issued-node neighborhood, or plain-text search result with current revision/digest, filters, and a truncation indicator.
+- Tool results do not include PDF bytes, another paper, a whole library, browser storage inventory, another tab's mutable state, credentials, or hidden prompts.
+- The agent can traverse structural sections through issued references and bounded repeated reads; one call never silently truncates a larger source and pretends completeness.
+- Paper text and graph labels are marked untrusted content and cannot override the tool contract.
 
-#### US-9.2 — Add a personal takeaway without rewriting the mentor
+#### US-6.3 — Let the agent navigate, explain, and edit
 
-- As a reader, I want to write my own interpretation separately so that my thinking is not confused with the agent's response.
-
-Acceptance criteria:
-
-- **My takeaway** is optional and visibly labeled as user-authored.
-- The staged mentor response is read-only and remains byte-for-byte/meaningfully unchanged from what arrived for review.
-- Saving succeeds without a takeaway.
-- Editing a takeaway does not alter source evidence, mentor sections, citations, or activity history.
-- A saved note presents mentor content and user takeaway as separate authored sections.
-
-#### US-9.3 — Persist and reopen accepted work
-
-- As a reader, I want saved explanations to survive refresh and return me to their source so that PaperPilot becomes a durable learning notebook.
+- As a reader, I want the mentor to act inside PaperPilot so that the experience feels agentic rather than like a static integration.
 
 Acceptance criteria:
 
-- Refresh restores the last paper/page, saved notes, evidence trails, citation warnings, activity, human decision, and **My takeaway**.
-- A valid staged but undecided response that reached PaperPilot returns as **Awaiting your decision** for the same authenticated actor.
-- Another workspace member, including an owner, cannot see the actor's pending response through ordinary product views.
-- Opening a saved text note returns to and outlines its source selection when available.
-- Opening a saved visual note returns to the page and outlines the full figure or selected region when available.
-- If the source document or one source item is no longer available, the note remains readable with **Source incomplete** and never pretends the full source can be reopened.
-- An unfinished rectangle, local highlight not submitted, or browser request that never yielded a valid response is not restored as completed work.
+- `focus_source` can move only to an issued anchor, node source, or structural section in the active paper.
+- `stage_explain` can create only a schema-valid explanation bound to the active source/graph revision.
+- `apply_graph` can atomically add, update, relate, detach, restore, or tombstone bounded graph entities.
+- `apply_annotation` can label/link only a trusted existing anchor; it accepts no raw PDF coordinates.
+- Tool schemas contain no PDF export, original-PDF mutation, hard purge, verification, or cross-paper operation.
+- Every callback returns a bounded structured result and a visible evidence event.
 
-### Epic 10: Recover without losing trust
+### Epic 7: Let the agent evolve the map safely
 
-#### US-10.1 — Preserve work across authentication and save failures
+#### US-7.1 — Apply graph changes without a blocking approval modal
 
-- As a reader, I want recoverable failures to preserve my staged work so that I do not lose a useful explanation at the final step.
-
-Acceptance criteria:
-
-- If authentication expires before save or discard, PaperPilot does not reveal private content on the sign-in page and explains that the decision requires sign-in.
-- After the same user reauthenticates, a valid actor-private staged proposal remains available when policy permits.
-- If save fails, the explanation and **My takeaway** remain in review, the UI says **Not saved**, and retry is available.
-- **Saved by you** never appears before a successful durable save.
-- Repeating a save after an uncertain outcome does not create two visible notes.
-
-#### US-10.2 — Handle mixed-quality pages honestly
-
-- As a reader, I want PaperPilot to describe the capability of the current page so that one good page does not create a false promise for the whole document.
+- As a reader, I want the mentor's graph improvements to appear immediately so that the interaction remains fast.
 
 Acceptance criteria:
 
-- Each page exposes its strongest honest interaction state: exact selectable text, rendered-region only, or unavailable.
-- Moving between pages updates the capability message without changing previously retained source authority.
-- A page with scrambled or mismatched text downgrades to visual-region use rather than presenting that text as exact.
-- A page that cannot render disables explanation for that page only when the rest of the paper remains usable.
-- Product claims refer to admitted user-uploaded PDFs and page-level capabilities, not universal support for every PDF.
+- A valid agent mutation applies as one atomic graph revision.
+- A visible notice names the change and exposes **Undo** and **Review changes**.
+- Affected nodes and edges are highlighted without stealing focus.
+- Doing nothing leaves the revision applied.
+- The revision remains `unreviewed` informationally until the reader acknowledges or edits it; that status does not block use.
+- A validation, reducer, mandatory revision/inverse append, or projection-integration failure leaves the pre-command workspace intact and reports the rollback.
+- A later optional browser-snapshot quota/write failure does not invalidate an otherwise committed live revision. It shows **Not saved in this browser**, emits no false persistence event, and explains that byte-identical reupload cannot restore the unsaved change.
+
+#### US-7.2 — Add, edit, connect, and remove concepts
+
+- As a reader, I want the mentor to perform the map-maintenance work I ask for so that I can focus on understanding.
+
+Acceptance criteria:
+
+- The agent can add a grounded main idea and connect it to existing nodes in one command.
+- It can update bounded editable fields while preserving immutable identity and provenance.
+- It can create more than one typed edge between the same endpoint pair using explicit edge keys.
+- Removing a node tombstones that node and its incident edges as one reversible revision.
+- Removing an edge tombstones only that edge.
+- A paper-grounded node/edge without compatible active-paper anchors is rejected.
+- A mentor-background node is accepted only with its background authority visibly retained.
+
+#### US-7.3 — Resolve concurrent or stale edits honestly
+
+- As a reader, I want newer work protected so that an old agent view cannot silently overwrite it.
+
+Acceptance criteria:
+
+- Every mutation requires the graph revision/digest the agent read.
+- A stale revision applies no partial change and returns a conflict with the current revision.
+- Duplicate retries with the same caller-visible idempotency key and canonical command digest return the original result without duplicating entities.
+- Reusing an idempotency key with different command content fails; a new intent after a conflict uses a new key after the graph is reread.
+- In the authenticated port, entity revisions protect later reader edits from automatic remapping.
+
+### Epic 8: Use Undo and Redo as the soft check
+
+#### US-8.1 — Undo any agent graph or annotation change
+
+- As a reader, I want one-click Undo so that agent mistakes are easy to reverse without interrupting the flow beforehand.
+
+Acceptance criteria:
+
+- Undo is a human UI control and is not registered through WebMCP.
+- Undo of create removes exactly the created projection items.
+- Undo of update restores every prior editable value.
+- Undo of delete restores the node and all incident edges with the same IDs, grounding, and provenance.
+- Undo creates a new evidence revision; it does not erase the historical mutation.
+- The graph digest after Undo matches the semantic state before the original operation.
+
+#### US-8.2 — Redo when history has not diverged
+
+- As a reader, I want Redo so that I can compare a change without losing it.
+
+Acceptance criteria:
+
+- Redo reapplies the original forward operation as a new attributed revision.
+- The graph digest after Redo matches the semantic post-state of the original operation.
+- A new divergent edit after Undo clears or invalidates the redo branch with a clear message.
+- Redo never partially reapplies an invalid operation.
+- Undo/Redo availability is conveyed by disabled state, text, and accessible description—not color alone.
+
+### Epic 9: Learn from a graph-aware research mentor
+
+#### US-9.1 — Receive a predictable explanation
+
+- As an undergraduate reader, I want a stable explanation structure so that I can find the level of detail I need.
+
+Acceptance criteria:
+
+- Every valid explanation contains, in order: **Quick take**, **Where this fits in the paper**, **What you need first**, **How it works**, **Evidence in the paper**, **Related ideas in the map**, and **Limits and uncertainty**.
+- Quick take is open first; deeper sections use real headings and progressive disclosure.
+- Central jargon is defined rather than used unexplained.
+- The explanation does not move the PDF or focus automatically.
+- **Go to explanation** moves focus only after user activation.
+
+#### US-9.2 — Keep explanation authorities distinct
+
+- As a reader, I want to know which parts come from the paper and which parts come from the mentor so that I can evaluate the answer.
+
+Acceptance criteria:
+
+- Paper-grounded blocks cite issued spatial anchors.
+- Rendered-page observations remain distinct from exact document text.
+- Mentor interpretation and mentor background remain visibly labeled.
+- External sources remain separately labeled and unverified unless a later system explicitly verifies them.
+- Related graph items link to their node/edge details and source grounding.
+- A graph node's existence is never presented as proof that the paper or scientific community endorses it.
+
+#### US-9.3 — Explain mathematics and figures accessibly
+
+- As a reader, I want technical and visual material explained without removing the details that make it meaningful.
+
+Acceptance criteria:
+
+- A math explanation identifies the selected equation/text/region and defines the symbols it uses in words.
+- **How it works** describes reasoning step by step rather than only restating notation.
+- A figure explanation includes an accessible visual description labeled **Mentor interpretation**.
+- Visible features, inferred relationships, caption-grounded claims, broader interpretation, and limitations remain distinct.
+- The matching source anchor can be reopened from every relevant explanation block.
+
+### Epic 10: Follow the evidence and revision trail
+
+#### US-10.1 — Understand the simple trail
+
+- As a reader, I want an immediate summary of what happened so that provenance does not require technical expertise.
+
+Acceptance criteria:
+
+- The default trail can show: PDF loaded → paper indexed → structural map created → source anchored → WebMCP read → graph read/navigation → explanation staged → graph/annotation revision applied → Undo/Redo → human explanation decision.
+- Events appear only after the corresponding operation was actually observed.
+- Agent, system, and human actions are textually distinct.
+- Undo does not remove the original mutation event.
+- The trail never says **verified**, **true**, or **complete semantic map** without separate evidence.
+
+#### US-10.2 — Inspect technical evidence
+
+- As a reader or judge, I want details on demand so that I can audit a map change and its source.
+
+Acceptance criteria:
+
+- Evidence details expose PDF/document digest, page, anchor geometry, quote/region digest, annotation identity, graph base/result revision and digest, affected node/edge keys, forward/inverse summaries, tool/callback ID, operation ID, source coverage, actor, and timestamp authority.
+- Layout positions are omitted from semantic graph digests.
+- Client-observed, app-derived, agent-asserted, and human actions retain distinct authority labels.
+- Details include the explicit statement that a digest proves identity/integrity, not scientific truth.
+- No evidence view exposes raw PDF bytes, cookies, credentials, filesystem paths, hidden prompts, or private model reasoning.
+
+### Epic 11: Restore safely and prepare for later cross-paper work
+
+#### US-11.1 — Restore the same paper, never a lookalike
+
+- As a returning reader, I want my browser-local map to reopen only for the exact PDF so that provenance cannot drift across files.
+
+Acceptance criteria:
+
+- Local snapshots are keyed by PDF SHA-256 plus schema version.
+- Same filename/different digest creates a new workspace.
+- Snapshot parsing is closed and bounded; incompatible/corrupt state fails safely.
+- The UI labels local persistence and offers a clear-data action.
+- The original PDF is not stored inside graph/evidence JSON and is never rewritten.
+
+#### US-11.2 — Use future-ready identifiers without claiming cross-paper support
+
+- As the product owner, I want document-scoped evidence and collision-free concept keys so that later cross-paper graphs do not require replacing this work.
+
+Acceptance criteria:
+
+- Every source anchor carries one immutable paper/document reference.
+- Node and edge keys are globally collision-resistant strings and do not derive from labels or page numbers.
+- Optional canonical concept keys do not merge nodes automatically.
+- Current WebMCP and UI commands reject foreign-paper anchors/endpoints.
+- The UI never presents cross-paper relationships in this release.
+- Importing a second paper cannot mutate or hide the first paper's graph snapshot.
+
+### Epic 12: Make the complete journey accessible
+
+#### US-12.1 — Operate the primary flow by keyboard
+
+- As a keyboard user, I want to complete the core workflow independently.
+
+Acceptance criteria:
+
+- Upload, page navigation, zoom, supported text/region alternatives, annotation list, mentor request, graph outline, node/edge inspection, source navigation, Undo/Redo, evidence details, and explanation Save/Discard are keyboard operable.
+- Focus is visible and follows a stable logical order independent of the wide-screen visual placement.
+- Graph canvas focus does not trap the user; every action exists in the DOM outline.
+- Cancel/Escape restores focus to the control that opened selection or a modal.
+- Explanation arrival and graph mutations are announced without unexpected focus movement.
+
+#### US-12.2 — Understand the map and source with a screen reader
+
+- As a screen-reader user, I want the same concepts, relationships, sources, and changes available without interpreting the canvas.
+
+Acceptance criteria:
+
+- Paper, Mentor, Knowledge graph, and Evidence are named regions.
+- The graph outline exposes node type, label, authority, origin, relations, source count, and actions.
+- An annotation list exposes source type, page, quote/description, state, and linked graph items.
+- Source navigation announces page and region after movement.
+- Meaningful map/indexing milestones, tool callbacks, mutations, rollbacks, Undo/Redo, and explanation readiness use restrained live announcements.
+- At 200% zoom and a separate 320 CSS-pixel viewport, no required content or control disappears.
+- Reduced-motion preference removes nonessential layout animation and highlight pulsing.
 
 ## Edge Cases
 
-The following outcomes are product requirements, not optional diagnostics.
-
 | Situation | Required behavior | Prohibited behavior |
 | --- | --- | --- |
-| Library is empty | Show the promise, one primary upload action, limits, and privacy context | Show a fixture as if it belongs to the user |
-| User uploads a second unrelated paper | Show that paper's actual identity/pages and keep existing papers separate | Reuse a cached demo explanation or paper-specific configuration |
-| PDF is encrypted | Explain that an unlocked copy is required | Request or retain the password in the normal upload flow |
-| PDF is corrupt or cannot render | Identify the file/page problem and disable affected explanation actions | Substitute sample content or claim processing is still active forever |
-| PDF is valid but exceeds a published limit | State the relevant limit and a safe next action | Fail with a generic server error |
-| Some pages have exact text and others do not | Update capability per page | Apply one document-wide exact-text badge |
-| Text visually disagrees with the rendered page | Downgrade that selection path to **Derived from page image** or visual-only | Preserve exact-text authority because extraction technically returned a string |
-| Figure has no caption | Display **No caption identified** | Infer a caption and present it as document text |
-| Figure label is ambiguous | Show the ambiguity and allow page-level/region selection | Silently choose one label |
-| Figure spans pages | Identify the retained page(s) and limitation | Present one crop as the complete figure without warning |
-| User starts mentor interaction with no valid selection | Explain how to highlight text, choose a visual region, or use nonvisual options | Send unrelated page or library context automatically |
-| User changes selection during a request | Keep the request bound to its frozen source | Retarget the pending request |
-| User cancels and a result arrives late | Keep it separate and attached to the original source; do not auto-open | Treat it as the current explanation or save it |
-| Two valid follow-ups arrive out of order | Display each as its own proposal with its own source/activity trail | Reorder history in a way that implies one overwrote the other |
-| Duplicate staging is observed | Show one stable proposal or explicitly distinguish intentional repeats | Create indistinguishable duplicate saved notes |
-| WebMCP is absent | Retain selection, explain supported paths, and keep Reader usable | Display **Tools ready** or native success |
-| Tool registration fails | Display a distinct registration error and retry path | Reclassify the failure as unsupported without saying registration failed |
-| Tools are ready but no read occurs | Say nothing has been shared yet | Display **Mentor reading** |
-| Source read occurs but no stage occurs | Display **Selection shared; no explanation received** | Display **Explanation ready** |
-| Agent response is malformed | Reject it as an explanation, keep source for retry, and say nothing was saved | Render partial unvalidated fields as a trustworthy mentor card |
-| No external source is used | State **No external sources used** | Hide the section or imply citations exist |
-| External citation is broken or unverified | Preserve a visible warning during review and after save | Convert it to paper evidence or remove the warning on save |
-| User saves despite a citation warning | Save the explanation and retain the warning | Block all saving or imply the warning was resolved |
-| User discards a response | Announce discard, remove it from active review, create no note | Erase the fact of the human decision from the visible current trail before confirmation |
-| Save fails | Keep response/takeaway intact with **Not saved** and retry | Show **Saved by you** or clear the review form |
-| Authentication expires before decision | Require reauthentication without exposing the private proposal; resume for the same actor when possible | Lose the staged result silently or show it to another signed-in user |
-| Pending response exists on refresh | Restore it as **Awaiting your decision** for its staging actor | Promote it into saved notes |
-| Unfinished selection exists on refresh | Restore normal reading state, not a fake completed request | Present a local drag/highlight as staged evidence |
-| Connect ideas contains a duplicate | Prevent or label the duplicate | Count it as separate evidence without disclosure |
-| Connect ideas includes another paper | Reject the item and explain same-paper scope | Submit a cross-paper set |
-| Connect ideas exceeds a published bound | Identify the bound before submission and let the user remove items | Silently truncate the set |
-| Connect ideas changes during a request | Keep the submitted set frozen | Apply later additions/removals to the active request |
-| Selected items do not support a relationship | Mentor says the supplied evidence does not establish one | Fabricate a relationship from background knowledge and call it paper synthesis |
-| Source paper later becomes unavailable | Keep the saved explanation with **Source incomplete** and identify what cannot reopen | Pretend the source is still available or silently drop the note |
-| Local review fallback is used | Repeat **Local review—WebMCP was not invoked** in status, response, trail, and saved note | Use native WebMCP styling or count it as submission proof |
+| PDF has no outline | Build paper + page-range structural nodes and label heading detection uncertainty | Pretend detected sections are author-supplied outline entries |
+| PDF has unreliable or no text layer | Render pages, create page/region anchors, and show structural/visual-only coverage | Fabricate exact text or call the semantic map complete |
+| PDF exceeds 25 MiB or 200 pages | Reject with the published public-slice limit; otherwise index progressively with bounded work, progress, and cancellation | Freeze the UI, silently truncate the paper, or return the whole document through one tool call |
+| A page fails during indexing | Mark that page failed/limited while preserving other pages and honest coverage | Call whole-paper coverage complete |
+| User selects across pages | Ask for one page or create separate supported anchors | Collapse cross-page geometry into a false single region |
+| Highlight contains multiple lines/columns | Preserve separate quad/rectangle geometry | Use one bounding box containing unrelated text |
+| Text does not reconcile with page geometry | Downgrade to rendered-region authority | Preserve exact-text styling because a string was extracted |
+| Agent creates a paper-grounded node with no anchor | Reject with a grounding error | Store it as if supported by the paper |
+| Agent adds prerequisite knowledge | Accept only as visibly labeled mentor background | Attach paper authority without evidence |
+| Agent targets a stale graph revision | Reject atomically and return the current revision | Silently rebase or partially apply |
+| Duplicate mutation callback | Replay the original result | Create duplicate nodes/edges/revisions |
+| Agent tombstones a node with edges | Tombstone node and incident edges in one revision with a complete inverse | Leave dangling visible edges or destroy history |
+| User undoes a delete | Restore identical node/edge IDs, grounding, and provenance | Recreate lookalike entities with new identities |
+| User makes a new edit after Undo | Invalidate/clear Redo with an explanation | Reapply an incompatible stale future branch |
+| Mandatory revision/inverse commit fails | Roll back to the exact prior semantic workspace and announce it | Leave live state without its required inverse/history |
+| Optional browser snapshot write fails | Keep the valid live revision and show **Not saved in this browser** | Claim the change will restore after reupload or emit a false persistence event |
+| Agent asks to Undo/Redo | Explain that those controls belong to the reader | Expose them as WebMCP tools |
+| Agent supplies raw PDF coordinates | Reject the annotation command | Trust model-authored geometry |
+| Graph node has multiple sources | Offer a primary source plus all anchors | Imply one arbitrary source is the only evidence |
+| Source disappears or local state is corrupt | Keep the explanation/graph item with **Source incomplete** | Substitute a plausible anchor |
+| WebMCP is absent | Keep local Reader/map/annotation/Undo usable and show unavailable state | Display native callback evidence |
+| Tool registration partially fails | Dispose all tools and offer retry | Leave a misleading partial tool set active |
+| Read occurs but explanation does not | Show the read event and **No explanation received** | Display explanation-ready or saved state |
+| Explanation is malformed | Reject it without changing the graph | Render partial unvalidated content |
+| Graph mutation is valid but explanation malformed | Keep the separately committed graph revision and report explanation failure | Pretend both operations were one transaction if they were not |
+| User reuploads same filename/different bytes | Create a new digest-scoped workspace | Attach the prior graph |
+| Agent attempts a cross-paper link | Reject before mutation and name current same-paper scope | Accept because IDs are future-ready |
+| User looks for PDF export | No export control exists; explain overlays remain in PaperPilot if relevant | Offer a hidden or agent-callable annotated-PDF export |
+| Sigma fails to render | Keep the accessible graph outline fully functional | Make the graph unavailable to every user |
 
-## What We Are Building
+## What We Are Building For The Public Release
 
-The Tuesday feature-complete candidate includes all of the following product behaviors:
+1. **Paper-first anonymous Reader**
+   - arbitrary bounded PDF upload;
+   - dominant central multi-page PDF;
+   - no persistent visible transcript;
+   - continuous cross-page scroll, active-page locator, zoom, fit-width, loading and error states.
+2. **Spatial markup**
+   - text-layer selection and multiline quad anchors;
+   - page, figure, equation, and region anchors;
+   - PDF.js-aligned overlay and accessible annotation list.
+3. **Automatic whole-paper structure**
+   - full page index;
+   - outline/heading/page-range structural seed;
+   - coverage ledger and honest partial states.
+4. **Knowledge graph**
+   - Graphology semantic store;
+   - Sigma visual renderer;
+   - accessible outline;
+   - grounded main ideas, concepts, methods, results, prerequisites, figures, and equations.
+5. **Richer WebMCP surface**
+   - focus read;
+   - graph read;
+   - source navigation;
+   - graph patch;
+   - annotation patch over trusted anchors;
+   - graph-aware explanation stage.
+6. **Reversible agency**
+   - immediate atomic graph and annotation workspace revisions;
+   - visible attribution and diff;
+   - human-only Undo/Redo;
+   - stale-revision and rollback behavior.
+7. **Graph-aware mentor**
+   - seven teaching sections;
+   - text, math, figure, and connection explanations;
+   - source/graph links and authority labels.
+8. **Evidence and browser-local recovery**
+   - graph/annotation/tool/reversal events;
+   - PDF-digest-scoped local snapshots;
+   - truthful browser-local labels.
+9. **Accessibility and release proof**
+   - keyboard and screen-reader routes;
+   - reflow/reduced motion;
+   - cross-PDF and supported-client evidence.
 
-1. **Calm library and upload**
-   - empty and returning states;
-   - paper-agnostic admitted-PDF upload with published limits;
-   - honest validation, rendering, text-readiness, and failure states.
-2. **Page-based Reader**
-   - durable page navigation;
-   - page-level capability messaging;
-   - exact text selection when reliable;
-   - rendered whole-page, figure, equation, and region selection otherwise.
-3. **Accessible selection**
-   - pointer and keyboard paths;
-   - page description and identified figure/caption choices for nonvisual readers;
-   - sharing preview for every request.
-4. **Real WebMCP mentor handoff**
-   - truthful tools-ready state;
-   - observable bounded source-read and structured stage events;
-   - suggested prompts and normal browser-agent conversation;
-   - explicit unavailable, failed, cancelled, interrupted, and invalid-response behavior.
-5. **Structured research-mentor explanation**
-   - seven canonical sections;
-   - plain-language default;
-   - jargon, mathematics, paper connection, background knowledge, external sources, uncertainty;
-   - accessible figure/page descriptions;
-   - separate simpler/deeper/math follow-ups.
-6. **Selected-evidence synthesis**
-   - visible same-paper Connect ideas set;
-   - multiple passages/equations/figures/regions;
-   - genuine relationship synthesis or an explicit statement that the supplied evidence does not support one;
-   - one source edge per included item.
-7. **Progressively disclosed evidence trail**
-   - visible WebMCP activity in the default trail;
-   - exact versus derived versus mentor versus external authority at the point of use;
-   - technical metadata on demand;
-   - no overclaim about truth, agent reasoning, discovery, or citation authority.
-8. **Human review and durable notes**
-   - immutable mentor proposal;
-   - optional separate **My takeaway**;
-   - explicit **Save to notes** and **Discard**;
-   - actor-private pending proposals;
-   - refresh and source reopen behavior.
-9. **Primary-flow accessibility**
-   - semantic regions and headings;
-   - keyboard completion of primary tasks;
-   - screen-reader announcements and focus discipline;
-   - non-color authority and status distinctions;
-   - zoom/reflow and reduced-motion behavior.
-10. **Judge-facing proof**
-    - replaceable real-PDF flow;
-    - text, visual, synthesis, persistence, failure, and accessibility evidence;
-    - honest native versus local-fallback distinction.
+## What We Would Add Later
 
-## What We Would Add With More Time
+- Durable authenticated annotations, workspace revisions, explanation records, and actor-private history in Supabase.
+- Cross-paper concept links and workspace-level graph filtering.
+- User-reviewed entity resolution across papers.
+- Zotero/crawler/Scholar-assisted acquisition and metadata reconciliation.
+- Vector search only if structural/alias search proves insufficient.
+- Multi-user graph collaboration and conflict visualization.
+- OCR service and more reliable automatic figure/equation/caption detection.
+- Adaptive learning plans, multilingual explanation, text-to-speech, and audio tutoring.
+- An optional, explicitly requested annotated-PDF export—only after export re-enters scope and a fresh PDF-writer security/compatibility evaluation selects an implementation.
 
-The following ideas are intentionally deferred and must not be smuggled into the Tuesday acceptance gate:
+## Explicit Non-Goals For This Release
 
-- multilingual explanation and translation;
-- text-to-speech or a full audio tutor;
-- adaptive reading levels based on a persistent learner profile;
-- a prerequisite-concept graph or course-like learning path;
-- automatic high-confidence figure, panel, caption, and equation detection across PDF producers;
-- user-visible discarded-proposal history, undo, and bulk review;
-- cross-paper or whole-library synthesis;
-- collaborative annotation, discussion, shared mentor sessions, or instructor workflows;
-- automatic external-source retrieval verification or authority scoring;
-- broad note export, citation-manager export, and publication-ready writing tools;
-- new Zotero, crawler, discovery, or project-management work;
-- multiple mentor/model providers and routing controls;
-- offline mentor interaction;
-- full mobile visual-region editing parity;
-- comprehensive accessibility conformance claims beyond the tested primary flow;
-- support for encrypted, corrupt, malicious, unbounded, or non-renderable PDFs.
+- No visible transcript pane.
+- No PDF byte rewriting or annotated-PDF export.
+- No cross-paper graph UI or synthesis.
+- No vector database/RAG requirement.
+- No crawler, new Zotero integration, or Scholar scraping in the critical path.
+- No server-side explanation model.
+- No claim of perfect automatic semantic mapping.
+- No automatic scientific verification or hallucination guarantee.
+- No permanent hard delete through WebMCP.
+- No agent-callable Undo/Redo.
+- No claim that Graphology, Sigma, callback receipts, or digests establish scientific truth.
 
 ## Submission Proof Points
 
 ### WebMCP leverage
 
-- The browser agent receives the user's bounded paper selection through an actual PaperPilot WebMCP read callback.
-- The agent returns a structured explanation through an actual PaperPilot WebMCP staging callback.
-- The page shows what PaperPilot made available and what callbacks it observed without claiming access to hidden agent reasoning.
-- No agent-callable tool may save, accept, discard, or verify the explanation.
-- The same general tool flow works for text, a figure/region, and a same-paper synthesis set.
+- The agent reads the reader's exact spatial focus rather than a detached transcript.
+- It reads the current graph/revision and can navigate the paper to issued sources.
+- It makes a real source-grounded graph mutation through WebMCP.
+- The reader immediately sees the effect and can Undo/Redo it.
+- It stages a graph-aware mentor explanation linked to paper anchors and concepts.
+- PaperPilot records only callbacks it actually observes and exposes no PDF export, hard purge, verification, or human Undo/Redo tool.
 
-### Execution
+### User value
 
-- A previously unseen admitted PDF completes upload, selection, real WebMCP activity, explanation review, save, refresh, and source reopen.
-- A separate figure-rich paper completes whole-figure and subregion paths.
-- A weak-text or scanned paper remains useful through visual-region interaction with derived authority visible.
-- Unsupported-PDF and unavailable-WebMCP paths fail clearly without fixture substitution or false success.
-- The primary demonstration flow is keyboard operable and has a documented screen-reader walkthrough.
+- The paper stays central while explanations and the map remain one interaction away.
+- The automatic structural map makes an unfamiliar paper navigable immediately.
+- Spatial annotations remove the location ambiguity created by transcript-based interaction.
+- Grounded graph links teach relationships and prerequisites without hiding source boundaries.
+- Reversible agency reduces the cost of a mistaken graph edit without forcing approval modals before every useful action.
 
-### Potential impact
+### Accessibility
 
-- The workflow removes the need to copy scientific content into a disconnected chatbot and manually reconstruct context.
-- Undergraduate readers receive prerequisite teaching without losing the original source.
-- Figure descriptions and nonvisual controls expand access to information that is often locked in visual-only scientific communication.
-- Durable notes preserve the reader's own takeaway separately from the mentor's explanation.
+- A keyboard user can complete the full flow.
+- A screen-reader user can inspect the graph and annotations without the visualization canvas.
+- Figure/page explanation has a nonvisual path.
+- Authority, origin, mutation state, and tombstone state do not depend on color.
 
-### Creativity and ambition
+### Honest claims
 
-- PaperPilot treats every word, equation, passage, figure, and selected region as an agent-native teaching surface.
-- Selected-evidence synthesis lets a reader deliberately connect multiple parts of one paper without pretending the agent analyzed an invisible whole document.
-- The visible evidence trail turns provenance into part of the learning experience rather than a back-office audit log.
-- The central visual demonstrates the source, mentor, WebMCP activity, and human decision at once.
+PaperPilot may claim that it:
 
-### Claims PaperPilot may make in the submission
+- rendered the uploaded PDF and retained the identified source anchor;
+- created a structural map covering the reported pages;
+- observed named WebMCP callbacks;
+- applied a particular graph revision and its inverse/reapplied revision;
+- linked graph items and explanation blocks to issued sources; and
+- preserved or restored a browser-local snapshot for the exact PDF digest.
 
-- PaperPilot retained the displayed document selection or rendered visual source.
-- PaperPilot observed its WebMCP source-read and explanation-stage callbacks.
-- The displayed mentor response arrived through the declared path and remains unchanged in the saved note.
-- The reader explicitly chose to save or discard it.
-- Authority labels and evidence details help a reader inspect unsupported interpretation.
+PaperPilot must not claim that:
 
-### Claims PaperPilot must not make
-
-- Every PDF works, every page has accurate text, or every figure is detected.
-- PaperPilot guarantees that the mentor does not hallucinate.
-- A cited source is authoritative or proves the claim.
-- A content digest proves truth, authorship, legality, or public availability.
-- PaperPilot observed the browser agent's private reasoning or tool discovery when it did not.
-- A local-review fallback is proof of WebMCP execution.
-- The selected-evidence synthesis represents the entire paper unless the entire paper was actually supplied under a later explicit contract.
+- every PDF has reliable text or a complete semantic map;
+- an agent-created graph is scientifically correct;
+- the agent privately reasoned from every returned source;
+- a digest proves truth;
+- the PDF was modified or exported;
+- browser-local state is durable across devices; or
+- cross-paper graphing exists because the identifiers are future-ready.
 
 ## Release Acceptance Matrix
 
-The product is ready to enter technical release verification only when every row below has observable evidence.
-
 | Proof path | Required observable outcome |
 | --- | --- |
-| Previously unseen born-digital paper | Exact text selection → real WebMCP read → valid staged explanation → review → save → refresh/reopen |
-| Different figure-rich paper | Whole-figure and rectangular-region explanation, accessible description, full-context/subregion evidence |
-| Weak-text or scanned paper | Rendered-region explanation remains available; all derived wording is labeled |
-| Same-paper Connect ideas | At least two identified source items produce a relationship synthesis or an explicit insufficient-evidence result; complete frozen source set remains visible |
-| Page-level capability mix | Exact-text and visual-only pages are labeled independently within one paper |
-| Unsupported PDF | Explicit reason and next action; no fixture or replacement content |
-| Native WebMCP unavailable | Honest unavailable state; selection and saved notes remain usable; no native-success styling |
-| Registration failure | Distinct error and retry; no **Tools ready** state |
-| Read without stage | **Selection shared; no explanation received**; no explanation or save |
-| Invalid mentor response | Rejected as invalid; source preserved; nothing saved |
-| In-flight selection change | Result remains attached to the original frozen selection |
-| External-source warning | Warning visible in review and after save; citation never appears as paper evidence |
-| Save failure and retry | Proposal/takeaway preserved; one eventual note; no premature success |
-| Refresh with pending proposal | Same staging actor sees **Awaiting your decision**; no workspace-wide disclosure |
-| Keyboard path | Upload, navigation, selection alternative, handoff, review, evidence, save/discard complete without pointer input |
-| Screen-reader path | Processing, selection, mentor activity, explanation readiness, evidence categories, and decisions are announced and navigable in stable order |
-| Local review fallback | Label persists in status, explanation, evidence, and saved note and does not count as native proof |
+| Previously unseen born-digital paper A | Multi-page centered PDF, no transcript, spatial text anchor, structural map coverage, real WebMCP read/graph/explain/mutation, Undo/Redo, node-to-source navigation |
+| Different born-digital paper B | Same workflow without code/config change and with independent digest-scoped state |
+| Figure-rich paper | Whole-figure or region anchor, accessible description, grounded graph item, source reopen |
+| Weak-text/scanned paper | Pages render, page/region anchors work, structural visual-only coverage is honest, semantic completeness is not claimed |
+| Unsupported PDF | Specific failure and no substitute content |
+| Whole-paper coverage | Every admitted page is mapped, limited, or failed; no eligible page is silently omitted |
+| Agent create/update/delete | Each operation is real, bounded, source/authority valid, and produces one revision |
+| Stale mutation | Atomic conflict, no partial graph change, current revision returned |
+| Undo/Redo | Exact semantic digests restore before/after states while all historical events remain |
+| Graph ↔ PDF | Node/edge navigation focuses real annotations; annotation selection focuses linked graph items |
+| Explanation | Seven sections, graph/source links, distinct paper/background/interpretation authority |
+| WebMCP unavailable | Local Reader/map remains usable and no native-success event appears |
+| Graph renderer unavailable | Accessible graph outline retains inspection/navigation/actions |
+| Local restore | Same digest restores; same filename/different digest does not |
+| Cross-paper attempt | Rejected before mutation; no current cross-paper claim |
+| No export | No annotated-PDF control, endpoint, command, or tool; original digest remains unchanged |
+| Keyboard/screen reader | Primary journey, graph outline, annotations, navigation, mutation notice, Undo/Redo, and evidence are operable and announced |
 
 ## PRD Exit Criteria
 
-This PRD is satisfied when the implemented product demonstrates every Tuesday-scope behavior above or explicitly fails the build checkpoint. Visual polish cannot substitute for a missing source-selection, real-WebMCP, evidence, human-decision, persistence, paper-agnostic admitted-PDF, synthesis, or accessibility path.
+This PRD is satisfied only when the public release demonstrates the complete paper → spatial anchor → bounded WebMCP reads → explanation/graph action → reversible revision → source navigation → evidence loop across unrelated PDFs, or explicitly reports a red gate.
 
-The technical Spec must preserve these user-visible distinctions even if it chooses a narrower internal implementation. Any technical constraint that would remove a required product behavior must return to this PRD for an explicit scope decision rather than being silently reclassified as complete.
+Visual polish cannot substitute for missing source geometry, whole-paper coverage, real WebMCP navigation/mutation callbacks, grounding, Undo/Redo, accessibility, or honest failure behavior. Authenticated Supabase persistence remains the next port after the public vertical slice is proven; its absence must remain visible rather than simulated.

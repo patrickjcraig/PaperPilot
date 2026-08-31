@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Removable PaperPilot WebMCP six-capability contract spike." />
+    <title>PaperPilot — WebMCP contract spike</title>
+    <link rel="stylesheet" href="/vendor/pdfjs/pdf_viewer.css" />
+    <link rel="stylesheet" href="./spike.css" />
+    <script src="/vendor/graphology/graphology.umd.min.js"></script>
+    <script src="/vendor/sigma/sigma.min.js"></script>
+    <script type="module" src="./app.mjs"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#contract-workspace">Skip to contract workspace</a>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">PaperPilot development diagnostic</p>
+        <h1>Watch WebMCP actions land on exact paper evidence</h1>
+      </div>
+      <p class="boundary">Official arXiv v7 bytes · real PDF.js text geometry · no PDF export</p>
+    </header>
+
+    <main id="contract-workspace" tabindex="-1">
+      <section class="status-grid" aria-label="Contract status">
+        <div><span>WebMCP</span><strong id="webmcp-status" role="status" aria-live="polite">Connecting…</strong></div>
+        <div><span>Workspace</span><strong id="workspace-status">Revision 1</strong></div>
+        <div><span>Paper focus</span><strong id="focus-status">Exact text</strong></div>
+        <div><span>Graph view</span><strong id="renderer-status">Starting…</strong></div>
+      </section>
+
+      <section class="workspace">
+        <article class="paper-panel" aria-labelledby="paper-heading">
+          <header class="panel-heading">
+            <div>
+              <p class="eyebrow">Verified PDF render</p>
+              <h2 id="paper-heading">Attention Is All You Need</h2>
+            </div>
+              <p>The publication stays centered as one continuous paper. Provenance marks bind to its real selectable text.</p>
+          </header>
+
+          <div id="paper-stage" class="paper-stage">
+            <div class="pdf-toolbar" aria-label="PDF viewer controls">
+              <div class="pdf-identity">
+                <span><span class="pdf-dot" aria-hidden="true"></span>PDF.js · arXiv:1706.03762v7</span>
+                <span id="pdf-status" role="status" aria-live="polite">Verifying exact bytes…</span>
+              </div>
+              <div class="pdf-controls">
+                <label for="pdf-page-number">Jump to page</label>
+                <input id="pdf-page-number" type="number" min="1" max="15" value="1" inputmode="numeric" />
+                <span>of <strong id="pdf-page-count">15</strong></span>
+                <span id="pdf-active-page-description" class="pdf-active-page">Page 1 is centered</span>
+                <span class="pdf-control-divider" aria-hidden="true"></span>
+                <button id="pdf-zoom-out" type="button" aria-label="Zoom PDF out">−</button>
+                <output id="pdf-zoom-label" aria-live="polite">100%</output>
+                <button id="pdf-zoom-in" type="button" aria-label="Zoom PDF in">+</button>
+                <button id="pdf-fit-width" type="button">Fit width</button>
+              </div>
+            </div>
+
+            <div
+              id="pdf-viewer"
+              class="pdf-scrollport"
+              tabindex="0"
+              role="region"
+              aria-label="Attention Is All You Need PDF viewer"
+              aria-busy="true"
+            >
+              <section id="pdf-page-surface" class="pdf-page-surface" tabindex="-1" aria-label="Loading PDF page 1 of 15">
+                <canvas id="pdf-canvas" aria-hidden="true"></canvas>
+                <div id="pdf-text-layer" class="textLayer"></div>
+                <div id="pdf-annotation-overlay" class="pdf-annotation-overlay" aria-hidden="true"></div>
+              </section>
+              <div id="pdf-loading" class="pdf-loading" role="status" aria-live="polite">
+                Loading and verifying the exact 15-page paper for continuous reading…
+              </div>
+            </div>
+
+            <div class="paper-evidence-strip">
+              <div>
+                <p class="source-kicker">Page-owned provenance</p>
+                <p id="pdf-source-status">The source anchor will appear only after the PDF text matches exactly.</p>
+              </div>
+              <button type="button" data-focus-anchor="anchor:text:attention">Go to exact source</button>
+              <div id="paper-annotation-summary" class="source-annotation-overlay" role="list" aria-label="Annotations bound to the exact paper passage"></div>
+            </div>
+
+            <form id="reader-annotation-form" class="reader-annotation-composer" aria-labelledby="reader-annotation-heading">
+              <div class="annotation-composer-intro">
+                <p class="source-kicker">Reader → annotation → graph</p>
+                <h3 id="reader-annotation-heading">Turn your highlight into an idea</h3>
+                <p id="reader-selection-status" role="status" aria-live="polite">Select text directly on any rendered PDF page, then name the idea you want to remember.</p>
+              </div>
+              <label>
+                Idea label
+                <input id="reader-annotation-label" name="label" type="text" maxlength="120" required placeholder="e.g. Attention removes recurrence" />
+              </label>
+              <label>
+                Node type
+                <select id="reader-node-kind" name="nodeKind">
+                  <option value="concept">Concept</option>
+                  <option value="main_idea">Main idea</option>
+                  <option value="term">Term</option>
+                  <option value="method">Method</option>
+                  <option value="result">Result</option>
+                  <option value="prerequisite">Prerequisite</option>
+                  <option value="equation">Equation</option>
+                  <option value="figure">Figure</option>
+                </select>
+              </label>
+              <button id="create-reader-annotation" type="submit">Add highlight to the graph</button>
+              <p class="annotation-composer-boundary">PaperPilot mints the source geometry. The graph records this as reader-authored; WebMCP can search and revise the issued node, but it cannot invent the highlight coordinates.</p>
+            </form>
+
+            <details class="visual-diagnostic" aria-labelledby="visual-heading">
+              <summary>Controlled visual evidence diagnostic — separate from the paper</summary>
+              <div class="visual-diagnostic-body">
+                <header>
+                <div>
+                  <p class="source-kicker">Sealed visual A/B · developer diagnostic</p>
+                  <h3 id="visual-heading">Can the named client inspect the visible region?</h3>
+                </div>
+                <button id="reveal-visual-key" type="button" disabled>Reveal key after trial</button>
+                </header>
+              <p>
+                The tool returns only a generic region locator. Pixel details are drawn on canvas
+                and omitted from tool JSON, captions, labels, and graph data.
+              </p>
+              <div class="visual-regions">
+                <figure id="visual-region-a" class="visual-region" tabindex="-1">
+                  <canvas id="visual-canvas-a" width="360" height="210" aria-hidden="true"></canvas>
+                  <figcaption>Diagnostic region A</figcaption>
+                  <button type="button" data-focus-anchor="anchor:visual:a">Focus region A</button>
+                </figure>
+                <figure id="visual-region-b" class="visual-region" tabindex="-1">
+                  <canvas id="visual-canvas-b" width="360" height="210" aria-hidden="true"></canvas>
+                  <figcaption>Diagnostic region B</figcaption>
+                  <button type="button" data-focus-anchor="anchor:visual:b">Focus region B</button>
+                </figure>
+              </div>
+              <p class="commitment">
+                Sealed answer commitment:
+                <code id="visual-commitment">Computing…</code>
+              </p>
+              <p id="visual-key" class="sealed" aria-live="polite">Key sealed. Ask the client to read one visual region before revealing it.</p>
+              <div class="visual-proof-controls">
+                <button id="confirm-visual-proof" type="button" disabled>
+                  Mark controlled pixel-use proof passed
+                </button>
+                <span id="visual-mode">Evidence mode: locator_only</span>
+              </div>
+              </div>
+            </details>
+
+            <div class="agent-presence-layer" aria-hidden="true">
+              <div id="agent-thread" class="agent-thread"></div>
+              <div id="agent-cursor" class="agent-cursor at-text is-ready" data-agent-state="ready" aria-hidden="true">
+                <span class="cursor-pencil"></span>
+                <span id="agent-cursor-label" class="agent-cursor-label">Mentor ready</span>
+              </div>
+            </div>
+          </div>
+          <p id="agent-announcement" class="sr-only" role="status" aria-live="polite" aria-atomic="true">Mentor cursor ready. It will visualize observed WebMCP callbacks.</p>
+        </article>
+
+        <aside class="activity-panel" aria-labelledby="activity-heading">
+          <header>
+            <p class="eyebrow">Research mentor</p>
+            <h2 id="activity-heading">Observed callback work</h2>
+          </header>
+          <section class="agent-action-card" aria-labelledby="agent-action-heading">
+            <div class="agent-action-title">
+              <span class="agent-badge" aria-hidden="true">PP</span>
+              <div>
+                <h3 id="agent-action-heading">Provenance pointer</h3>
+                <p id="agent-action-status">Ready for an observed callback</p>
+              </div>
+            </div>
+            <p class="agent-truth-note">This visualizes callback effects. It does not expose private model reasoning.</p>
+            <button id="replay-agent-action" type="button" disabled>Replay callback trace</button>
+          </section>
+          <div class="button-row">
+            <button id="register-tools" type="button">Register tools</button>
+            <button id="dispose-tools" type="button">Dispose tools</button>
+            <button id="human-undo" type="button">Human Undo</button>
+          </div>
+          <p class="hint">
+            Ask the browser agent to read focus and graph, navigate, stage an explanation,
+            and apply one graph and one annotation change. Undo is deliberately UI-only.
+          </p>
+          <ol id="activity-list" tabindex="0" aria-label="Observed WebMCP callback receipts"></ol>
+          <details>
+            <summary>Frozen tool surface</summary>
+            <ol id="tool-list"></ol>
+          </details>
+          <details>
+            <summary>Frozen contract manifest</summary>
+            <dl class="contract-manifest">
+              <div><dt>Schema set SHA-256</dt><dd><code id="schema-set-hash">Computing…</code></dd></div>
+              <div><dt>Input / result ceilings</dt><dd id="byte-ceilings">32 KiB / 48 KiB</dd></div>
+              <div><dt>Runtime pins</dt><dd id="runtime-pins">Loading…</dd></div>
+              <div><dt>Visual evidence</dt><dd>locator_only until a controlled human-reviewed A/B pass</dd></div>
+            </dl>
+          </details>
+          <details>
+            <summary>Last structured result</summary>
+            <pre id="last-result">No callback observed yet.</pre>
+          </details>
+        </aside>
+
+        <aside class="graph-panel" aria-labelledby="graph-heading">
+          <header>
+            <p class="eyebrow">Graphology model · Sigma renderer</p>
+            <h2 id="graph-heading">Graph &amp; annotations</h2>
+          </header>
+          <form id="graph-search-form" class="graph-search" role="search" aria-labelledby="graph-search-heading">
+            <div>
+              <h3 id="graph-search-heading">Find an idea in this paper</h3>
+              <p>Human search uses the same bounded label-and-summary matching exposed by <code>paperpilot.read_graph</code>.</p>
+            </div>
+            <label class="sr-only" for="graph-search-query">Search graph nodes</label>
+            <div class="graph-search-row">
+              <input id="graph-search-query" type="search" maxlength="120" placeholder="Search concepts, methods, or results" />
+              <button type="submit">Search</button>
+              <button id="clear-graph-search" type="button">Clear</button>
+            </div>
+            <p id="graph-search-status" role="status" aria-live="polite">Showing the whole map.</p>
+            <ul id="graph-search-results" aria-label="Graph search results"></ul>
+          </form>
+          <div id="sigma-container" class="sigma-container" aria-hidden="true"></div>
+          <section aria-labelledby="outline-heading">
+            <h3 id="outline-heading">Accessible graph outline</h3>
+            <ul id="graph-outline"></ul>
+          </section>
+          <section aria-labelledby="annotation-heading">
+            <div class="section-heading-row">
+              <h3 id="annotation-heading">Annotations</h3>
+              <span id="annotation-count" class="count-chip">0</span>
+            </div>
+            <p class="annotation-boundary">The demo fixture returns after reload. Live agent edits remain memory-only in this spike.</p>
+            <ul id="annotation-list"><li>Loading annotation fixture…</li></ul>
+          </section>
+        </aside>
+      </section>
+    </main>
+  </body>
+</html>
