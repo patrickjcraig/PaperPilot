@@ -4,7 +4,7 @@
 
 This record covers guided checklist item 6: Graphology/Sigma navigation, the complete accessible graph outline, and presentation-only annotation/node arrangement. It does not claim completion of the remaining reducer migration, mentor provenance, recovery/accessibility release matrix, video, or submission tasks.
 
-Local interaction and automated verification passed. Public publication and its fresh callback evidence are recorded separately below when verified.
+Local interaction, automated verification, and the fresh public native-WebMCP smoke test passed. This is an item-6 checkpoint, not the final all-epic release.
 
 ## Tested environment
 
@@ -80,4 +80,23 @@ Review also corrected the previously hardcoded `focus_source.alternativeCount`: 
 
 ## Public publication
 
-Publication has not yet been verified for this checkpoint. Do not use this section as evidence of a live release until its commit, Pages run, content fingerprint and fresh public callbacks are recorded.
+Published source commit: [`ef26b2a6a7d6c9b4e36135fdb2d11b226747ec8f`](https://github.com/patrickjcraig/PaperPilot/commit/ef26b2a6a7d6c9b4e36135fdb2d11b226747ec8f).
+
+Successful clean-checkout deployment: [Pages run 33585235818](https://github.com/patrickjcraig/PaperPilot/actions/runs/33585235818). The job passed WebMCP typechecking, the complete contract/PDF suite and safe/reproducible packaging before publishing. GitHub emitted a non-blocking action-runtime deprecation notice; the deployment itself succeeded.
+
+Public URL: [PaperPilot](https://patrickjcraig.github.io/PaperPilot/webmcp/). The loaded HTML referenced the new app, Graphology and Sigma assets with content fingerprint `35f2fe9ee857a4e1399683b43beae3a0486799d193a8f94d0cb1f08b9b0eaf4e`, matching the tested local package. The normal **Open the live demo** button fetched and indexed Attention v7 successfully; no local file chooser was needed for this public run.
+
+All six capabilities were registered and actually invoked in this fresh public tab:
+
+| Capability/check | Public receipt and outcome |
+| --- | --- |
+| `read_graph` | `callback:80a956c6-57da-4b44-9f43-e2e384ce2510`; all 15 pages structurally navigable, 21 baseline nodes/20 edges. |
+| `focus_source` | `callback:77de9d7c-a6cf-4375-80ec-168d7dadd428`; exact requested scaling edge selected and its page-4 sentence focused. |
+| `read_focus` | `callback:52e918f9-dfe9-4bb7-b61c-4aaa9076f0d0`; returned that exact source and its normalized rectangle/anchor digest. |
+| `apply_graph` | `callback:a72e0e8c-2ded-48c5-8ce4-af177b7887aa`; revision 1 → 2 created an unreviewed two-source reading-guide node and a grounded relationship. |
+| Multiple-source focus | `callback:b83ff487-cdbd-4dd5-a2a7-27ac48ab8339`; returned `alternativeCount: 1`, selected the exact new node, and exposed both source buttons. |
+| `apply_annotation` | `callback:9ae51d14-01de-4a26-a67a-f1dad096e1cb`; revision 2 → 3 created a question annotation bound to the issued scaling sentence and linked node/edge IDs. |
+| Human Undo/Redo | Native reads `callback:699577a9-d747-46d5-9794-9ea15916f024` and `callback:bd2aaab7-30d2-4549-854b-b70705693dfb` reproduced the annotation's exact before/after workspace digests. |
+| `stage_explain` | `callback:efb732d2-7ffb-4a3c-9a3e-6842b0540de6`; staged all seven mentor sections, explicitly distinguishing paper evidence, teaching background, unreviewed graph interpretation and limitations. Nothing was saved or verified. |
+
+The public nudge step retained the prior semantic digest and exact source object. Final state showed the 22-node/21-edge graph, its new reading guide, the exact PDF question mark and the staged mentor note. Warning/error logs were empty, storage remained **Not saved · active tab only**, and the test viewport override was reset. The public repository was independently confirmed public with an MIT license. No submission, legal acknowledgement, new database deployment, or user-data deletion occurred.
