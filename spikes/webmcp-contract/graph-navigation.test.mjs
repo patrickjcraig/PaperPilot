@@ -5,7 +5,7 @@ import vm from "node:vm";
 import { MultiDirectedGraph } from "graphology";
 import ts from "typescript";
 
-import { captureWebmcpInput, createSpikeState, createToolSuite, graphNodeReferencesAnchor } from "./contracts.mjs";
+import { applyReaderAnnotation, captureWebmcpInput, createSpikeState, createToolSuite, graphNodeReferencesAnchor, mintReaderAnchor, redoLastHumanChange, undoLastHumanChange } from "./contracts.mjs";
 import { projectGraphView } from "./graph-view-model.mjs";
 import { annotationAnchorId, instrumentWebmcpTools, resolveObservedAnchor } from "./webmcp-observer.mjs";
 
@@ -23,6 +23,8 @@ class ElementStub {
   textContent = "";
   append(...children) { this.children.push(...children); }
   setAttribute(name, value) { this.attributes.set(name, value); }
+  scrollIntoView() {}
+  focus() {}
   addEventListener(name, callback) { this.handlers.set(name, callback); }
   click() { return this.handlers.get("click")?.(); }
 }
@@ -84,7 +86,7 @@ function navigationHarness(state = basicState(), { actualEnsure = false } = {}) 
     renderLastResult() {}, markSnapshotDirty() {}, showToolRequest() {}, showToolResult() {},
     prefersReducedMotion: () => true,
     paperViewer: null,
-    focusElementForAnchor: (anchorId) => ({ anchorId }),
+    focusElementForAnchor: (anchorId) => Object.assign(new ElementStub(), { anchorId }),
     renderFocus(options) { destinations.push({ anchorId: state.focusAnchorId, ...options }); context.synchronizeGraphSourceFocus(); },
   });
   const names = ["activeGraphNodeKeys", "graphSourceIds", "graphNodeLabel", "invalidateGraphNavigation", "isCurrentGraphNavigation",
@@ -96,6 +98,92 @@ function navigationHarness(state = basicState(), { actualEnsure = false } = {}) 
     vm.runInContext(`"use strict";\n${appFunctions.get(name)}`, context, { filename: `app.mjs:${name}` });
   }
   return { context, state, activity, fits, destinations, setEnsure: (handler) => { ensure = handler; } };
+}
+
+function renderedNavigationHarness(state) {
+  const h = navigationHarness(state, { actualEnsure: true });
+  const scrolls = [], keyboardFocuses = [], targets = new Map(), pages = new Map();
+  let visiblePage = 1;
+  const element = (pageNumber, anchorId = null) => Object.assign(new ElementStub(), {
+    hidden: false, isConnected: true, classList: { toggle() {} },
+    scrollIntoView() { visiblePage = pageNumber; scrolls.push({ kind: "anchor", pageNumber, anchorId }); },
+    focus() { keyboardFocuses.push({ pageNumber, anchorId }); },
+  });
+  for (let page = 1; page <= state.paper.pageCount; page += 1) pages.set(page, element(page));
+  for (const [anchorId, anchor] of state.anchors) {
+    if (anchor.sourceKind !== "whole_page") targets.set(anchorId, element(anchor.pageIndex + 1, anchorId));
+  }
+  Object.assign(h.context.elements, {
+    pdfPageSurface: pages.get(1), paperStage: pages.get(1), textSource: null, visualRegionA: null, visualRegionB: null,
+    focusStatus: new ElementStub(), primarySourceButton: new ElementStub(), revealVisualKey: new ElementStub(), visualKey: new ElementStub(),
+  });
+  h.context.document.querySelectorAll = () => [...targets.values()];
+  h.context.paperViewer = {
+    getAnchorTarget: (anchorId) => targets.get(anchorId), getPageSurface: (page) => pages.get(page),
+    async showPage(page) { visiblePage = page; scrolls.push({ kind: "page", pageNumber: page }); return pages.get(page); },
+    async focusAnchor(anchorId, options) {
+      assert.equal(options.scrollIntoView, false, "The final guarded app target owns scrolling.");
+      assert.equal(options.moveKeyboardFocus, false);
+      return targets.get(anchorId);
+    },
+  };
+  for (const name of ["focusElementForAnchor", "renderFocus"]) {
+    vm.runInContext(appFunctions.get(name), h.context, { filename: `app.mjs:${name}` });
+  }
+  state.onNavigate = async (anchor, options) => {
+    const beforeFocus = state.focusAnchorId;
+    await h.context.navigateObservedPaperSource(anchor, options);
+    assert.equal(state.focusAnchorId, beforeFocus, "Only the tool commits semantic focus after successful navigation.");
+  };
+  state.onStateChange = () => h.context.renderFocus();
+  return { ...h, scrolls, keyboardFocuses, targets, pages, visiblePage: () => visiblePage };
+}
+
+for (const sourceKind of ["exact_text", "visual_region"]) {
+  test(`real native ${sourceKind} source navigation after reader Undo/Redo scrolls the requested page, not the older semantic focus`, async () => {
+    let sequence = 0;
+    const state = await createSpikeState(MultiDirectedGraph, {
+      paper: { paperRef: `paper:sha256:${"c".repeat(64)}`, filename: "unrelated-three-page.pdf", documentSha256: "c".repeat(64), pageCount: 3 },
+      textAnchor: null, id: (prefix) => `${prefix}:navigation:${++sequence}`,
+    });
+    const baselineFocus = state.focusAnchorId;
+    const beforeDigest = state.graphDigest;
+    const anchor = await mintReaderAnchor(state, {
+      pageIndex: 2, sourceKind, normalizedBounds: [{ x: 0, y: 0, width: 1, height: 1 }],
+      pageViewBox: [0, 0, 600, 800], pageRotation: 0,
+      ...(sourceKind === "exact_text" ? { exactText: "A bounded source on the third page.", prefix: "Earlier context.", suffix: "Later context." } : {}),
+    });
+    const created = await applyReaderAnnotation(state, {
+      baseWorkspaceRevision: state.workspaceRevision, baseWorkspaceDigest: state.workspaceDigest, anchor,
+      annotation: { kind: sourceKind === "visual_region" ? "region" : "highlight", label: "Third-page source", ...(sourceKind === "visual_region" ? { body: "A reader description of the whole third page." } : {}) },
+      node: { kind: sourceKind === "visual_region" ? "figure" : "concept", label: "Third-page source", summary: "A reader-authored source reference.", salience: 0.5 },
+    });
+    assert.equal(created.status, "applied_reversible");
+    const afterDigest = state.graphDigest;
+    state.focusAnchorId = anchor.anchorId; // The existing human submit UI selects its completed annotation.
+    await undoLastHumanChange(state); assert.equal(state.graphDigest, beforeDigest);
+    await redoLastHumanChange(state); assert.equal(state.graphDigest, afterDigest);
+    assert.equal(state.focusAnchorId, baselineFocus, "The retained edit restores the older page-1 focus.");
+    const h = renderedNavigationHarness(state);
+    const suite = h.context.instrumentTools(createToolSuite(state));
+    const tool = suite.find(({ name }) => name === "paperpilot.focus_source");
+    const result = await tool.execute({ targetType: "node", targetId: created.nodeKey });
+    assert.equal(result.status, "focused"); assert.equal(result.pageIndex, 2);
+    assert.equal(state.focusAnchorId, anchor.anchorId);
+    assert.equal(h.visiblePage(), 3, "A focused receipt must correspond to the visible third PDF page.");
+    assert.equal(h.scrolls.some(({ pageNumber }) => pageNumber === 1), false, "No final scroll may target the old semantic focus.");
+    assert.match(h.context.elements.focusStatus.textContent, /^3 · /u);
+    assert.equal(h.keyboardFocuses.length, 0, "Native source navigation does not steal keyboard focus.");
+    const scrollCount = h.scrolls.length;
+    const read = await suite.find(({ name }) => name === "paperpilot.read_focus").execute({});
+    assert.equal(read.status, "ready", JSON.stringify(read));
+    assert.equal(read.focus.pageIndex, 2); assert.equal(h.visiblePage(), 3);
+    assert.equal(h.scrolls.length, scrollCount, "A subsequent passive read must not move the PDF.");
+    assert.equal(state.graphDigest, afterDigest);
+    await h.context.paperViewer.showPage(1);
+    assert.equal((await tool.execute({ targetType: "node", targetId: created.nodeKey })).status, "focused");
+    assert.equal(h.visiblePage(), 3, "Repeated navigation also works when the locator moved but semantic focus did not.");
+  });
 }
 
 test("node and edge navigation record success only after a real destination and preserve semantic evidence", async () => {

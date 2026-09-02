@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { MultiDirectedGraph } from "graphology";
-import { createSpikeState, createToolSuite, INPUT_SCHEMAS, LIMITS, resultSizeBytes, TOOL_NAMES, validateToolResult } from "./contracts.mjs";
+import { applyReaderAnnotation, createSpikeState, createToolSuite, INPUT_SCHEMAS, LIMITS, mintReaderAnchor, resultSizeBytes, TOOL_NAMES, validateToolResult } from "./contracts.mjs";
 
 const ANCHOR = "anchor:text:attention";
 const NODE = "node:concept:attention";
@@ -341,4 +341,44 @@ test("repeated reads retain only the declared recent event window without compac
   assert.equal(state.revisions.length, 1);
   assert.deepEqual(state.revisions[0], revision);
   assert.equal(state.requestResults.get("boundary-graph-command-0001").result.revisionId, applied.revisionId);
+});
+
+test("read_focus preserves minted first/last-word evidence while omitting empty optional quote context", async () => {
+  for (const context of [
+    { prefix: "", suffix: "The following words." },
+    { prefix: "The preceding words.", suffix: "" },
+    { prefix: "", suffix: "" },
+    {},
+  ]) {
+    const { state, tools } = await fixture();
+    const anchor = await mintReaderAnchor(state, {
+      pageIndex: 0, sourceKind: "exact_text", pageViewBox: [0, 0, 612, 792], pageRotation: 0,
+      normalizedBounds: [{ x: 0.2, y: 0.2, width: 0.3, height: 0.03 }],
+      exactText: "Attention", ...context,
+    });
+    await applyReaderAnnotation(state, {
+      baseWorkspaceRevision: state.workspaceRevision, baseWorkspaceDigest: state.workspaceDigest, anchor,
+      annotation: { kind: "question", body: "What does this word mean?" },
+      node: { kind: "concept", label: "Boundary word", summary: "Reader question anchored to the first or last word.", salience: 0.5 },
+    });
+    state.focusAnchorId = anchor.anchorId;
+    const before = JSON.stringify(anchor);
+    const workspaceDigest = state.workspaceDigest;
+    const events = state.events.filter((event) => event.eventType === "focus_read").length;
+    const result = await tools.get("read_focus").execute({});
+    assert.equal(result.status, "ready", JSON.stringify(context));
+    validateToolResult("paperpilot.read_focus", result);
+    assert.equal(result.focus.exactText, anchor.quote.exact);
+    assert.equal(result.focus.anchorDigest, anchor.anchorDigest);
+    assert.equal(result.focus.authority, "exact_document_text");
+    assert.deepEqual(result.focus.normalizedBounds, anchor.normalizedBounds);
+    for (const field of ["prefix", "suffix"]) {
+      assert.equal(Object.hasOwn(result.focus, field), Boolean(context[field]), field);
+      if (context[field]) assert.equal(result.focus[field], context[field]);
+    }
+    assert.equal(JSON.stringify(anchor), before, "serialization must not alter the canonical quote or digest");
+    assert.equal(state.workspaceDigest, workspaceDigest);
+    assert.equal(state.events.filter((event) => event.eventType === "focus_read").length, events + 1);
+    assert.equal(state.latestReadFocusReceipt.callbackReceiptId, result.callbackReceiptId);
+  }
 });

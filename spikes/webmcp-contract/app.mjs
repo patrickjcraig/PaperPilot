@@ -1045,8 +1045,10 @@ async function ensureAnchorVisible(anchorId, {
         });
         if (!destination || !navigationIsCurrent()) return null;
       }
-      renderFocus({ moveKeyboardFocus, scrollIntoView: false });
-      return paperViewer.getPageSurface?.(anchor.pageIndex + 1) || elements.paperStage;
+      const target = paperViewer.getPageSurface?.(anchor.pageIndex + 1) || elements.paperStage;
+      renderFocus();
+      if (moveKeyboardFocus) target.focus({ preventScroll: true });
+      return target;
     }
     if (!paperViewer.getAnchorTarget?.(anchorId) && Array.isArray(anchor.normalizedBounds)) {
       const linkedAnnotation = [...state.annotations.values()].find((annotation) => (
@@ -1090,8 +1092,17 @@ async function ensureAnchorVisible(anchorId, {
   if (diagnosticVisual) {
     elements.visualRegionA.closest("details")?.setAttribute("open", "");
   }
-  renderFocus({ moveKeyboardFocus, scrollIntoView });
-  return focusElementForAnchor(anchorId);
+  const target = focusElementForAnchor(anchorId);
+  if (!target) return null;
+  // Native focus_source commits state.focusAnchorId only after onNavigate
+  // succeeds. Navigate this explicit destination; rendering the old semantic
+  // focus with scroll enabled would send the PDF back to its previous page.
+  renderFocus();
+  const pageSurface = paperViewer?.getPageSurface?.(anchor.pageIndex + 1) || elements.pdfPageSurface;
+  const destination = !target.hidden ? target : pageSurface || target;
+  if (scrollIntoView) destination.scrollIntoView({ block: "center", behavior });
+  if (moveKeyboardFocus) destination.focus({ preventScroll: true });
+  return target;
 }
 
 function placeAgentCursor(anchorId, phase, label, announcement = label) {

@@ -2994,8 +2994,8 @@ export function createToolSuite(state) {
       } : null);
       if (quote?.exact) {
         focus.exactText = quote.exact;
-        if (quote.prefix !== undefined) focus.prefix = quote.prefix;
-        if (quote.suffix !== undefined) focus.suffix = quote.suffix;
+        if (quote.prefix !== undefined && quote.prefix !== "") focus.prefix = quote.prefix;
+        if (quote.suffix !== undefined && quote.suffix !== "") focus.suffix = quote.suffix;
       }
       if (anchor.sourceKind === "visual_region") {
         focus.visualEvidence = {
