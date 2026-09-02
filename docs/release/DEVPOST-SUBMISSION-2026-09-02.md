@@ -23,16 +23,28 @@ The participant explicitly answered **“yes, submit”** after reviewing the ex
 5. `submit_project` returned `Submitted`, submission `1153491`, and the timestamp above. All nine required custom fields plus the existing-work explanation and judge instructions were supplied. Private entrant/residence answers are not copied into this public receipt.
 6. A separate live `get_project` readback confirmed the `webmcp` entry had exactly that `submitted_at` value. The project itself was `published`, with the correct video and live website URL. A published portfolio page alone was not treated as challenge-submission proof.
 
-The [approved publication writeup](DEVPOST-PUBLIC-WRITEUP-2026-09-02.md) is unchanged from documentation commit [`52d18af`](https://github.com/patrickjcraig/PaperPilot/commit/52d18af0cf488cfe27400a147ded42db697e5505). No thumbnail or screenshot upload was performed in this submission step.
+At initial submission, the approved publication writeup matched documentation commit [`52d18af`](https://github.com/patrickjcraig/PaperPilot/commit/52d18af0cf488cfe27400a147ded42db697e5505). The [current publication copy](DEVPOST-PUBLIC-WRITEUP-2026-09-02.md) includes the later owner-authorized correction recorded below. No thumbnail or screenshot upload was performed in the initial submission step.
 
 ## Scope and remaining QA
 
 The judged runtime remains source `9dd6bd561b3fc628907e797442a252b5a8012379`, fingerprint `a0d5f6636b0eace96e04011526450f0942a6a797ee5d8fafda9faf2bbf8b7167`, with the [recorded public release proof](PUBLIC-RELEASE-REFRESH-2026-09-02.md). This submission changed neither the deployed runtime nor original PDFs, local databases, video bytes or saved reader workspaces.
 
-The participant's [hackathon-only human-QA deferral](HUMAN-RELEASE-REVIEW-2026-09-02.md) remains in force and explicitly appears in the public writeup. All four human flags remain false: primary keyboard/screen-reader flow, graph accessibility, literal 200% zoom, and second-machine access. Successful submission is not accessibility certification or scientific validation.
+At initial submission, the participant's [hackathon-only human-QA deferral](HUMAN-RELEASE-REVIEW-2026-09-02.md) covered four false flags: primary keyboard/screen-reader flow, graph accessibility, literal 200% zoom, and second-machine access. The later access confirmation below supersedes only that fourth result. Successful submission is not accessibility certification or scientific validation.
 
-`submissionNotDraft` is now true because the participant authorized the final action and the official service confirmed its result. It does not claim that the participant independently inspected the final page. With that control closed, the full checker remains honestly red at **69/73**: technical **63/63**, submission **6/6**, human QA **0/4**. No checker logic or human acceptance flag was weakened.
+`submissionNotDraft` became true because the participant authorized the final action and the official service confirmed its result. It does not claim that the participant independently inspected the final page. Immediately after submission, the full checker was honestly red at **69/73**: technical **63/63**, submission **6/6**, human QA **0/4**. These are the initial results, before the later access confirmation below. No checker logic or human acceptance flag was weakened.
 
 ## Deadline and preservation
 
 Live dates fetched from Devpost at `2026-09-02T17:52:27Z` give the submission deadline as **September 3, 2026, 4:00 p.m. Eastern / 1:00 p.m. Pacific** (`2026-09-03T20:00:00Z`). Judging ends at `2026-09-22T00:00:00Z`. The [freeze plan](HACKATHON-FREEZE-PLAN-2026-09-02.md) identifies the exact artifact and preservation procedure. This record does not claim automated freeze enforcement or change the organizer's rules.
+
+## Subsequent second-machine access confirmation
+
+On 2026-09-02, the participant explicitly confirmed second-machine access for this hackathon entry and requested that the submission be corrected. This is owner-reported verification; no device/browser/OS details or second-device native WebMCP result were supplied or inferred.
+
+Only the corresponding sentence in the public description was changed:
+
+> The project owner has verified access from a second machine for this hackathon entry. Human acceptance of the primary keyboard/screen-reader flow, graph accessibility, and literal 200% zoom remains unverified and is deferred.
+
+The official `update_project` call returned project version **3**. Live `get_project` readback confirmed the exact revised text, normalized for Markdown presentation, and `updated_at: 2026-09-02T14:20:54.481-04:00`. The original challenge submission timestamp and project identity remained unchanged. No new submission was created, and no title, tagline, video, thumbnail, custom answers, application code or runtime was changed.
+
+The manifest now sets only `liveUrlAnotherMachineVerified` to true on this owner confirmation. A fresh full checker records **70/73**, exit 1: technical **63/63**, submission **6/6**, human QA **1/4**. The three remaining accessibility/zoom checks are still false and disclosed. The [human-review record](HUMAN-RELEASE-REVIEW-2026-09-02.md) preserves the initial deferral and later confirmation separately.

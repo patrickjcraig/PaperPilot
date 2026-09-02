@@ -37,6 +37,6 @@ The following is PaperPilot's operational plan, not an additional organizer rule
 
 ## Scoped human-QA deferral
 
-The owner approved a hackathon-only deferral of the four unfinished human checks in the [human-review record](HUMAN-RELEASE-REVIEW-2026-09-02.md). Their manifest flags remain false. Public copy must disclose the lack of screen-reader acceptance, unconfirmed graph accessibility, 200% zoom and second-machine review. This does not waive security checks, native WebMCP proof, source integrity, official deliverables, or the need for a real submission confirmation.
+The owner initially approved a hackathon-only deferral of four unfinished human checks, then explicitly confirmed second-machine access for this entry. The [human-review record](HUMAN-RELEASE-REVIEW-2026-09-02.md) preserves both decisions. `liveUrlAnotherMachineVerified` is now true on owner confirmation; the other three flags remain false. Public copy must still disclose the lack of primary keyboard/screen-reader acceptance, graph accessibility acceptance, and actual 200% zoom verification. This does not waive security checks, native WebMCP proof, source integrity or official deliverables, and does not broaden the access confirmation into complete second-device agent testing.
 
 `postDeadlineFreezePrepared` may be true because the exact release, timing and procedure are now recorded. It does not mean the future freeze has elapsed, that enforcement has been automated, or that every QA gate passed.

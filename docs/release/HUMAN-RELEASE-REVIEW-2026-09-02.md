@@ -1,6 +1,6 @@
 # Human release review — Verification Pause 3
 
-Status: **Owner-approved hackathon-only deferral of four unfinished human QA checks. Manual testing was reported in Microsoft Edge without a screen reader; unverified acceptance results remain false/unchecked. No acceptance flag is changed by this sheet.**
+Status: **Second-machine access is owner-verified for this hackathon entry. Three human checks remain deferred and false: primary keyboard/screen-reader flow, graph accessibility, and actual 200% browser zoom. The earlier four-check deferral is retained below as history.**
 
 Review the [public PaperPilot reader](https://patrickjcraig.github.io/PaperPilot/webmcp/?release=9dd6bd5), runtime source `9dd6bd561b3fc628907e797442a252b5a8012379`, fingerprint `a0d5f6636b0eace96e04011526450f0942a6a797ee5d8fafda9faf2bbf8b7167`. The release query refreshes the entry URL; it is not an immutable deployment pin. Current technical evidence is in [the public release refresh](PUBLIC-RELEASE-REFRESH-2026-09-02.md). The [673726c release proof](PUBLIC-RELEASE-PROOF-2026-09-02.md) and setup receipts below remain historical, not evidence newly collected for this toolbar release.
 
@@ -12,18 +12,31 @@ The owner first reported “This was tested”. After a follow-up question about
 
 This records owner-reported manual testing in **Microsoft Edge** and explicitly **no screen-reader testing**. The browser version, OS, actual test date, tested URL/source, individual pass/fail results, literal **200% browser zoom**, and second-machine details were not supplied. Do not infer that all checks passed or that Edge native WebMCP was exercised. The report does not change any acceptance flag.
 
-## Owner-approved hackathon-only deferral — 2026-09-02
+## Initial owner-approved hackathon-only deferral — 2026-09-02
 
 The owner replied exactly **“Proceed and ignore”** to: “Do you approve deferring the unfinished human QA checks, with those limitations explicitly disclosed in the submission?” This approves proceeding with the hackathon submission workflow under the disclosed limitations, not treating the missing checks as passed.
 
-The following four checks are **deferred, unverified, and remain false/unchecked**:
+At the time of the initial deferral, the following four checks were **unverified and false/unchecked**. The later second-machine confirmation below supersedes that one result only:
 
 - [ ] Primary keyboard and screen-reader flow — `accessibilityPrimaryFlowVerified` remains `false`; no screen reader was used in the reported manual test.
 - [ ] Graph accessibility — `graphAccessibilityVerified` remains `false`; specific human accessibility outcomes were not supplied.
 - [ ] Actual 200% browser zoom — `browser200PercentZoomVerified` remains `false`; literal browser-zoom testing was not confirmed.
 - [ ] Access from another physical machine — `liveUrlAnotherMachineVerified` remains `false`; device and outcome details were not supplied.
 
-These limitations must remain explicit in the public submission. The deferral is **hackathon-only**, is not evidence of passes, and is not general release accessibility signoff. Complete and document these four checks before a broader production release. The walkthrough and pending observation fields below remain the follow-up record; automated checks, the recorded demo, and the limited Edge report do not substitute for the deferred human verification.
+That deferral was **hackathon-only**, not evidence of passes or general release accessibility signoff. The remaining limitations must stay explicit in the public submission. The walkthrough and pending fields below remain the follow-up record; automated checks and the video are not substitutes for human verification. The subsequent owner confirmation closes second-machine access only.
+
+## Subsequent owner confirmation — recorded 2026-09-02
+
+The owner explicitly requested: **“Change the sub, second machine access is verified for this hackathon entry”**.
+
+- [x] Second-machine access — `liveUrlAnotherMachineVerified` is now `true`, based on the owner's direct confirmation for this hackathon entry.
+- [ ] Primary keyboard/screen-reader flow — remains `false`.
+- [ ] Graph accessibility — remains `false`.
+- [ ] Actual 200% browser zoom — remains `false`.
+
+This is owner-reported verification, not a new agent-operated browser test. The second machine's hardware, browser/version, OS, actual test timestamp and native WebMCP availability were not supplied and are not inferred from the earlier Edge report. The confirmation concerns access; it does not establish cross-device synchronization, screen-reader usability, or a complete agent flow on that machine.
+
+The [public Devpost description](https://devpost.com/software/paperpilot-kjglan) was corrected through the official connection and its saved text was read back successfully. The [submission receipt addendum](DEVPOST-SUBMISSION-2026-09-02.md#subsequent-second-machine-access-confirmation) records the change. Three human acceptance checks remain open.
 
 ## Ready-to-try visual and keyboard check
 
@@ -88,7 +101,7 @@ Result, actual zoom and preferences used: _pending_
 
 Open the public URL on another physical machine without relying on the owner's login. Load the demo paper and check the continuous viewer, map and source navigation. This checks anonymous access, not synchronization: the first machine's unsaved or browser-local notes are not expected to appear. Record native WebMCP availability separately.
 
-Device/browser, access result and any limitation: _pending_
+Access result: **Owner-verified for this hackathon entry**, as explicitly confirmed above. Hardware, browser/version, OS, session/auth details, and native WebMCP result: **not supplied**. Do not mark every suggested walkthrough step as observed merely because access was confirmed.
 
 ## Current automated evidence — 9dd6bd5
 
@@ -111,4 +124,4 @@ During that historical setup, the normal npm wrapper encountered a host **ENOSPC
 
 ## Completion rule
 
-Only recorded actual outcomes may change `accessibilityPrimaryFlowVerified`, `graphAccessibilityVerified`, `browser200PercentZoomVerified`, or `liveUrlAnotherMachineVerified` in `devpost-requirements.json`. Manual testing in Microsoft Edge is reported, but the individual acceptance results remain pending and screen-reader testing is explicitly not performed; a partial visual check cannot close the full accessibility gate. The owner-approved hackathon-only deferral permits the submission workflow to proceed with explicit public limitations, without changing those four false flags or marking checklist items 10 and 11 complete. Verify the deferred checks before broader production release. Video checks and personal form answers are now complete; application acceptance, release-freeze preparation and the final exact-entry submission handoff remain open.
+Only recorded actual outcomes may change `accessibilityPrimaryFlowVerified`, `graphAccessibilityVerified`, `browser200PercentZoomVerified`, or `liveUrlAnotherMachineVerified` in `devpost-requirements.json`. The owner's explicit second-machine confirmation closes that access flag. The three accessibility/zoom flags remain false; manual Edge use without a screen reader cannot close the full accessibility gate. The remaining deferral must stay public, and checklist items 10 and 11 are not completed by this access-only confirmation. Complete those checks before broader production acceptance. Video checks, personal answers, freeze preparation and actual Devpost submission are recorded separately; the [initial submission receipt and subsequent correction](DEVPOST-SUBMISSION-2026-09-02.md) preserve their timing.

@@ -57,7 +57,7 @@ This was my first experience with WebMCP and MCPs generally. I learned to design
 
 This is a single-paper prototype, not universal PDF understanding. Admission is bounded to 25 MiB and 200 pages. Text extraction varies; there is no OCR service. Figure regions currently return `locator_only` and `pixelUseVerified: false`: a reader description is not proof that the agent observed pixels.
 
-Accessibility shaped keyboard controls, descriptions, status announcements, and the non-canvas outline. The owner manually tested in Microsoft Edge without a screen reader. Human acceptance of the primary keyboard/screen-reader flow and graph accessibility, literal 200% zoom, and second-machine access remains unverified and is deferred for this hackathon entry. This is not an accessibility-certified service or general production signoff. Native WebMCP was tested with OpenAI Codex's in-app browser on Windows, not established by the separate Edge report. Without WebMCP, the manual reader remains usable, but native-agent success is not claimed.
+Accessibility shaped keyboard controls, descriptions, status announcements, and the non-canvas outline. The owner manually tested in Microsoft Edge without a screen reader. The project owner has verified access from a second machine for this hackathon entry. Human acceptance of the primary keyboard/screen-reader flow, graph accessibility, and literal 200% zoom remains unverified and is deferred. This is not an accessibility-certified service or general production signoff. Native WebMCP was tested with OpenAI Codex's in-app browser on Windows, not established by the separate Edge report. Without WebMCP, the manual reader remains usable, but native-agent success is not claimed.
 
 ## Existing project, new challenge work
 

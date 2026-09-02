@@ -87,7 +87,7 @@
     "observableWebMcpActivityVerified": true,
     "accessibilityPrimaryFlowVerified": false,
     "browser200PercentZoomVerified": false,
-    "liveUrlAnotherMachineVerified": false,
+    "liveUrlAnotherMachineVerified": true,
     "centeredPdfWorkspaceVerified": true,
     "noPersistentSourceTranscriptVerified": true,
     "spatialAnnotationVerified": true,
