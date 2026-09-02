@@ -23,6 +23,7 @@
     "spikes/webmcp-contract/mentor-review.mjs",
     "spikes/webmcp-contract/spatial-anchor.mjs",
     "spikes/webmcp-contract/structural-map.mjs",
-    "spikes/webmcp-contract/webmcp-observer.mjs"
+    "spikes/webmcp-contract/webmcp-observer.mjs",
+    "spikes/webmcp-contract/workspace-patch.mjs"
   ]
 }

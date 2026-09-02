@@ -23,6 +23,7 @@ const demoFiles = Object.freeze([
   "spatial-anchor.mjs",
   "structural-map.mjs",
   "webmcp-observer.mjs",
+  "workspace-patch.mjs",
   "spike.css",
 ]);
 

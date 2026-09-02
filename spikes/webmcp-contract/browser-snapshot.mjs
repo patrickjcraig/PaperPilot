@@ -1,4 +1,6 @@
 import { validateSpatialAnchor } from "./spatial-anchor.mjs";
+import { applyWorkspacePatch, createWorkspacePatch, invertWorkspacePatch, validateWorkspacePatch } from "./workspace-patch.mjs";
+import { validateToolResult } from "./contracts.mjs";
 
 /**
  * Browser-local, opt-in persistence for the public PaperPilot vertical slice.
@@ -9,15 +11,16 @@ import { validateSpatialAnchor } from "./spatial-anchor.mjs";
  * PDF/File/Blob/ArrayBuffer data is rejected before serialization.
  */
 
-// Version 2 guarantees that a saved graph was created from the whole-paper
-// structural baseline. Version-1 candidate-only snapshots are intentionally
-// not hydrated over the new deterministic structure.
-export const BROWSER_SNAPSHOT_SCHEMA_VERSION = 2;
+// Version 3 retains canonical reversible patches. Version 2 is decoded and
+// validated in full before migration; its stored bytes are never overwritten.
+// Version-1 candidate-only snapshots remain preserved without hydration.
+export const BROWSER_SNAPSHOT_SCHEMA_VERSION = 3;
 export const MAX_BROWSER_SNAPSHOT_BYTES = 4 * 1024 * 1024;
 export const BROWSER_SNAPSHOT_KEY_PREFIX = `paperpilot:webmcp:v${BROWSER_SNAPSHOT_SCHEMA_VERSION}:`;
 export const BROWSER_SNAPSHOT_LIMITS = Object.freeze({
   history: 200,
   redoHistory: 200,
+  revisions: 200,
   events: 500,
   requestResults: 200,
   annotations: 800,
@@ -173,19 +176,8 @@ function serializeSemanticState(state, path = "workspace.current") {
 
 function serializeHistory(history, path, limit) {
   if (!Array.isArray(history)) fail("invalid_live_state", `${path} is invalid.`);
-  return history.slice(-limit).map((entry, index) => {
-    assertPlainObject(entry, "invalid_live_state", `${path}[${index}] is invalid.`);
-    const serialized = {
-      kind: assertString(entry.kind, "invalid_live_state", `${path}[${index}].kind is invalid.`, { max: 64 }),
-      revisionId: assertString(entry.revisionId, "invalid_live_state", `${path}[${index}].revisionId is invalid.`, { max: 128 }),
-      before: serializeSemanticState(entry.before, `${path}[${index}].before`),
-      after: serializeSemanticState(entry.after, `${path}[${index}].after`),
-    };
-    if (entry.operationId !== undefined) {
-      serialized.operationId = assertString(entry.operationId, "invalid_live_state", `${path}[${index}].operationId is invalid.`, { max: 128 });
-    }
-    return serialized;
-  });
+  if (history.length > limit) fail("history_invalid", `${path} exceeds the retained history limit.`);
+  return jsonClone(history, path);
 }
 
 function serializeRequestResults(requestResults) {
@@ -251,6 +243,7 @@ function buildPayload(state, { savedExplanations, savedAt, presentation }) {
       current: serializeSemanticState(state),
       history: serializeHistory(state.history, "workspace.history", BROWSER_SNAPSHOT_LIMITS.history),
       redoHistory: serializeHistory(state.redoHistory, "workspace.redoHistory", BROWSER_SNAPSHOT_LIMITS.redoHistory),
+      revisions: serializeHistory(state.revisions || [], "workspace.revisions", BROWSER_SNAPSHOT_LIMITS.revisions),
     },
     requestResults: serializeRequestResults(state.requestResults),
     events: jsonClone(state.events.slice(-BROWSER_SNAPSHOT_LIMITS.events), "events"),
@@ -268,9 +261,6 @@ async function validateSerializedSemanticState(value, identity) {
 
 async function validateSerializedPayloadAnchors(payload) {
   const states = [payload.workspace.current];
-  for (const entry of [...payload.workspace.history, ...payload.workspace.redoHistory]) {
-    states.push(entry.before, entry.after);
-  }
   await Promise.all(states.map((state) => validateSerializedSemanticState(state, payload.paperIdentity)));
 }
 
@@ -289,6 +279,9 @@ async function serializeEnvelope(state, options = {}) {
     payloadChecksum,
     payload,
   });
+  // Validate the same complete replay surface before replacing any current-v3
+  // save, not just on the next upload. Invalid live state must not poison it.
+  if (utf8Bytes(raw) <= MAX_BROWSER_SNAPSHOT_BYTES) await decodeEnvelope(raw, state);
   return { raw, payload, payloadChecksum, bytes: utf8Bytes(raw) };
 }
 
@@ -693,20 +686,318 @@ function validateSavedExplanations(value, anchors) {
   }
 }
 
-function validateRequestResults(value) {
+function validateRequestResults(value, { allowTombstones = false } = {}) {
   validatePairEntries(value, "request_results_invalid", BROWSER_SNAPSHOT_LIMITS.requestResults);
   const result = new Map();
   for (const [key, entry] of value) {
     assertString(key, "request_results_invalid", "A stored idempotency key is invalid.", { max: 64 });
     assertPlainObject(entry, "request_results_invalid", `Request result ${key} is invalid.`);
+    assertExactKeys(entry, ["commandDigest", "result"], "request_results_invalid");
     assertString(entry.commandDigest, "request_results_invalid", `Request result ${key} has an invalid command digest.`, { pattern: SHA256_RE });
+    if (allowTombstones && entry.result === null) {
+      result.set(key, structuredClone(entry));
+      continue;
+    }
     assertPlainObject(entry.result, "request_results_invalid", `Request result ${key} has an invalid result.`);
+    const toolName = Object.hasOwn(entry.result, "beforeGraphDigest") ? "paperpilot.apply_graph" : "paperpilot.apply_annotation";
+    try {
+      validateToolResult(toolName, entry.result);
+    } catch {
+      fail("request_results_invalid", `Request result ${key} does not match a closed mutation result.`);
+    }
+    if (entry.result.status !== "applied_reversible" || entry.result.replayed !== false || entry.result.idempotencyKey !== key) {
+      fail("request_results_invalid", `Request result ${key} is not its original applied mutation receipt.`);
+    }
     result.set(key, structuredClone(entry));
   }
   return result;
 }
 
-async function decodeEnvelope(raw, state) {
+function validateRequestHistory(decoded, { legacy = false } = {}) {
+  const originals = new Map([...decoded.history, ...decoded.redoHistory, ...decoded.revisions]
+    .filter((entry) => ["graph", "annotation"].includes(entry.kind)).map((entry) => [entry.revisionId, entry]));
+  let discarded = 0;
+  for (const [key, receipt] of decoded.requestResults) {
+    const result = receipt.result;
+    if (result === null) continue;
+    const entry = originals.get(result.revisionId);
+    if (!entry) {
+      if (legacy) { decoded.requestResults.set(key, { commandDigest: receipt.commandDigest, result: null }); discarded += 1; continue; }
+      fail("request_results_invalid", "A cached applied receipt has no retained original revision.");
+    }
+    const kind = Object.hasOwn(result, "beforeGraphDigest") ? "graph" : "annotation";
+    const patches = legacy ? createWorkspacePatch(entry.before, entry.after) : entry;
+    const expected = legacy ? {
+      operationId: entry.operationId,
+      fromRevision: entry.before.workspaceRevision, toRevision: entry.after.workspaceRevision,
+      beforeWorkspaceDigest: entry.before.workspaceDigest, afterWorkspaceDigest: entry.after.workspaceDigest,
+      ...(kind === "graph" ? { beforeGraphDigest: entry.before.graphDigest, afterGraphDigest: entry.after.graphDigest }
+        : { beforeAnnotationDigest: entry.before.annotationDigest, afterAnnotationDigest: entry.after.annotationDigest }),
+    } : entry;
+    const fields = ["operationId", "fromRevision", "toRevision", "beforeWorkspaceDigest", "afterWorkspaceDigest",
+      ...(kind === "graph" ? ["beforeGraphDigest", "afterGraphDigest"] : ["beforeAnnotationDigest", "afterAnnotationDigest"])];
+    if (kind !== entry.kind || fields.some((field) => expected[field] !== undefined && result[field] !== expected[field])
+      || (!legacy && (receipt.commandDigest !== entry.commandDigest || key !== entry.idempotencyKey))) {
+      fail("request_results_invalid", "A cached applied receipt disagrees with its retained original revision.");
+    }
+    const affected = [...new Set(Object.values(result.affected).flat())].sort();
+    const patchKeys = [...new Set(patches.forwardPatch.map(({ key: affectedKey }) => affectedKey))].sort();
+    if (canonicalJson(affected) !== canonicalJson(patchKeys)) fail("request_results_invalid", "A cached receipt reports different affected entities from its patch.");
+    for (const patch of patches.forwardPatch) {
+      const categories = Object.entries(result.affected).filter(([, keys]) => keys.includes(patch.key)).map(([category]) => category);
+      if ((categories.includes("created") && patch.before !== null)
+        || (categories.length === 1 && categories[0] === "tombstoned" && patch.after?.status !== "tombstoned")
+        || (categories.length === 1 && categories[0] === "restored" && (patch.before?.status !== "tombstoned" || patch.after?.status !== "active"))) {
+        fail("request_results_invalid", "A cached receipt misclassifies its affected entities.");
+      }
+    }
+  }
+  decoded.replayInvalidatedCount = discarded;
+}
+
+const REVISION_FIELDS = [
+  "schemaVersion", "kind", "revisionId", "operationId", "paperRef", "idempotencyKey", "commandDigest", "actor", "transport",
+  "reason", "fromRevision", "toRevision", "beforeWorkspaceDigest", "afterWorkspaceDigest", "beforeGraphDigest", "afterGraphDigest",
+  "beforeAnnotationDigest", "afterAnnotationDigest", "forwardPatch", "inversePatch", "affectedKeys", "sourceAnchorIds", "reviewState",
+  "createdAt", "beforeFocusAnchorId", "afterFocusAnchorId",
+];
+const ORIGINAL_REVISION_KINDS = new Set(["graph", "annotation", "reader_annotation_graph", "reader_annotation_removal"]);
+
+function validateStringSet(values, path, max = 12_000) {
+  if (!Array.isArray(values) || values.length > max || new Set(values).size !== values.length) fail("history_invalid", `${path} is invalid or duplicated.`);
+  for (const value of values) assertString(value, "history_invalid", `${path} contains an invalid ID.`, { max: 256 });
+}
+
+function validatePatchRevision(value, identity, { ledger = false } = {}) {
+  assertPlainObject(value, "history_invalid", "A patch revision is invalid.");
+  const optional = ["toolName", "relatedRevisionId"].filter((key) => Object.hasOwn(value, key));
+  assertExactKeys(value, [...REVISION_FIELDS, ...optional], "history_invalid");
+  const reversal = value.kind === "undo" || value.kind === "redo";
+  if (value.schemaVersion !== 1 || (!ORIGINAL_REVISION_KINDS.has(value.kind) && !(ledger && reversal))) fail("history_invalid", "A patch revision kind/version is invalid.");
+  if (value.paperRef !== identity.paperRef) fail("identity_mismatch", "A history revision belongs to another paper.");
+  for (const key of ["revisionId", "operationId", "beforeFocusAnchorId", "afterFocusAnchorId"]) {
+    assertString(value[key], "history_invalid", `Revision ${key} is invalid.`, { max: 128 });
+  }
+  assertString(value.idempotencyKey, "history_invalid", "Revision idempotency key is invalid.", { max: 64 });
+  assertString(value.commandDigest, "history_invalid", "Revision command digest is invalid.", { pattern: SHA256_RE });
+  assertString(value.reason, "history_invalid", "Revision reason is invalid.", { max: 4096 });
+  assertString(value.createdAt, "history_invalid", "Revision timestamp is invalid.", { max: 64 });
+  if (!["human", "agent"].includes(value.actor) || !["direct_ui", "webmcp"].includes(value.transport)
+    || !["unreviewed", "not_applicable"].includes(value.reviewState)) fail("history_invalid", "Revision attribution is invalid.");
+  if ((value.actor === "agent") !== (value.transport === "webmcp")
+    || (value.actor === "agent") !== (value.reviewState === "unreviewed")) fail("history_invalid", "Revision attribution is inconsistent.");
+  if (!reversal && (value.actor === "agent") !== ["graph", "annotation"].includes(value.kind)) fail("history_invalid", "Revision kind and actor disagree.");
+  if (value.toolName !== undefined && !["paperpilot.apply_graph", "paperpilot.apply_annotation"].includes(value.toolName)) fail("history_invalid", "Revision tool is invalid.");
+  if (reversal && (value.actor !== "human" || !value.relatedRevisionId)) fail("history_invalid", "Undo/Redo must identify a human compensating revision.");
+  if (value.relatedRevisionId !== undefined) assertString(value.relatedRevisionId, "history_invalid", "Related revision is invalid.", { max: 128 });
+  if (!reversal && value.relatedRevisionId !== undefined) fail("history_invalid", "An original revision cannot impersonate a reversal.");
+  assertInteger(value.fromRevision, "history_invalid", "Revision start is invalid.", { min: 1 });
+  assertInteger(value.toRevision, "history_invalid", "Revision end is invalid.", { min: 2 });
+  if (value.toRevision !== value.fromRevision + 1) fail("history_invalid", "A revision must advance exactly once.");
+  for (const prefix of ["before", "after"]) for (const suffix of ["WorkspaceDigest", "GraphDigest", "AnnotationDigest"]) {
+    assertString(value[`${prefix}${suffix}`], "history_invalid", "Revision endpoint digest is invalid.", { pattern: SHA256_RE });
+  }
+  validateStringSet(value.affectedKeys, "affectedKeys");
+  validateStringSet(value.sourceAnchorIds, "sourceAnchorIds");
+  let forwardPatch;
+  let inversePatch;
+  try {
+    forwardPatch = validateWorkspacePatch(value.forwardPatch);
+    inversePatch = validateWorkspacePatch(value.inversePatch);
+    if (canonicalJson(invertWorkspacePatch(forwardPatch)) !== canonicalJson(inversePatch)) fail("history_inverse_mismatch", "The stored inverse does not exactly invert its forward patch.");
+  } catch (error) {
+    if (error instanceof SnapshotValidationError) throw error;
+    fail("history_patch_invalid", "A stored patch is not a valid closed canonical patch.");
+  }
+  const affected = [...new Set(forwardPatch.map(({ key }) => key))].sort();
+  if (canonicalJson([...value.affectedKeys].sort()) !== canonicalJson(affected)) fail("history_invalid", "Revision affected IDs differ from its patch.");
+  return { ...structuredClone(value), forwardPatch, inversePatch };
+}
+
+function decodePatchRevisions(value, identity, { ledger = false } = {}) {
+  if (!Array.isArray(value) || value.length > BROWSER_SNAPSHOT_LIMITS.revisions) fail("history_invalid", "Stored patch history is invalid or unbounded.");
+  const revisions = value.map((entry) => validatePatchRevision(entry, identity, { ledger }));
+  if (new Set(revisions.map(({ revisionId }) => revisionId)).size !== revisions.length) fail("history_invalid", "A revision ID is duplicated.");
+  return revisions;
+}
+
+function revisionEndpoint(entry, prefix) {
+  return {
+    workspaceDigest: entry[`${prefix}WorkspaceDigest`], graphDigest: entry[`${prefix}GraphDigest`],
+    annotationDigest: entry[`${prefix}AnnotationDigest`], focusAnchorId: entry[`${prefix}FocusAnchorId`],
+    workspaceRevision: prefix === "before" ? entry.fromRevision : entry.toRevision,
+  };
+}
+
+function protectStructuralPatch(entry, state) {
+  if (!state.structuralMap) return;
+  const nodeKeys = new Set(["node:paper", ...state.structuralMap.nodes.map(({ key }) => key)]);
+  const edgeKeys = new Set(state.structuralMap.nodes.map(({ edgeKey }) => edgeKey));
+  const anchorKeys = new Set([
+    ...state.graph.getNodeAttribute("node:paper", "structuralCoverage").map(({ primaryAnchorId }) => primaryAnchorId),
+    ...state.structuralMap.nodes.map(({ anchorId }) => anchorId),
+  ]);
+  for (const operation of entry.forwardPatch) {
+    if ((operation.op === "put_node" && nodeKeys.has(operation.key))
+      || (operation.op === "put_edge" && edgeKeys.has(operation.key))
+      || (operation.op === "put_anchor" && anchorKeys.has(operation.key))) {
+      fail("structural_baseline_mismatch", "A history patch attempts to change the immutable structural baseline.");
+    }
+  }
+}
+
+async function replayRevision(start, entry, direction, state, identity, endpoints) {
+  protectStructuralPatch(entry, state);
+  const sourcePrefix = direction === "forward" ? "before" : "after";
+  const targetPrefix = direction === "forward" ? "after" : "before";
+  await verifySemanticDigests(start, revisionEndpoint(entry, sourcePrefix));
+  if (!start.anchors.has(entry[`${sourcePrefix}FocusAnchorId`])) fail("history_invalid", "A revision source focus is missing.");
+  let applied;
+  try {
+    applied = applyWorkspacePatch(start, direction === "forward" ? entry.forwardPatch : entry.inversePatch);
+  } catch {
+    fail("history_chain_mismatch", "A history patch does not match its expected workspace records.");
+  }
+  const target = { ...applied, ...revisionEndpoint(entry, targetPrefix) };
+  const decoded = await decodeSemanticState(serializeSemanticState(target), state.graph, identity, "workspace.replayed");
+  validateStructuralBaseline(decoded, state.structuralMap, state);
+  const pair = direction === "forward" ? { before: start, after: decoded } : { before: decoded, after: start };
+  for (const anchorId of entry.sourceAnchorIds) {
+    if (!pair.before.anchors.has(anchorId) && !pair.after.anchors.has(anchorId)) fail("history_invalid", "Revision source attribution references an unknown anchor.");
+  }
+  endpoints.set(entry, pair);
+  return decoded;
+}
+
+async function validatePatchHistory(decoded, state, identity) {
+  const endpoints = new Map();
+  const retained = [...decoded.history, ...decoded.redoHistory];
+  const stackIds = retained.map(({ revisionId }) => revisionId);
+  if (new Set(stackIds).size !== stackIds.length) fail("history_invalid", "Undo and Redo contain the same revision.");
+  if (retained.some((entry) => entry.toRevision > decoded.current.workspaceRevision)) fail("history_chain_mismatch", "A retained revision is newer than the current workspace head.");
+  let cursor = decoded.current;
+  for (const entry of [...decoded.history].reverse()) cursor = await replayRevision(cursor, entry, "inverse", state, identity, endpoints);
+  cursor = decoded.current;
+  for (const entry of [...decoded.redoHistory].reverse()) cursor = await replayRevision(cursor, entry, "forward", state, identity, endpoints);
+  cursor = decoded.current;
+  for (let index = decoded.revisions.length - 1; index >= 0; index -= 1) {
+    const entry = decoded.revisions[index];
+    if (entry.toRevision !== cursor.workspaceRevision) fail("history_chain_mismatch", "The revision ledger is not contiguous with the current workspace.");
+    cursor = await replayRevision(cursor, entry, "inverse", state, identity, endpoints);
+  }
+  const ledgerById = new Map(decoded.revisions.map((entry) => [entry.revisionId, entry]));
+  const originals = new Map([...decoded.history, ...decoded.redoHistory,
+    ...decoded.revisions.filter((entry) => ORIGINAL_REVISION_KINDS.has(entry.kind))].map((entry) => [entry.revisionId, entry]));
+  for (const entry of decoded.revisions) {
+    if (ORIGINAL_REVISION_KINDS.has(entry.kind)) continue;
+    const original = originals.get(entry.relatedRevisionId);
+    // A v2 migration cannot recover an original that was subsequently undone
+    // and removed from the Redo branch. Never invent it; validate any original
+    // still available, and always replay the compensating patch itself.
+    if (!original) {
+      if (decoded.revisions[0].fromRevision === 1) fail("history_chain_mismatch", "A reversal names no original revision.");
+      continue;
+    }
+    const inverse = entry.kind === "undo";
+    if (original.toRevision > entry.fromRevision
+      || canonicalJson(entry.forwardPatch) !== canonicalJson(inverse ? original.inversePatch : original.forwardPatch)) {
+      fail("history_chain_mismatch", "A reversal does not reverse the original revision it names.");
+    }
+  }
+  for (const entry of [...decoded.history, ...decoded.redoHistory]) {
+    if (ledgerById.has(entry.revisionId) && canonicalJson(ledgerById.get(entry.revisionId)) !== canonicalJson(entry)) {
+      fail("history_chain_mismatch", "A retained stack entry disagrees with its revision ledger record.");
+    }
+  }
+  decoded.revisionEndpoints = endpoints;
+}
+
+async function refreshTrustedPatchTitle(decoded, state) {
+  if (!state.structuralMap) return false;
+  const trustedTitle = state.graph.getNodeAttribute("node:paper", "label");
+  const snapshots = new Set([decoded.current]);
+  for (const pair of decoded.revisionEndpoints.values()) { snapshots.add(pair.before); snapshots.add(pair.after); }
+  let refreshed = false;
+  for (const snapshot of snapshots) {
+    if (snapshot.graph.getNodeAttribute("node:paper", "label") === trustedTitle) continue;
+    snapshot.graph.setNodeAttribute("node:paper", "label", trustedTitle);
+    Object.assign(snapshot, await semanticStateDigests(snapshot));
+    refreshed = true;
+  }
+  if (refreshed) for (const [entry, pair] of decoded.revisionEndpoints) {
+    for (const prefix of ["before", "after"]) for (const suffix of ["WorkspaceDigest", "GraphDigest", "AnnotationDigest"]) {
+      entry[`${prefix}${suffix}`] = pair[prefix][suffix[0].toLowerCase() + suffix.slice(1)];
+    }
+  }
+  return refreshed;
+}
+
+function sameLegacyWorkspace(left, right) {
+  try {
+    return createWorkspacePatch(left, right).forwardPatch.length === 0;
+  } catch {
+    return false;
+  }
+}
+
+function validateLegacyChains(decoded) {
+  const retained = [...decoded.history, ...decoded.redoHistory];
+  if (new Set(retained.map(({ revisionId }) => revisionId)).size !== retained.length) fail("history_invalid", "A legacy revision ID is duplicated.");
+  for (const entry of retained) {
+    if (entry.after.workspaceRevision !== entry.before.workspaceRevision + 1) fail("history_invalid", "A legacy revision must advance exactly once.");
+    if (entry.after.workspaceRevision > decoded.current.workspaceRevision) fail("history_chain_mismatch", "A legacy revision is newer than the current workspace head.");
+  }
+  let cursor = decoded.current;
+  for (const entry of [...decoded.history].reverse()) {
+    if (!sameLegacyWorkspace(cursor, entry.after)) fail("history_chain_mismatch", "The legacy Undo stack does not lead to the current workspace.");
+    cursor = entry.before;
+  }
+  cursor = decoded.current;
+  for (const entry of [...decoded.redoHistory].reverse()) {
+    if (!sameLegacyWorkspace(cursor, entry.before)) fail("history_chain_mismatch", "The legacy Redo stack does not start at the current workspace.");
+    cursor = entry.after;
+  }
+}
+
+async function migrateLegacyHistory(decoded, state) {
+  const identity = paperIdentityFromState(state);
+  const migrate = async (entry) => {
+    const patches = createWorkspacePatch(entry.before, entry.after);
+    const receipt = [...decoded.requestResults.entries()].find(([, value]) => value.result?.revisionId === entry.revisionId);
+    const agent = entry.kind === "graph" || entry.kind === "annotation";
+    const commandDigest = receipt?.[1]?.commandDigest || await sha256Text(canonicalJson(patches.forwardPatch));
+    const sourceAnchorIds = new Set();
+    for (const operation of patches.forwardPatch) for (const record of [operation.before, operation.after]) {
+      if (!record) continue;
+      for (const anchorId of record.sourceAnchorIds || []) sourceAnchorIds.add(anchorId);
+      for (const coverage of record.structuralCoverage || []) sourceAnchorIds.add(coverage.primaryAnchorId);
+      if (record.anchorId) sourceAnchorIds.add(record.anchorId);
+    }
+    const migrated = {
+      schemaVersion: 1, kind: entry.kind, revisionId: entry.revisionId,
+      operationId: entry.operationId || `migration:${(await sha256Text(entry.revisionId)).slice(0, 32)}`,
+      paperRef: identity.paperRef,
+      idempotencyKey: receipt?.[0] || `migration-${(await sha256Text(entry.revisionId)).slice(0, 32)}`,
+      commandDigest, actor: agent ? "agent" : "human", transport: agent ? "webmcp" : "direct_ui",
+      ...(agent ? { toolName: entry.kind === "graph" ? "paperpilot.apply_graph" : "paperpilot.apply_annotation" } : {}),
+      reason: "Migrated retained version-2 Undo/Redo state. Original command reason and complete patch ledger were not stored.",
+      fromRevision: entry.before.workspaceRevision, toRevision: entry.before.workspaceRevision + 1,
+      ...patches, affectedKeys: [...new Set(patches.forwardPatch.map(({ key }) => key))].sort(),
+      sourceAnchorIds: [...sourceAnchorIds].sort(), reviewState: agent ? "unreviewed" : "not_applicable",
+      createdAt: decoded.savedAt, beforeFocusAnchorId: entry.before.focusAnchorId, afterFocusAnchorId: entry.after.focusAnchorId,
+    };
+    for (const prefix of ["before", "after"]) for (const suffix of ["WorkspaceDigest", "GraphDigest", "AnnotationDigest"]) {
+      migrated[`${prefix}${suffix}`] = entry[prefix][suffix[0].toLowerCase() + suffix.slice(1)];
+    }
+    return validatePatchRevision(migrated, identity);
+  };
+  decoded.history = await Promise.all(decoded.history.map(migrate));
+  decoded.redoHistory = await Promise.all(decoded.redoHistory.map(migrate));
+  decoded.revisions = [];
+  await validatePatchHistory(decoded, state, identity);
+}
+
+async function decodeEnvelope(raw, state, expectedVersion = BROWSER_SNAPSHOT_SCHEMA_VERSION) {
   if (typeof raw !== "string" || utf8Bytes(raw) > MAX_BROWSER_SNAPSHOT_BYTES) fail("snapshot_too_large", "The stored snapshot exceeds 4 MiB.");
   let envelope;
   try {
@@ -716,7 +1007,7 @@ async function decodeEnvelope(raw, state) {
   }
   assertPlainObject(envelope, "envelope_invalid", "The snapshot envelope is invalid.");
   assertExactKeys(envelope, ["schemaVersion", "payloadChecksum", "payload"], "envelope_invalid");
-  if (envelope.schemaVersion !== BROWSER_SNAPSHOT_SCHEMA_VERSION) fail("schema_version_mismatch", "The snapshot schema version is not supported.");
+  if (envelope.schemaVersion !== expectedVersion) fail("schema_version_mismatch", "The snapshot schema version is not supported.");
   assertString(envelope.payloadChecksum, "envelope_invalid", "The snapshot checksum is invalid.", { pattern: SHA256_RE });
   assertPlainObject(envelope.payload, "payload_invalid", "The snapshot payload is invalid.");
   const actualChecksum = await sha256Text(canonicalJson(envelope.payload));
@@ -728,7 +1019,7 @@ async function decodeEnvelope(raw, state) {
     ["schemaVersion", "kind", "savedAt", "paperIdentity", "workspace", "requestResults", "events", "savedExplanations", "presentation"],
     "payload_invalid",
   );
-  if (payload.schemaVersion !== BROWSER_SNAPSHOT_SCHEMA_VERSION || payload.kind !== "paperpilot_browser_workspace") {
+  if (payload.schemaVersion !== expectedVersion || payload.kind !== "paperpilot_browser_workspace") {
     fail("schema_version_mismatch", "The snapshot payload schema is not supported.");
   }
   assertString(payload.savedAt, "payload_invalid", "The snapshot savedAt value is invalid.", { max: 64 });
@@ -743,17 +1034,31 @@ async function decodeEnvelope(raw, state) {
     fail("identity_mismatch", "The snapshot belongs to a different PDF identity.");
   }
   assertPlainObject(payload.workspace, "workspace_invalid", "The snapshot workspace is invalid.");
-  assertExactKeys(payload.workspace, ["current", "history", "redoHistory"], "workspace_invalid");
+  assertExactKeys(payload.workspace, ["current", "history", "redoHistory", ...(expectedVersion === 3 ? ["revisions"] : [])], "workspace_invalid");
 
   const current = await decodeSemanticState(payload.workspace.current, state.graph, expectedIdentity, "workspace.current");
-  const history = await decodeHistory(payload.workspace.history, state.graph, expectedIdentity, "workspace.history");
-  const redoHistory = await decodeHistory(payload.workspace.redoHistory, state.graph, expectedIdentity, "workspace.redoHistory");
+  const history = expectedVersion === 2
+    ? await decodeHistory(payload.workspace.history, state.graph, expectedIdentity, "workspace.history")
+    : decodePatchRevisions(payload.workspace.history, expectedIdentity);
+  const redoHistory = expectedVersion === 2
+    ? await decodeHistory(payload.workspace.redoHistory, state.graph, expectedIdentity, "workspace.redoHistory")
+    : decodePatchRevisions(payload.workspace.redoHistory, expectedIdentity);
   validateStructuralBaseline(current, state.structuralMap, state);
-  for (const entry of [...history, ...redoHistory]) {
+  const legacyEntries = expectedVersion === 2 ? [...history, ...redoHistory] : [];
+  for (const entry of legacyEntries) {
     validateStructuralBaseline(entry.before, state.structuralMap, state);
     validateStructuralBaseline(entry.after, state.structuralMap, state);
   }
-  const requestResults = validateRequestResults(payload.requestResults);
+  for (const snapshot of [current, ...legacyEntries.flatMap((entry) => [entry.before, entry.after])]) {
+    try {
+      // A no-op application validates the complete closed canonical state and
+      // same-paper references even when the saved Undo/Redo stacks are empty.
+      applyWorkspacePatch({ ...snapshot, paper: expectedIdentity }, []);
+    } catch {
+      fail("workspace_invalid", "The stored workspace violates canonical record or same-paper reference invariants.");
+    }
+  }
+  const requestResults = validateRequestResults(payload.requestResults, { allowTombstones: expectedVersion === 3 });
   if (
     !Array.isArray(payload.events)
     || payload.events.length > BROWSER_SNAPSHOT_LIMITS.events
@@ -765,16 +1070,21 @@ async function decodeEnvelope(raw, state) {
   const presentation = validatePresentation(payload.presentation, current.annotations);
   assertJsonSafe(payload.events, "events");
   assertJsonSafe(payload.savedExplanations, "savedExplanations");
-  return {
+  const decoded = {
     savedAt: payload.savedAt,
     current,
     history,
     redoHistory,
+    revisions: expectedVersion === 3 ? decodePatchRevisions(payload.workspace.revisions, expectedIdentity, { ledger: true }) : [],
     requestResults,
     events: structuredClone(payload.events),
     savedExplanations: structuredClone(payload.savedExplanations),
     presentation,
   };
+  if (expectedVersion === 2) validateLegacyChains(decoded);
+  else await validatePatchHistory(decoded, state, expectedIdentity);
+  validateRequestHistory(decoded, { legacy: expectedVersion === 2 });
+  return decoded;
 }
 
 function applyDecodedState(state, decoded) {
@@ -786,8 +1096,16 @@ function applyDecodedState(state, decoded) {
   state.graphDigest = decoded.current.graphDigest;
   state.annotationDigest = decoded.current.annotationDigest;
   state.focusAnchorId = decoded.current.focusAnchorId;
-  state.history = decoded.history;
-  state.redoHistory = decoded.redoHistory;
+  const freezeRevision = (value) => {
+    if (value && typeof value === "object") {
+      for (const child of Object.values(value)) freezeRevision(child);
+      Object.freeze(value);
+    }
+    return value;
+  };
+  state.history = decoded.history.map(freezeRevision);
+  state.redoHistory = decoded.redoHistory.map(freezeRevision);
+  state.revisions = decoded.revisions.map(freezeRevision);
   state.requestResults = decoded.requestResults;
   state.events = decoded.events;
   state.savedExplanations = decoded.savedExplanations;
@@ -802,30 +1120,53 @@ export async function loadBrowserSnapshot({ storage, state } = {}) {
   const identity = paperIdentityFromState(state);
   const key = browserSnapshotKey(identity.documentSha256);
   let raw;
+  let migratedFrom;
+  let legacyKey;
   try {
     raw = storage.getItem(key);
   } catch (error) {
     return { ...storageFailure(error), key };
   }
   if (raw === null || raw === undefined) {
-    // Detect only this PDF's known predecessor key. Preserve its bytes without
-    // decoding or hydrating candidate-only state over the structural baseline.
-    const legacyKey = `paperpilot:webmcp:v1:${identity.documentSha256}`;
-    let legacyRaw;
+    legacyKey = `paperpilot:webmcp:v2:${identity.documentSha256}`;
     try {
-      legacyRaw = storage.getItem(legacyKey);
+      raw = storage.getItem(legacyKey);
     } catch (error) {
       return { ...storageFailure(error), key };
     }
-    if (legacyRaw !== null && legacyRaw !== undefined) {
-      return { status: "legacy_preserved", key, legacyKey, legacySchemaVersion: 1 };
+    if (raw !== null && raw !== undefined) {
+      migratedFrom = 2;
+    } else {
+      // Candidate-only v1 state cannot replace the generated structural map.
+      const versionOneKey = `paperpilot:webmcp:v1:${identity.documentSha256}`;
+      let versionOneRaw;
+      try {
+        versionOneRaw = storage.getItem(versionOneKey);
+      } catch (error) {
+        return { ...storageFailure(error), key };
+      }
+      if (versionOneRaw !== null && versionOneRaw !== undefined) {
+        return { status: "legacy_preserved", key, legacyKey: versionOneKey, legacySchemaVersion: 1 };
+      }
+      return { status: "not_found", key };
     }
-    return { status: "not_found", key };
   }
   let decoded;
   try {
-    decoded = await decodeEnvelope(raw, state);
-    decoded.displayTitleRefreshed = await refreshTrustedPaperTitle(decoded, state);
+    decoded = await decodeEnvelope(raw, state, migratedFrom || BROWSER_SNAPSHOT_SCHEMA_VERSION);
+    if (migratedFrom === 2) {
+      decoded.displayTitleRefreshed = await refreshTrustedPaperTitle(decoded, state);
+      await migrateLegacyHistory(decoded, state);
+    } else {
+      decoded.displayTitleRefreshed = await refreshTrustedPatchTitle(decoded, state);
+    }
+    if (decoded.displayTitleRefreshed) {
+      for (const [requestKey, receipt] of decoded.requestResults) {
+        if (receipt.result === null) continue;
+        decoded.requestResults.set(requestKey, { commandDigest: receipt.commandDigest, result: null });
+        decoded.replayInvalidatedCount += 1;
+      }
+    }
   } catch (error) {
     if (error instanceof SnapshotValidationError) {
       return { status: "invalid", key, reason: error.reason, message: error.message };
@@ -841,6 +1182,16 @@ export async function loadBrowserSnapshot({ storage, state } = {}) {
     savedExplanations: structuredClone(decoded.savedExplanations),
     presentation: structuredClone(decoded.presentation),
     displayTitleRefreshed: decoded.displayTitleRefreshed,
+    replayInvalidated: decoded.replayInvalidatedCount > 0,
+    replayInvalidatedCount: decoded.replayInvalidatedCount,
+    ...(decoded.replayInvalidatedCount ? {
+      recoveryNotice: `${decoded.replayInvalidatedCount} historical command replay${decoded.replayInvalidatedCount === 1 ? " was" : "s were"} invalidated because its original digest basis could not be reused. Read the current workspace and use a new command key. Existing command keys remain reserved.`,
+    } : {}),
+    ...(migratedFrom ? {
+      migratedFrom,
+      legacyKey,
+      migrationNotice: "Retained version-2 Undo/Redo steps were migrated. The original save is preserved; a complete historical patch ledger was not available.",
+    } : {}),
   };
 }
 

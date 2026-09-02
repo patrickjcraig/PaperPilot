@@ -110,6 +110,7 @@ function graphAccessibilityHarness() {
     ["paperStructureList", "paper-structure-list"], ["criticalIdeaList", "critical-idea-list"],
     ["graphOutline", "graph-outline"], ["annotationList", "annotation-list"],
     ["graphSearchResults", "graph-search-results"], ["mentorExplanationBody", "mentor-explanation-body"],
+    ["workspaceRevisionList", "workspace-revision-list"],
   ]) elements[name] = element("div", id);
   elements.graphOutlineCount = element("span", "graph-outline-count");
   elements.graphSelection = element("section", "graph-selection");

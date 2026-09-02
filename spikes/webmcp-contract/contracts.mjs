@@ -3,6 +3,7 @@ import {
   createSpatialRendererRecipe,
   validateSpatialAnchor,
 } from "./spatial-anchor.mjs";
+import { applyWorkspacePatch, createWorkspacePatch, invertWorkspacePatch } from "./workspace-patch.mjs";
 
 const SHA256_PATTERN = "^[0-9a-f]{64}$";
 const ID_PATTERN = "^[a-z][a-z0-9:_-]{2,127}$";
@@ -34,6 +35,7 @@ export const LIMITS = Object.freeze({
   graphNodes: 600,
   graphEdges: 1_200,
   annotations: 800,
+  workspaceRevisions: 200,
   readGraphNodes: 100,
   readGraphEdges: 200,
   readGraphAnchors: 40,
@@ -1485,6 +1487,7 @@ export async function createSpikeState(MultiDirectedGraph, options = {}) {
     requestResults: new Map(),
     history: [],
     redoHistory: [],
+    revisions: [],
     mutationQueue: Promise.resolve(),
     latestReadFocusReceipt: null,
     latestReadGraphReceipt: null,
@@ -1846,9 +1849,16 @@ function validateStageExplainInput(state, input) {
 }
 
 function snapshotState(state) {
+  // Graphology copy() clones topology and top-level attribute objects only.
+  // Source arrays/coverage records must not alias the original during a failed
+  // projection or a mandatory commit rollback.
+  const graph = state.graph.copy();
+  graph.replaceAttributes(structuredClone(state.graph.getAttributes()));
+  for (const key of graph.nodes()) graph.replaceNodeAttributes(key, structuredClone(state.graph.getNodeAttributes(key)));
+  for (const key of graph.edges()) graph.replaceEdgeAttributes(key, structuredClone(state.graph.getEdgeAttributes(key)));
   return {
     anchors: new Map([...state.anchors.entries()].map(([key, value]) => [key, structuredClone(value)])),
-    graph: state.graph.copy(),
+    graph,
     annotations: new Map([...state.annotations.entries()].map(([key, value]) => [key, structuredClone(value)])),
     workspaceRevision: state.workspaceRevision,
     workspaceDigest: state.workspaceDigest,
@@ -1858,19 +1868,11 @@ function snapshotState(state) {
   };
 }
 
-function restoreSemanticSnapshot(state, snapshot) {
-  state.anchors = new Map([...snapshot.anchors.entries()].map(([key, value]) => [key, structuredClone(value)]));
-  state.graph = snapshot.graph.copy();
-  state.annotations = new Map([...snapshot.annotations.entries()].map(([key, value]) => [key, structuredClone(value)]));
-  state.focusAnchorId = state.anchors.has(snapshot.focusAnchorId)
-    ? snapshot.focusAnchorId
-    : state.anchors.keys().next().value;
-}
-
 function checkReplay(state, idempotencyKey, commandDigest, toolName) {
   const replay = state.requestResults.get(idempotencyKey);
   if (!replay) return null;
   if (replay.commandDigest !== commandDigest) throw new ContractError("idempotency_conflict", "This idempotency key was already used for different content.");
+  if (replay.result === null) throw new ContractError("idempotency_replay_unavailable", "This historical request cannot be replayed after recovery normalization. Reread the workspace and use a new key for a new intent; no change was applied.");
   const callbackReceiptId = state.id("callback");
   const result = {
     ...replay.result,
@@ -1917,10 +1919,96 @@ function enqueueMutation(state, mutation) {
   return queued;
 }
 
+// A generated identity must never silently overwrite a Map entry (or reuse an
+// identity retained only in a reversed revision). Model input cannot call this.
+function mintWorkspaceId(state, prefix) {
+  const key = assertId(state.id(prefix), "generated_id_invalid");
+  if (state.anchors.has(key) || state.annotations.has(key) || state.graph.hasNode(key) || state.graph.hasEdge(key)
+    || [...state.revisions, ...state.history, ...state.redoHistory].some((entry) => entry.revisionId === key || entry.operationId === key || entry.affectedKeys?.includes(key))) {
+    throw new ContractError("generated_id_collision", "A generated workspace identity already exists. Nothing was changed.");
+  }
+  return key;
+}
+
+function freezeRevision(value) {
+  if (value && typeof value === "object") {
+    for (const child of Object.values(value)) freezeRevision(child);
+    Object.freeze(value);
+  }
+  return value;
+}
+
+// One finalizer owns trusted history for all four direct/model mutation paths.
+// Commands contain intent only; these complete canonical records never come
+// from a model. The forward/inverse patches include source creation so Undo of
+// a reader selection removes its projection without losing the source in history.
+async function appendWorkspaceRevision(state, before, input, metadata) {
+  assertRevisionHead(state, before);
+  const actualBefore = { ...before };
+  await recomputeDigests(actualBefore);
+  if (actualBefore.workspaceDigest !== before.workspaceDigest || actualBefore.graphDigest !== before.graphDigest || actualBefore.annotationDigest !== before.annotationDigest) {
+    throw new ContractError("workspace_patch_conflict", "The source workspace changed outside this revision. Nothing was changed.");
+  }
+  const { forwardPatch, inversePatch } = createWorkspacePatch(before, state);
+  // Execute the computed patch against a clone before accepting its inverse.
+  // This catches dangling edges, missing links and an incomplete writer batch.
+  const projected = { ...state, ...applyWorkspacePatch({ ...before, paper: state.paper }, forwardPatch) };
+  await recomputeDigests(projected);
+  if (projected.workspaceDigest !== state.workspaceDigest || projected.graphDigest !== state.graphDigest || projected.annotationDigest !== state.annotationDigest) {
+    throw new ContractError("workspace_patch_invalid", "The complete workspace patch did not reproduce the intended change.");
+  }
+  // Reserve enough ledger room to Undo every retained applied change. At the
+  // ceiling we reject new work rather than silently compact reversible history.
+  if (state.revisions.length + state.history.length + 2 > LIMITS.workspaceRevisions) {
+    throw new ContractError("history_limit_exceeded", "The browser workspace history is full. Existing changes and Undo history were preserved.");
+  }
+  const operationId = metadata.operationId || mintWorkspaceId(state, "operation");
+  if (operationId === metadata.revisionId) throw new ContractError("generated_id_collision", "Revision and operation identities must be distinct.");
+  const entry = freezeRevision({
+    schemaVersion: 1,
+    paperRef: state.paper.paperRef,
+    ...metadata,
+    operationId,
+    idempotencyKey: input.idempotencyKey || mintWorkspaceId(state, "human:command"),
+    commandDigest: await sha256Text(canonicalJson(input)),
+    fromRevision: before.workspaceRevision,
+    toRevision: state.workspaceRevision,
+    beforeWorkspaceDigest: before.workspaceDigest,
+    afterWorkspaceDigest: state.workspaceDigest,
+    beforeGraphDigest: before.graphDigest,
+    afterGraphDigest: state.graphDigest,
+    beforeAnnotationDigest: before.annotationDigest,
+    afterAnnotationDigest: state.annotationDigest,
+    beforeFocusAnchorId: before.focusAnchorId,
+    afterFocusAnchorId: state.focusAnchorId,
+    forwardPatch,
+    inversePatch,
+    affectedKeys: [...new Set(forwardPatch.map((operation) => operation.key))].sort(),
+    sourceAnchorIds: [...new Set(forwardPatch.flatMap((operation) => [operation.before, operation.after].filter(Boolean).flatMap((record) => record.sourceAnchorIds || (record.anchorId ? [record.anchorId] : []))))].sort(),
+    reviewState: metadata.actor === "agent" ? "unreviewed" : "not_applicable",
+    createdAt: state.now(),
+  });
+  state.history.push(entry);
+  state.revisions.push(entry);
+  const clearedRedo = state.redoHistory.length;
+  state.redoHistory = [];
+  if (clearedRedo) addEvent(state, { eventType: "redo_branch_cleared", actor: metadata.actor, revisionId: entry.revisionId, detailCode: "new_edit_after_undo" });
+  return entry;
+}
+
+function assertRevisionHead(state, expected = state) {
+  const head = state.revisions.at(-1);
+  if (head && (head.toRevision !== expected.workspaceRevision || head.afterWorkspaceDigest !== expected.workspaceDigest
+    || head.afterGraphDigest !== expected.graphDigest || head.afterAnnotationDigest !== expected.annotationDigest)) {
+    throw new ContractError("workspace_patch_conflict", "The workspace history head changed. Nothing was changed.");
+  }
+}
+
 const WORKSPACE_TRANSACTION_FIELDS = Object.freeze([
   "anchors", "graph", "annotations", "workspaceRevision", "workspaceDigest",
   "graphDigest", "annotationDigest", "focusAnchorId", "history", "redoHistory",
   "requestResults", "events",
+  "revisions",
 ]);
 
 // Event observers are presentation-only. The canonical event is already retained;
@@ -1937,7 +2025,7 @@ function publishWorkspaceEvents(state, events) {
 
 /**
  * Isolate every reversible writer until its complete result/history/event state
- * is ready. Existing snapshot history stays compatible with browser recovery.
+ * is ready. Canonical patch history shares the same atomic commit boundary.
  * ID generators may consume IDs on failure; issued IDs are never recycled.
  */
 async function runWorkspaceTransaction(state, mutate, toolName) {
@@ -1951,6 +2039,7 @@ async function runWorkspaceTransaction(state, mutate, toolName) {
     anchors: new Map(state.anchors),
     history: [...state.history],
     redoHistory: [...state.redoHistory],
+    revisions: [...state.revisions],
     requestResults: new Map(state.requestResults),
     events: [...state.events],
     onEvent: (event) => pendingEvents.push(event),
@@ -1977,6 +2066,9 @@ async function runWorkspaceTransaction(state, mutate, toolName) {
   } catch (error) {
     for (const key of WORKSPACE_TRANSACTION_FIELDS) state[key] = before[key];
     if (!projectionStarted && error instanceof ContractError) throw error;
+    if (!projectionStarted && (error?.code === "workspace_patch_invalid" || error?.code === "workspace_patch_conflict")) {
+      throw new ContractError(error.code, "The workspace patch or its expected state is no longer valid. Nothing was changed.");
+    }
     const rollbackEvents = [];
     try {
       const rollback = {
@@ -2048,13 +2140,14 @@ export function applyReaderAnnotation(state, input) {
 
     const before = snapshotState(state);
     try {
-      const anchors = new Map([...state.anchors.entries()].map(([key, value]) => [key, structuredClone(value)]));
+      const anchors = new Map(state.anchors);
       const annotations = new Map([...state.annotations.entries()].map(([key, value]) => [key, structuredClone(value)]));
       const graph = state.graph.copy();
       const anchor = validatedReaderAnchor;
-      const annotationId = state.id("annotation:reader");
-      const nodeKey = state.id("node:reader");
-      const edgeKey = state.id("edge:reader");
+      const annotationId = mintWorkspaceId(state, "annotation:reader");
+      const nodeKey = mintWorkspaceId(state, "node:reader");
+      const edgeKey = mintWorkspaceId(state, "edge:reader");
+      if (new Set([annotationId, nodeKey, edgeKey, anchor.anchorId]).size !== 4) throw new ContractError("generated_id_collision", "New workspace identities must be distinct.");
       const timestamp = state.now();
 
       anchors.set(anchor.anchorId, anchor);
@@ -2105,7 +2198,7 @@ export function applyReaderAnnotation(state, input) {
       state.graph = graph;
       state.workspaceRevision += 1;
       await recomputeDigests(state);
-      const revisionId = state.id("revision");
+      const revisionId = mintWorkspaceId(state, "revision");
       const result = {
         schemaVersion: 1,
         status: "applied_reversible",
@@ -2127,8 +2220,10 @@ export function applyReaderAnnotation(state, input) {
         undoAvailable: true,
         message: "Reader annotation and grounded graph node were created together. The human UI may Undo this revision.",
       };
-      state.history.push({ kind: "reader_annotation_graph", before, after: snapshotState(state), revisionId });
-      state.redoHistory.length = 0;
+      await appendWorkspaceRevision(state, before, input, {
+        kind: "reader_annotation_graph", revisionId, actor: "human", transport: "direct_ui",
+        reason: "Reader created an annotation and its source-grounded graph item.",
+      });
       addEvent(state, {
         eventType: "reader_annotation_graph_created",
         actor: "human",
@@ -2255,7 +2350,7 @@ export function removeReaderAnnotation(state, annotationId) {
       state.graph = graph;
       state.workspaceRevision += 1;
       await recomputeDigests(state);
-      const revisionId = state.id("revision");
+      const revisionId = mintWorkspaceId(state, "revision");
       const result = {
         schemaVersion: 1,
         status: "applied_reversible",
@@ -2278,8 +2373,10 @@ export function removeReaderAnnotation(state, annotationId) {
         undoAvailable: true,
         message: "Reader annotation and its linked reader graph entities were removed in-app. The source anchor was preserved and Human Undo can restore the revision.",
       };
-      state.history.push({ kind: "reader_annotation_removal", before, after: snapshotState(state), revisionId });
-      state.redoHistory.length = 0;
+      await appendWorkspaceRevision(state, before, { annotationId }, {
+        kind: "reader_annotation_removal", revisionId, actor: "human", transport: "direct_ui",
+        reason: "Reader removed an annotation and its unchanged reader graph items.",
+      });
       addEvent(state, {
         eventType: "reader_annotation_removed",
         actor: "human",
@@ -2432,8 +2529,9 @@ async function applyGraphCommand(state, input) {
         assertString(operation.node.label, { max: 160 }, "graph_node_invalid");
         assertString(operation.node.summary, { max: 1_000 }, "graph_node_invalid");
         assertGrounding(state, operation.node.authority, operation.node.sourceAnchorIds);
-        if (typeof operation.node.salience !== "number" || operation.node.salience < 0 || operation.node.salience > 1) throw new ContractError("graph_node_invalid", "Salience must be 0..1.");
-        const key = state.id("node:agent");
+        if (typeof operation.node.salience !== "number" || !Number.isFinite(operation.node.salience) || operation.node.salience < 0 || operation.node.salience > 1) throw new ContractError("graph_node_invalid", "Salience must be 0..1.");
+        const key = mintWorkspaceId(state, "node:agent");
+        if (clone.hasNode(key) || clone.hasEdge(key)) throw new ContractError("generated_id_collision", "Generated graph identity already exists.");
         clone.addNode(key, seededNodeAttributes({
           kind: operation.node.kind,
           label: operation.node.label,
@@ -2478,9 +2576,14 @@ async function applyGraphCommand(state, input) {
         if (current.entityRevision !== operation.expectedEntityRevision) throw new ContractError("entity_revision_conflict", "Graph node changed; reread before updating.");
         const status = operation.op === "tombstone_node" ? "tombstoned" : "active";
         clone.mergeNodeAttributes(operation.nodeKey, { status, entityRevision: current.entityRevision + 1 });
-        for (const edgeKey of clone.edges(operation.nodeKey)) {
+        // Explicit restore_node restores only the node. Human Undo restores
+        // exactly the incident edges changed by its deletion patch, including
+        // leaving independently tombstoned edges untouched.
+        if (status === "tombstoned") for (const edgeKey of clone.edges(operation.nodeKey)) {
           const edge = clone.getEdgeAttributes(edgeKey);
+          if (edge.status !== "active") continue;
           clone.mergeEdgeAttributes(edgeKey, { status, entityRevision: edge.entityRevision + 1 });
+          affected.tombstoned.push(edgeKey);
         }
         affected[status === "active" ? "restored" : "tombstoned"].push(operation.nodeKey);
       } else if (operation.op === "add_edge") {
@@ -2491,7 +2594,8 @@ async function applyGraphCommand(state, input) {
         assertString(operation.edge.kind, { values: graphEdgeKindSchema.enum }, "graph_edge_invalid");
         if (operation.edge.claim !== undefined) assertString(operation.edge.claim, { max: 1_000 }, "graph_edge_invalid");
         assertGrounding(state, operation.edge.authority, operation.edge.sourceAnchorIds);
-        const key = state.id("edge:agent");
+        const key = mintWorkspaceId(state, "edge:agent");
+        if (clone.hasNode(key) || clone.hasEdge(key)) throw new ContractError("generated_id_collision", "Generated graph identity already exists.");
         clone.addDirectedEdgeWithKey(key, source, target, seededEdgeAttributes({
           kind: operation.edge.kind,
           claim: operation.edge.claim || "",
@@ -2535,8 +2639,8 @@ async function applyGraphCommand(state, input) {
     state.graph = clone;
     state.workspaceRevision += 1;
     await recomputeDigests(state);
-    const operationId = state.id("operation");
-    const revisionId = state.id("revision");
+    const operationId = mintWorkspaceId(state, "operation");
+    const revisionId = mintWorkspaceId(state, "revision");
     const result = {
       schemaVersion: 1,
       status: "applied_reversible",
@@ -2556,8 +2660,10 @@ async function applyGraphCommand(state, input) {
       undoAvailable: true,
       message: "Graph revision applied reversibly. Only the human UI may Undo or Redo it.",
     };
-    state.history.push({ kind: "graph", before, after: snapshotState(state), operationId, revisionId });
-    state.redoHistory.length = 0;
+    await appendWorkspaceRevision(state, before, input, {
+      kind: "graph", operationId, revisionId, actor: "agent", transport: "webmcp",
+      toolName: "paperpilot.apply_graph", reason: input.reason,
+    });
     state.requestResults.set(input.idempotencyKey, { commandDigest, result });
     addEvent(state, { eventType: "graph_applied", actor: "agent", toolName: "paperpilot.apply_graph", callbackReceiptId: result.callbackReceiptId, revisionId, beforeDigest: before.workspaceDigest, afterDigest: state.workspaceDigest });
     state.onStateChange(state);
@@ -2595,7 +2701,8 @@ async function applyAnnotationCommand(state, input) {
         assertArray(operation.graphEdgeKeys, { max: 12, unique: true }, "annotation_operation_invalid");
         for (const key of operation.graphNodeKeys) assertGraphEntity(state, key, "node");
         for (const key of operation.graphEdgeKeys) assertGraphEntity(state, key, "edge");
-        const annotationId = state.id("annotation:agent");
+        const annotationId = mintWorkspaceId(state, "annotation:agent");
+        if (clone.has(annotationId)) throw new ContractError("generated_id_collision", "Generated annotation identity already exists.");
         clone.set(annotationId, {
           annotationId,
           paperRef: state.paper.paperRef,
@@ -2640,8 +2747,8 @@ async function applyAnnotationCommand(state, input) {
     state.annotations = clone;
     state.workspaceRevision += 1;
     await recomputeDigests(state);
-    const operationId = state.id("operation");
-    const revisionId = state.id("revision");
+    const operationId = mintWorkspaceId(state, "operation");
+    const revisionId = mintWorkspaceId(state, "revision");
     const result = {
       schemaVersion: 1,
       status: "applied_reversible",
@@ -2661,8 +2768,10 @@ async function applyAnnotationCommand(state, input) {
       undoAvailable: true,
       message: "Annotation revision applied reversibly. Only the human UI may Undo or Redo it.",
     };
-    state.history.push({ kind: "annotation", before, after: snapshotState(state), operationId, revisionId });
-    state.redoHistory.length = 0;
+    await appendWorkspaceRevision(state, before, input, {
+      kind: "annotation", operationId, revisionId, actor: "agent", transport: "webmcp",
+      toolName: "paperpilot.apply_annotation", reason: input.reason,
+    });
     state.requestResults.set(input.idempotencyKey, { commandDigest, result });
     addEvent(state, { eventType: "annotation_changed", actor: "agent", toolName: "paperpilot.apply_annotation", callbackReceiptId: result.callbackReceiptId, revisionId, beforeDigest: before.workspaceDigest, afterDigest: state.workspaceDigest });
     state.onStateChange(state);
@@ -2679,57 +2788,82 @@ async function applyAnnotationCommand(state, input) {
   }
 }
 
-export async function undoLastHumanChange(state) {
-  return enqueueMutation(state, () => runWorkspaceTransaction(state, async (state) => {
-    const last = state.history.pop();
-    if (!last) return { status: "nothing_to_undo" };
-    const beforeUndoDigest = state.workspaceDigest;
-    restoreSemanticSnapshot(state, last.before);
-    state.workspaceRevision += 1;
-    await recomputeDigests(state);
-    state.redoHistory.push(last);
-    addEvent(state, { eventType: "undo_applied", actor: "human", relatedRevisionId: last.revisionId, beforeDigest: beforeUndoDigest, afterDigest: state.workspaceDigest });
-    state.onStateChange(state);
-    return {
-      status: "undone",
-      relatedRevisionId: last.revisionId,
-      restoredWorkspaceDigest: state.workspaceDigest,
-      expectedWorkspaceDigest: last.before.workspaceDigest,
-      digestMatches: state.workspaceDigest === last.before.workspaceDigest,
-    };
-  }));
+async function reverseWorkspaceRevision(state, direction) {
+  const undo = direction === "undo";
+  const stack = undo ? state.history : state.redoHistory;
+  const last = stack.at(-1);
+  if (!last) return { status: undo ? "nothing_to_undo" : "nothing_to_redo" };
+  assertRevisionHead(state);
+  if (state.revisions.length >= LIMITS.workspaceRevisions
+    || (!undo && state.revisions.length + state.history.length + 2 > LIMITS.workspaceRevisions)) {
+    throw new ContractError("history_limit_exceeded", "The retained revision ledger is full. No history was removed.");
+  }
+  if (last.paperRef !== state.paper.paperRef || canonicalJson(invertWorkspacePatch(last.forwardPatch)) !== canonicalJson(last.inversePatch)) {
+    throw new ContractError("workspace_patch_invalid", "The stored revision has no valid complete inverse. Nothing was changed.");
+  }
+  const before = snapshotState(state);
+  const expectedBefore = undo ? "after" : "before";
+  const expectedAfter = undo ? "before" : "after";
+  // Recompute from actual records, not just cached digest fields. Unrelated
+  // semantic drift cannot be silently overwritten by a historical inverse.
+  const actual = { ...state };
+  await recomputeDigests(actual);
+  for (const suffix of ["WorkspaceDigest", "GraphDigest", "AnnotationDigest"]) {
+    const key = suffix[0].toLowerCase() + suffix.slice(1);
+    if (actual[key] !== state[key] || actual[key] !== last[`${expectedBefore}${suffix}`]) {
+      throw new ContractError("workspace_patch_conflict", "The current workspace no longer matches this history branch. Nothing was changed.");
+    }
+  }
+  const forwardPatch = undo ? last.inversePatch : last.forwardPatch;
+  const inversePatch = undo ? last.forwardPatch : last.inversePatch;
+  Object.assign(state, applyWorkspacePatch(state, forwardPatch));
+  const focus = undo ? last.beforeFocusAnchorId : last.afterFocusAnchorId;
+  state.focusAnchorId = state.anchors.has(focus) ? focus : state.anchors.keys().next().value;
+  state.workspaceRevision += 1;
+  await recomputeDigests(state);
+  for (const suffix of ["WorkspaceDigest", "GraphDigest", "AnnotationDigest"]) {
+    const key = suffix[0].toLowerCase() + suffix.slice(1);
+    if (state[key] !== last[`${expectedAfter}${suffix}`]) {
+      throw new ContractError("workspace_patch_invalid", "The revision did not reproduce its expected semantic state. Nothing was changed.");
+    }
+  }
+  const revisionId = mintWorkspaceId(state, "revision");
+  const entry = freezeRevision({
+    schemaVersion: 1, paperRef: state.paper.paperRef, kind: direction,
+    revisionId, operationId: mintWorkspaceId(state, "operation"),
+    idempotencyKey: mintWorkspaceId(state, "human:command"),
+    commandDigest: await sha256Text(canonicalJson({ direction, relatedRevisionId: last.revisionId, baseWorkspaceRevision: before.workspaceRevision, baseWorkspaceDigest: before.workspaceDigest })),
+    actor: "human", transport: "direct_ui", reason: `${undo ? "Undo" : "Redo"}: ${last.reason}`.slice(0, 500),
+    relatedRevisionId: last.revisionId,
+    fromRevision: before.workspaceRevision, toRevision: state.workspaceRevision,
+    beforeWorkspaceDigest: before.workspaceDigest, afterWorkspaceDigest: state.workspaceDigest,
+    beforeGraphDigest: before.graphDigest, afterGraphDigest: state.graphDigest,
+    beforeAnnotationDigest: before.annotationDigest, afterAnnotationDigest: state.annotationDigest,
+    beforeFocusAnchorId: before.focusAnchorId, afterFocusAnchorId: state.focusAnchorId,
+    forwardPatch, inversePatch, affectedKeys: [...last.affectedKeys], sourceAnchorIds: [...last.sourceAnchorIds],
+    reviewState: "not_applicable", createdAt: state.now(),
+  });
+  state.revisions.push(entry);
+  stack.pop();
+  (undo ? state.redoHistory : state.history).push(last);
+  addEvent(state, {
+    eventType: undo ? "undo_applied" : "redo_applied", actor: "human", revisionId,
+    relatedRevisionId: last.revisionId, beforeDigest: before.workspaceDigest, afterDigest: state.workspaceDigest,
+  });
+  return {
+    status: undo ? "undone" : "redone", revisionId, relatedRevisionId: last.revisionId,
+    restoredWorkspaceDigest: state.workspaceDigest,
+    expectedWorkspaceDigest: last[`${expectedAfter}WorkspaceDigest`], digestMatches: true,
+  };
 }
 
-/**
- * Restore the semantic `after` snapshot retained by Human Undo. This remains a
- * page-owned UI command; it is deliberately absent from all six WebMCP tools
- * and their closed input schemas.
- */
+// Human-only entrypoints; neither appears in the WebMCP tool definitions.
+export async function undoLastHumanChange(state) {
+  return enqueueMutation(state, () => runWorkspaceTransaction(state, (draft) => reverseWorkspaceRevision(draft, "undo")));
+}
+
 export async function redoLastHumanChange(state) {
-  return enqueueMutation(state, () => runWorkspaceTransaction(state, async (state) => {
-    const last = state.redoHistory.pop();
-    if (!last) return { status: "nothing_to_redo" };
-    const beforeRedoDigest = state.workspaceDigest;
-    restoreSemanticSnapshot(state, last.after);
-    state.workspaceRevision += 1;
-    await recomputeDigests(state);
-    state.history.push(last);
-    addEvent(state, {
-      eventType: "redo_applied",
-      actor: "human",
-      relatedRevisionId: last.revisionId,
-      beforeDigest: beforeRedoDigest,
-      afterDigest: state.workspaceDigest,
-    });
-    state.onStateChange(state);
-    return {
-      status: "redone",
-      relatedRevisionId: last.revisionId,
-      restoredWorkspaceDigest: state.workspaceDigest,
-      expectedWorkspaceDigest: last.after.workspaceDigest,
-      digestMatches: state.workspaceDigest === last.after.workspaceDigest,
-    };
-  }));
+  return enqueueMutation(state, () => runWorkspaceTransaction(state, (draft) => reverseWorkspaceRevision(draft, "redo")));
 }
 
 function toolDefinition(name, execute) {

@@ -19,6 +19,10 @@
 }
 
 * { box-sizing: border-box; }
+.workspace-change-review { margin-bottom: 10px; overflow-wrap: anywhere; }
+.workspace-change-review ol { padding-left: 22px; }
+.workspace-change-review li { margin: 8px 0; font-size: 12px; line-height: 1.5; }
+.workspace-change-review pre { white-space: pre-wrap; max-height: 180px; overflow: auto; }
 html { scroll-behavior: smooth; }
 body { min-width: 0; margin: 0; background: var(--canvas); }
 button { font: inherit; }

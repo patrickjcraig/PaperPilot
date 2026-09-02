@@ -335,7 +335,7 @@ function injectTransactionFailure(state, command, kind, phase) {
     const result = original.apply(this, values);
     const record = values[0];
     if (
-      (phase === "history append" && record?.kind === kind && record?.before?.workspaceDigest)
+      (phase === "history append" && record?.kind === kind && record?.beforeWorkspaceDigest)
       || (phase === "event append" && record?.eventType === (kind === "graph" ? "graph_applied" : "annotation_changed"))
     ) failure();
     return result;

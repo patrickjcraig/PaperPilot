@@ -119,6 +119,8 @@ const elements = {
   disposeTools: byId("dispose-tools"),
   humanUndo: byId("human-undo"),
   humanRedo: byId("human-redo"),
+  workspaceChangeStatus: byId("workspace-change-status"),
+  workspaceRevisionList: byId("workspace-revision-list"),
   revealVisualKey: byId("reveal-visual-key"),
   confirmVisualProof: byId("confirm-visual-proof"),
   visualMode: byId("visual-mode"),
@@ -475,11 +477,15 @@ async function restoreBrowserWorkspace() {
     savedExplanations = result.savedExplanations || [];
     annotationOrder = Object.freeze(result.presentation?.annotationOrder || []);
     mergeRestoredActivity(state.events);
-    snapshotEnabled = true;
-    snapshotStored = true;
-    snapshotDirty = Boolean(result.displayTitleRefreshed);
+    // Migration is read-only. An explicit Save creates the new-format copy;
+    // merely inspecting an older workspace never overwrites it via autosave.
+    snapshotEnabled = !result.migratedFrom;
+    snapshotStored = !result.migratedFrom;
+    snapshotDirty = Boolean(result.displayTitleRefreshed || result.migratedFrom);
     snapshotStatusKind = snapshotDirty ? "dirty" : "restored";
-    const titleNotice = result.displayTitleRefreshed ? " · current filename applied; save to update the stored title" : "";
+    const titleNotice = (result.migratedFrom ? " · older copy preserved; Save to keep the new reversible history format"
+      : result.displayTitleRefreshed ? " · current filename applied; save to update the stored title" : "")
+      + (result.replayInvalidated ? " · historical retry keys protected; reread before new agent edits" : "");
     snapshotStatusMessage = `Restored from this browser · ${new Date(result.savedAt).toLocaleString()} · revision ${state.workspaceRevision}${titleNotice}`;
     recordActivity("browser_workspace_restored", { actor: "page", status: `revision ${state.workspaceRevision}${result.displayTitleRefreshed ? " · display title refreshed" : ""}` });
   } else if (result.status === "legacy_preserved") {
@@ -2233,7 +2239,7 @@ function workspaceInteractionAvailable(element) {
 function workspaceInteractionTargets() {
   const targets = [];
   for (const region of [elements.paperStructureList, elements.criticalIdeaList, elements.graphOutline, elements.graphSelectionDetail,
-    elements.annotationList, elements.graphSearchResults, elements.mentorExplanationBody]) {
+    elements.annotationList, elements.graphSearchResults, elements.mentorExplanationBody, elements.workspaceRevisionList]) {
     for (const element of region.querySelectorAll("button, summary, [tabindex]")) {
       const row = element.closest("[data-annotation-id]") || element.closest("[data-mentor-section-key]")
         || element.closest("li[data-interaction-key]") || element.closest("li[data-graph-node-key]")
@@ -2292,6 +2298,86 @@ function restoreWorkspaceInteraction(previous) {
   fallback?.focus({ preventScroll: true });
 }
 
+let renderedRevisionHead = null;
+function renderWorkspaceHistory() {
+  const entries = state.revisions || [];
+  const latest = entries.at(-1);
+  const stamp = `${state.paper.paperRef}:${latest?.revisionId || "baseline"}:${state.history.length}:${state.redoHistory.length}`;
+  if (stamp === renderedRevisionHead) return;
+  renderedRevisionHead = stamp;
+  const actor = latest?.actor === "agent" ? "Agent" : "You";
+  elements.workspaceChangeStatus.textContent = latest
+    ? `${actor} ${latest.kind === "undo" ? "undid a change" : latest.kind === "redo" ? "redid a change" : "changed the workspace"} · ${latest.forwardPatch.length} ${latest.forwardPatch.length === 1 ? "record" : "records"} · ${!elements.humanUndo.disabled ? "Undo available" : "Nothing to undo"}${state.redoHistory.length ? elements.humanRedo.disabled ? " · Redo retained; history limit reached" : " · Redo available" : ""}${latest.actor === "agent" ? " · Unreviewed" : ""}`
+    : state.history.length || state.redoHistory.length
+      ? "Older reversible history restored. New changes will appear here; original activity is in Evidence."
+      : "No edits yet. Changes to the map and annotations stay reversible.";
+  const disclosureState = new Set([...elements.workspaceRevisionList.querySelectorAll("details[open]")].map((element) => element.dataset.revisionId));
+  elements.workspaceRevisionList.replaceChildren();
+  // Display window only: the complete bounded ledger is retained in state.
+  for (const revision of entries.slice(-20).reverse()) {
+    const row = document.createElement("li");
+    row.dataset.interactionKey = revision.revisionId;
+    const detail = document.createElement("details");
+    detail.dataset.revisionId = revision.revisionId;
+    detail.open = disclosureState.has(revision.revisionId);
+    const title = document.createElement("summary");
+    title.textContent = `Revision ${revision.toRevision} · ${revision.actor === "agent" ? "Agent · Unreviewed" : "Human"} · ${revision.reason}`;
+    detail.append(title);
+    const edits = document.createElement("ul");
+    for (const operation of revision.forwardPatch) {
+      const from = operation.before;
+      const to = operation.after;
+      const action = !from ? "Created" : !to ? "Removed by Undo" : from.status !== to.status
+        ? to.status === "tombstoned" ? "Removed in-app" : "Restored" : "Updated";
+      const label = to?.label || from?.label || to?.claim || from?.claim || operation.key;
+      const item = document.createElement("li");
+      item.textContent = `${action} ${operation.op.slice(4)}: ${label}`;
+      if (from && to) {
+        const changes = Object.keys(to).filter((key) => !["entityRevision", "updatedAt", "createdAt"].includes(key) && JSON.stringify(from[key]) !== JSON.stringify(to[key]));
+        const values = document.createElement("p");
+        values.textContent = changes.map((key) => `${key}: ${JSON.stringify(from[key])} → ${JSON.stringify(to[key])}`).join("; ");
+        item.append(values);
+      }
+      edits.append(item);
+    }
+    const integrity = document.createElement("p");
+    integrity.textContent = `Workspace ${revision.beforeWorkspaceDigest.slice(0, 12)}… → ${revision.afterWorkspaceDigest.slice(0, 12)}… · ${revision.inversePatch.length} inverse records retained · ${revision.sourceAnchorIds.length} source anchors`;
+    detail.append(edits, integrity);
+    row.append(detail);
+    elements.workspaceRevisionList.append(row);
+  }
+  if (!entries.length) appendTextListItem(elements.workspaceRevisionList, "No new revision recorded in this session history.");
+}
+
+let humanHistoryBusy = false;
+function handleHistoryShortcut(event) {
+  if (event.defaultPrevented || event.isComposing || event.altKey || !(event.ctrlKey || event.metaKey)) return;
+  if (event.target instanceof Element && event.target.closest("input, textarea, select, [contenteditable]:not([contenteditable='false']), [role='textbox']")) return;
+  const key = event.key.toLowerCase();
+  const direction = key === "z" ? (event.shiftKey ? "redo" : "undo") : key === "y" && event.ctrlKey && !event.metaKey && !event.shiftKey ? "redo" : null;
+  if (!direction || document.body.classList.contains("is-waiting-for-paper")) return;
+  event.preventDefault();
+  if (!(direction === "undo" ? elements.humanUndo : elements.humanRedo).disabled) void performHumanHistoryAction(direction);
+}
+
+async function performHumanHistoryAction(direction) {
+  if (humanHistoryBusy) return;
+  humanHistoryBusy = true;
+  try {
+    const result = await (direction === "undo" ? undoLastHumanChange(state) : redoLastHumanChange(state));
+    recordActivity(`human_${direction}_control`, { actor: "human", status: result.status });
+    renderLastResult(result);
+    renderState();
+    if (result.status === "undone" || result.status === "redone") markSnapshotDirty();
+  } catch (error) {
+    const message = `Cannot ${direction} this change. ${error?.message || "The current workspace was preserved."}`;
+    elements.workspaceChangeStatus.textContent = message;
+    recordActivity(`human_${direction}_failed`, { actor: "human", status: error?.code || "history_failed" });
+  } finally {
+    humanHistoryBusy = false;
+  }
+}
+
 function renderState() {
   const nextStamp = {
     documentKey: `${state.paper.paperRef}:${state.paper.documentSha256}`,
@@ -2310,8 +2396,9 @@ function renderState() {
   if (refresh.content || refresh.mentor) lastInteractionRenderStamp = null;
   elements.workspaceStatus.textContent = `Revision ${state.workspaceRevision} · ${state.workspaceDigest.slice(0, 10)}…`;
   elements.visualMode.textContent = `Evidence mode: ${state.visualEvidenceMode}`;
-  elements.humanUndo.disabled = state.history.length === 0;
-  elements.humanRedo.disabled = state.redoHistory.length === 0;
+  elements.humanUndo.disabled = state.history.length === 0 || state.revisions.length >= LIMITS.workspaceRevisions;
+  elements.humanRedo.disabled = state.redoHistory.length === 0 || state.revisions.length + state.history.length + 2 > LIMITS.workspaceRevisions;
+  renderWorkspaceHistory();
   if (refresh.content) {
     reconcileGraphPresentation();
     syncPersistedAnnotationOverlays();
@@ -3204,6 +3291,7 @@ function wireHumanControls() {
   window.addEventListener("pointercancel", cancelAnnotationPointerDrag);
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") { finishGraphNodeDrag(); finishAnnotationDrag(); }
+    handleHistoryShortcut(event);
   });
 
   elements.graphCanvasShell.addEventListener("dragover", (event) => {
@@ -3228,27 +3316,8 @@ function wireHumanControls() {
     finally { finishAnnotationDrag(); }
   });
 
-  elements.humanUndo.addEventListener("click", async () => {
-    const result = await undoLastHumanChange(state);
-    recordActivity("human_undo_control", { actor: "human", status: result.status });
-    elements.annotationLayoutStatus.textContent = result.status === "undone"
-      ? "Human Undo restored the previous PaperPilot graph and annotation state. Human Redo is available."
-      : "There is no human change to undo.";
-    renderLastResult(result);
-    renderState();
-    if (result.status === "undone") markSnapshotDirty();
-  });
-
-  elements.humanRedo.addEventListener("click", async () => {
-    const result = await redoLastHumanChange(state);
-    recordActivity("human_redo_control", { actor: "human", status: result.status });
-    elements.annotationLayoutStatus.textContent = result.status === "redone"
-      ? "Human Redo reapplied the graph and annotation state. Human Undo is available."
-      : "There is no human change to redo.";
-    renderLastResult(result);
-    renderState();
-    if (result.status === "redone") markSnapshotDirty();
-  });
+  elements.humanUndo.addEventListener("click", () => void performHumanHistoryAction("undo"));
+  elements.humanRedo.addEventListener("click", () => void performHumanHistoryAction("redo"));
 
   elements.confirmVisualProof.addEventListener("click", () => {
     if (!visualKeyRevealed || state.visualEvidenceMode === "client_visible_region") return;

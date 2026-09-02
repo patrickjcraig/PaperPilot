@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
@@ -300,6 +301,7 @@ async function annotationPointerHarness() {
   context.renderAnnotations = () => { renderCount += 1; };
   context.markSnapshotDirty = () => { dirtyCount += 1; };
   context.finishGraphNodeDrag = () => {};
+  context.handleHistoryShortcut = () => {}; // The history shortcut has its own production-handler suite.
   const realFit = context.fitGraphView;
   context.fitGraphView = () => { traces.push("fit"); realFit(); };
   for (const name of ["clearAnnotationDropIndicators", "finishAnnotationDrag", "currentAnnotationPointerDrag",
@@ -949,8 +951,8 @@ test("source synchronization retains every exact annotation-linked node and edge
 
 test("600-node/1200-edge arrangement smoke keeps complete outline identity and bounded WebMCP facts", async () => {
   const state = await createFixture();
-  // A bounded trusted fixture supplies the dense topology; one real reducer
-  // command below establishes its semantic digest before any layout is tested.
+  // A bounded trusted fixture supplies the dense topology and its baseline
+  // digests. Real mutations must reject out-of-reducer semantic drift.
   const nodeTemplate = structuredClone(state.graph.getNodeAttributes(MOVED_NODE_KEY));
   for (let index = state.graph.order; index < 600; index += 1) {
     state.graph.addNode(`node:dense:${String(index).padStart(4, "0")}`, {
@@ -976,6 +978,18 @@ test("600-node/1200-edge arrangement smoke keeps complete outline identity and b
       sourceAnchorIds: [ANCHOR_ID],
     });
   }
+  const excluded = new Set(["x", "y", "size", "color", "hidden", "selected", "hovered", "entityRevision", "createdAt", "updatedAt"]);
+  const attributes = (record) => Object.fromEntries(Object.entries(record).filter(([key]) => !excluded.has(key)));
+  const graph = {
+    nodes: state.graph.nodes().sort().map((key) => ({ key, ...attributes(state.graph.getNodeAttributes(key)) })),
+    edges: state.graph.edges().sort().map((key) => ({ key, sourceKey: state.graph.source(key), targetKey: state.graph.target(key), ...attributes(state.graph.getEdgeAttributes(key)) })),
+  };
+  const annotations = [...state.annotations.values()].sort((a, b) => a.annotationId.localeCompare(b.annotationId))
+    .map((record) => Object.fromEntries(Object.entries(record).filter(([key]) => !["entityRevision", "createdAt", "updatedAt"].includes(key))));
+  const digest = (value) => createHash("sha256").update(canonicalJson(value)).digest("hex");
+  state.graphDigest = digest(graph);
+  state.annotationDigest = digest(annotations);
+  state.workspaceDigest = digest({ graph, annotations });
   const tools = toolsFor(state);
   const command = graphCommand(state);
   command.operations = [{ op: "update_node", nodeKey: MOVED_NODE_KEY, expectedEntityRevision: 1, set: { label: nodeTemplate.label, salience: 0.72 } }];

@@ -268,10 +268,16 @@
               <h2 id="graph-heading" tabindex="-1">Knowledge graph</h2>
             </div>
             <div class="graph-history-controls" role="group" aria-label="Reversible workspace changes">
-              <button id="human-undo" type="button" aria-label="Human Undo" title="Undo the last graph or annotation edit">Undo</button>
-              <button id="human-redo" type="button" aria-label="Human Redo" title="Redo the last undone edit" disabled>Redo</button>
+              <button id="human-undo" type="button" aria-label="Human Undo" aria-describedby="workspace-change-status" aria-keyshortcuts="Control+Z Meta+Z" title="Undo the last graph or annotation edit (Ctrl/Cmd+Z)">Undo</button>
+              <button id="human-redo" type="button" aria-label="Human Redo" aria-describedby="workspace-change-status" aria-keyshortcuts="Control+Shift+Z Meta+Shift+Z Control+Y" title="Redo the last undone edit (Ctrl/Cmd+Shift+Z)" disabled>Redo</button>
             </div>
           </header>
+          <p id="workspace-change-status" class="annotation-boundary" role="status" aria-live="polite" aria-atomic="true">No edits yet. Changes to the map and annotations stay reversible.</p>
+          <details id="workspace-change-review" class="workspace-change-review">
+            <summary>Review changes</summary>
+            <p class="annotation-boundary">Exact in-app edits, not scientific verification. Original PDF bytes never change.</p>
+            <ol id="workspace-revision-list" aria-label="Reversible workspace revisions"></ol>
+          </details>
           <div class="graph-rail-tabs" role="tablist" aria-label="Knowledge graph views">
             <button id="graph-map-tab" type="button" role="tab" aria-selected="true" aria-controls="graph-map-panel" data-rail-tab="map">Map</button>
             <button id="graph-annotations-tab" type="button" role="tab" aria-selected="false" aria-controls="graph-annotations-panel" tabindex="-1" data-rail-tab="annotations">Annotations <span id="annotation-count" class="count-chip">0</span></button>

@@ -434,36 +434,38 @@ type PageCoverageRefV1 = {
 
 type PaperGraphNodeV1 = {
   key: string;
-  paperRef: string;
+  paperRef?: string;             // omitted in workspace-scoped records; trusted workspace supplies identity
   kind: GraphNodeKind;
   label: string;
   summary: string;
   authority: GraphAuthority;
   sourceAnchorIds: string[];
-  structuralCoverage: PageCoverageRefV1[];
+  structuralCoverage?: PageCoverageRefV1[];
+  structuralBasis?: "paper_root" | "pdf_outline" | "heading_heuristic" | "page_fallback";
+  structuralConfidence?: "document_declared" | "system_inferred" | "coverage_fallback";
   optionalCanonicalConceptKey?: string;
   salience: number;              // 0..1 presentation hint, not truth
-  origin: "automatic_map" | "agent" | "reader";
+  origin: "system" | "automatic_map" | "agent" | "reader";
   status: "active" | "tombstoned";
   entityRevision: number;
-  createdAt: string;
-  updatedAt: string;
+  createdAt?: string;
+  updatedAt?: string;
 };
 
 type PaperGraphEdgeV1 = {
   key: string;
-  paperRef: string;
+  paperRef?: string;             // when present, must match the trusted workspace
   sourceKey: string;
   targetKey: string;
   kind: GraphEdgeKind;
   claim?: string;
   authority: GraphAuthority;
   sourceAnchorIds: string[];
-  origin: "automatic_map" | "agent" | "reader";
+  origin: "system" | "automatic_map" | "agent" | "reader";
   status: "active" | "tombstoned";
   entityRevision: number;
-  createdAt: string;
-  updatedAt: string;
+  createdAt?: string;
+  updatedAt?: string;
 };
 ```
 
@@ -526,20 +528,23 @@ type AnnotationCommandOperationV1 =
   | { op: "restore_annotation"; annotationId: string; expectedEntityRevision: number };
 
 // Trusted history patches are produced by the reducer, never accepted from a model.
-// A put operation contains the exact canonical before/after record; swapping them is the inverse.
+// Each closed operation requires both endpoints; null means the entity is absent.
+// Records include exact lifecycle metadata but never renderer attributes.
 type WorkspacePatchOperationV1 =
-  | { op: "put_node"; key: string; before?: PaperGraphNodeV1; after?: PaperGraphNodeV1 }
-  | { op: "put_edge"; key: string; before?: PaperGraphEdgeV1; after?: PaperGraphEdgeV1 }
-  | { op: "put_annotation"; key: string; before?: AnnotationV1; after?: AnnotationV1 };
+  | { op: "put_node"; key: string; before: PaperGraphNodeV1 | null; after: PaperGraphNodeV1 | null }
+  | { op: "put_edge"; key: string; before: PaperGraphEdgeV1 | null; after: PaperGraphEdgeV1 | null }
+  | { op: "put_annotation"; key: string; before: AnnotationV1 | null; after: AnnotationV1 | null }
+  | { op: "put_anchor"; key: string; before: PaperAnchorV1 | null; after: PaperAnchorV1 | null };
 
 type WorkspaceRevisionV1 = {
+  schemaVersion: 1;
   revisionId: string;
   paperRef: string;
   operationId: string;
   idempotencyKey: string;
   commandDigest: Sha256;
-  actor: "system" | "agent" | "human";
-  transport: "automatic_map" | "webmcp" | "direct_ui";
+  actor: "agent" | "human";
+  transport: "webmcp" | "direct_ui";
   toolName?: "paperpilot.apply_graph" | "paperpilot.apply_annotation";
   reason: string;
   fromRevision: number;
@@ -550,42 +555,49 @@ type WorkspaceRevisionV1 = {
   afterGraphDigest: Sha256;
   beforeAnnotationDigest: Sha256;
   afterAnnotationDigest: Sha256;
+  beforeFocusAnchorId: string;
+  afterFocusAnchorId: string;
   forwardPatch: WorkspacePatchOperationV1[];
   inversePatch: WorkspacePatchOperationV1[];
   affectedKeys: string[];
   sourceAnchorIds: string[];
-  kind: "apply" | "undo" | "redo" | "rollback";
+  kind: "graph" | "annotation" | "reader_annotation_graph" | "reader_annotation_removal" | "undo" | "redo";
   relatedRevisionId?: string;
-  reviewState: "not_applicable" | "unreviewed" | "acknowledged";
+  reviewState: "not_applicable" | "unreviewed";
   createdAt: string;
 };
 ```
 
-The semantic workspace digest is SHA-256 over canonical JSON with lexicographically sorted node, edge, annotation, anchor-link, and attribute keys. It includes stable identity, semantic fields, grounding, authority, and active/tombstoned status. It excludes `entityRevision`, `createdAt`, `updatedAt`, workspace revision numbers, revision IDs, review state, provenance timestamps, Sigma coordinates/camera state, selection, hover, animation, and other UI metadata. The graph and annotation sub-digests use the same projections over their respective records. Therefore Undo and Redo create new history revisions while reproducing the original semantic before/after digests exactly.
+The semantic workspace digest is SHA-256 over canonical JSON with lexicographically sorted node, edge, annotation, anchor-link, and attribute keys. It includes stable identity, semantic fields, grounding, authority, and active/tombstoned status. It excludes `entityRevision`, `createdAt`, `updatedAt`, workspace revision numbers, revision IDs, review state, provenance timestamps, Sigma coordinates/camera state, selection, hover, animation, and other UI metadata. The graph and annotation sub-digests use the same projections over their respective records. Therefore Undo and Redo create new history revisions while reproducing the original semantic before/after digests exactly. Immutable source-anchor records have their own digest validation; graph/annotation source links, rather than a duplicate raw-anchor registry, participate in the workspace semantic digest.
 
-Model commands never contain `paperRef`, `origin`, durable IDs, timestamps, status, revision-history records, or raw endpoint strings. The adapter injects current-paper authority and resolves the explicit `issued_key`/`client_ref` endpoint union. `idempotencyKey` is a caller-visible 8–64-character token. Repeating the same key with the same canonical command digest returns the original result; reusing it with different content fails with `idempotency_conflict`.
+The item-7 working-tree implementation uses `workspace-patch.mjs` for closed patch validation, deterministic diff/inversion, exact before-record conflict checks, and application to independent Graphology/Map collections. `contracts.mjs` owns the sole `runWorkspaceTransaction` boundary and the shared `appendWorkspaceRevision` finalizer for agent graph edits, agent annotation edits, reader annotation creation, and reader annotation removal. Live `state.revisions` is an append-only patch ledger; `history` and `redoHistory` hold original patch revisions, not full before/after workspace snapshots. Revision records and their patches are deeply frozen. Temporary transaction clones remain an implementation detail for isolation and rollback; they are not retained as Undo history.
+
+`put_anchor` is a trusted extension for atomic reader selection creation. Undo removes the newly minted anchor together with its annotation, node, and provenance edge; the original anchor remains in the retained revision and Redo reinstalls the exact immutable record. It is not an anchor-edit command: a patch cannot replace an existing anchor with different geometry or identity, structural anchors are protected, and the model has no anchor-minting or raw-patch input. Existing issued anchors remain deeply immutable through ordinary edits, patch replay, and browser restore.
+
+Model commands never supply `paperRef`, `origin`, newly minted durable IDs, timestamps, status, revision-history records, or raw endpoint strings. The adapter injects current-paper authority and resolves the explicit `issued_key`/`client_ref` endpoint union. `idempotencyKey` is a caller-visible 8–64-character token. Repeating the same key with the same canonical command digest replays its original result without applying again; reusing it with different content fails with `idempotency_conflict`. A recovery-invalidated receipt retains `{ commandDigest, result: null }` as a reserved-key tombstone: the same command returns `idempotency_replay_unavailable`, not a new mutation or fabricated success. The reader/agent must reread current state and use a new key for a new intent.
 
 Command algorithm:
 
 1. Parse a closed, bounded command.
-2. Require `baseWorkspaceRevision`, `baseWorkspaceDigest`, and the relevant graph/annotation sub-digest to match current semantic state.
+2. Check an existing idempotency key before stale-base validation. For a new command, require `baseWorkspaceRevision`, `baseWorkspaceDigest`, and the relevant graph/annotation sub-digest to match; recompute actual pre-edit digests before finalization so cached fields cannot legitimize an untracked semantic change.
 3. Clone/import the canonical graph into a temporary `MultiDirectedGraph`.
 4. Resolve model `clientRef` values to page-minted stable keys.
 5. Validate all operations, entity revisions, endpoints, grounding, authority, limits, and same-paper scope against the clone.
-6. Compute the complete trusted inverse before touching the live graph. Tombstoning a node includes incident-edge state in the same inverse.
-7. Apply every operation to the clone or fail with no state change.
-8. Canonically export and digest the workspace clone using the defined semantic projections and lexicographic ordering.
-9. Commit the live semantic workspace and mandatory in-memory revision/event append as one reducer transaction; then render derived Sigma/outline/overlay projections.
-10. Mark agent revisions `unreviewed`, announce the visible change, and attempt the optional browser snapshot.
-11. If reducer commit, mandatory history append, or projection integration fails, restore the trusted before snapshot, append `rollback` when history is available, and report `rolled_back`. A `localStorage` quota/write failure after a successful in-memory commit does not roll back valid live state; it reports **Not saved in this browser**, emits no false persistence event, and keeps live/revision state internally equivalent.
+6. Apply every validated operation to the clone or fail with no live state change. Tombstoning a node changes all active incident edges in the same batch while leaving already-tombstoned edges untouched. Explicit `restore_node` restores only the node; restoring an edge separately still requires active endpoints.
+7. Compute normalized trusted forward/inverse patches from the complete before/after records. Replay the forward patch on an independent clone to validate references, immutable structure, and the intended result before committing.
+8. Canonically export and digest the workspace clone using the defined semantic projections and lexicographic ordering; retain lifecycle metadata exactly in patches even though it is excluded from semantic digests.
+9. Stage the complete result, patch revision, history/redo changes, replay receipt, and events in the same transaction. Validate the bounded success receipt before swapping live state and awaiting required projection integration.
+10. Mark agent revisions `unreviewed`; publish optional activity observers only after the mandatory projection succeeds, then attempt the optional browser snapshot. An observer exception does not turn an actually committed edit into a rejection.
+11. If mandatory history/event/replay work or projection integration fails, restore semantic collections, digests, revision ledger, both stacks, replay cache, and event state together. Emit a sanitized `graph_rolled_back` event when possible and report `rolled_back`; do not retain a success revision or replay receipt for the failed command. Validation/conflict failures before commit remain no-ops. A `localStorage` quota/write failure after a successful in-memory commit does not roll back valid live state; it reports **Not saved in this browser**, emits no false persistence event, and keeps live/revision state internally equivalent.
 
 Undo and Redo:
 
-- Undo applies the stored inverse as a new human revision and never deletes the original event.
-- Redo reapplies the original forward patch as a new human revision.
-- Both require the current revision/digest expected by the command history.
-- New divergent mutation after Undo clears the redo branch.
+- Undo applies the stored inverse as a new human revision with `kind: "undo"` and `relatedRevisionId`; it never deletes the original revision or event. Unlike explicit `restore_node`, it restores exactly the node and incident-edge records changed by the original patch.
+- Redo reapplies the original forward patch as a new human revision with `kind: "redo"` and the same original `relatedRevisionId`.
+- Both validate the live ledger head, current recomputed semantic digests, exact before records, inverse pairing, and expected after digests. They use the same atomic transaction boundary as ordinary edits.
+- New divergent mutation after Undo clears only the redo stack, retains the append-only ledger, and emits `redo_branch_cleared`.
 - An invalidated inverse/forward patch fails atomically with a clear message.
+- The live ledger is capped at 200 entries, including compensating Undo/Redo revisions. New edits and Redo reserve enough capacity to Undo every remaining applied revision. At the limit, reject additional work with `history_limit_exceeded`; do not compact or silently drop history. This limit is separate from the bounded recent event list and the 4 MiB browser-storage budget.
 - Buttons and `Ctrl/Cmd+Z`, `Ctrl/Cmd+Shift+Z`, `Ctrl+Y` are supported outside editable fields.
 - Undo/Redo are never WebMCP tools.
 
@@ -625,33 +637,72 @@ Events are append-only. Undo does not delete the mutation it reverses. Registrat
 
 ### Browser snapshot
 
-The canonical target model below is retained for the remaining forward/inverse-patch history work in checklist item 7. It is not the current public storage envelope: the deployed-compatible implementation is version 2, described after the target type.
+The item-7 source implementation writes a version-3 envelope. This documents the working-tree architecture, not a claim that the release checklist or deployed bundle has passed. `browser-snapshot.mjs` owns the exact closed payload below; its current-state projection is serialized once, while every history entry contains canonical patches rather than full before/after snapshots.
 
 ```ts
-type BrowserPaperSnapshotV1 = {
+type BrowserWorkspaceStateV3 = {
+  anchors: Array<[string, PaperAnchorV1]>;
+  annotations: Array<[string, AnnotationV1]>;
+  graph: ReturnType<MultiDirectedGraph["export"]>;
+  workspaceRevision: number;
+  workspaceDigest: Sha256;
+  graphDigest: Sha256;
+  annotationDigest: Sha256;
+  focusAnchorId: string;
+};
+
+type StoredMutationReceiptV1 = {
   schemaVersion: 1;
-  documentSha256: Sha256;
-  paperSession: Omit<PaperSessionV1, "status">;
-  mapCoverage: MapCoverageV1;
-  anchors: PaperAnchorV1[];
-  annotations: AnnotationV1[];
-  workspace: { revision: number; digest: Sha256; graphDigest: Sha256; annotationDigest: Sha256 };
-  graph: { nodes: PaperGraphNodeV1[]; edges: PaperGraphEdgeV1[] };
-  revisions: WorkspaceRevisionV1[];
-  events: ProvenanceEventV1[];
-  explanations: MentorExplanationV1[];
-  undoStack: string[];
-  redoStack: string[];
-  savedAt: string;
+  status: "applied_reversible";
+  replayed: false;
+  callbackReceiptId: string;
+  operationId: string;
+  idempotencyKey: string;
+  revisionId: string;
+  fromRevision: number;
+  toRevision: number;
+  beforeWorkspaceDigest: Sha256;
+  afterWorkspaceDigest: Sha256;
+  affected: { created: string[]; updated: string[]; tombstoned: string[]; restored: string[] };
+  inverseRetained: true;
+  undoAvailable: true;
+  message: string;
+} & (
+  | { beforeGraphDigest: Sha256; afterGraphDigest: Sha256 }
+  | { beforeAnnotationDigest: Sha256; afterAnnotationDigest: Sha256 }
+);
+
+type BrowserPaperSnapshotV3 = {
+  schemaVersion: 3;
+  payloadChecksum: Sha256;
+  payload: {
+    schemaVersion: 3;
+    kind: "paperpilot_browser_workspace";
+    savedAt: string;
+    paperIdentity: { paperRef: string; documentSha256: Sha256; pageCount: number };
+    workspace: {
+      current: BrowserWorkspaceStateV3;
+      history: WorkspaceRevisionV1[];
+      redoHistory: WorkspaceRevisionV1[];
+      revisions: WorkspaceRevisionV1[];
+    };
+    requestResults: Array<[string, { commandDigest: Sha256; result: StoredMutationReceiptV1 | null }]>;
+    events: ProvenanceEventV1[];
+    savedExplanations: MentorExplanationV1[];
+    presentation: { annotationOrder: string[] };
+  };
 };
 ```
 
-- Current public key: `paperpilot:webmcp:v2:<documentSha256>`. `browser-snapshot.mjs` owns the closed `{ schemaVersion: 2, payloadChecksum, payload }` envelope. The payload contains `paperIdentity`, current/before/after workspace snapshots, history/redo history, replay receipts, events, human-saved explanations, and presentation-only annotation order. Snapshot history remains a compatibility implementation, not completion of item 7's canonical forward/inverse-patch migration.
-- Preserve older version-1 copies without hydration, deletion, or overwrite. If only an older copy exists, show an explicit preserved-but-not-yet-migrated notice; an explicit new save creates a separate version-2 copy.
-- Bound total bytes and history counts; retain recent revisions/events while never silently altering the current graph.
-- Validate schema, bounds, checksum, semantic digests, same-paper identity, and the regenerated structural nodes, edges, and primary source anchors before hydrating current state or any Undo/Redo state.
+- New saves use `paperpilot:webmcp:v3:<documentSha256>` and the closed `{ schemaVersion: 3, payloadChecksum, payload }` envelope. The current Graphology export may retain presentation coordinates, but patches and semantic digests exclude them; annotation order is also presentation-only.
+- Load version 3 first. Only when that key is absent may the loader inspect `paperpilot:webmcp:v2:<documentSha256>`. A corrupt or incompatible version-3 copy is rejected without falling back to an older save.
+- Version-2 migration validates the original checksum, current state, every retained before/after snapshot, Undo/Redo chain coherence, same-paper anchors, regenerated structural baseline, and cached receipts before deriving patches. It migrates the retained Undo/Redo steps in memory, preserves the original version-2 bytes, and writes only a separate version-3 copy on a subsequent save. Version 2 did not retain a complete patch ledger or original command reasons: migration reports that limitation and starts the new append-only ledger empty rather than inventing historical revisions.
+- Preserve older version-1 candidate-only copies without hydration, deletion, or overwrite. If no version-3 or version-2 copy exists, show the explicit preserved-but-not-migrated notice; an explicit new save creates a separate version-3 copy.
+- Bound the envelope to 4 MiB, patch revisions/history/redo to 200 entries each, replay keys to 200, and persisted recent events to 500. Reject oversized history rather than slicing or compacting it. The live reducer's reserved Undo-capacity rule still governs new edits; an optional save failure never changes the current graph.
+- Before hydration, validate closed schemas, bounds, checksum, anchor digests, same-paper identity, regenerated structural nodes/edges/primary anchors, complete patch inverses, stack/ledger consistency, and all reconstructed semantic digest endpoints. Cached non-null receipts must match the closed original tool-result schema and their retained revision's identity, command digest, before/after digests, and affected entities. A forged or mismatched receipt rejects restore; a legacy receipt whose original revision is no longer recoverable becomes a reserved-key tombstone rather than an executable receipt.
 - Same filename/different digest never restores.
-- A different filename with identical bytes does restore. Filename-derived paper-root titles are display metadata: validate the stored envelope first, then use the freshly loaded title and recompute derived workspace/history digests. Stored titles cannot replace trusted structure or source geometry.
+- A different filename with identical bytes does restore. Validate the original envelope first, then normalize the filename-derived paper-root display title to the freshly loaded title and recompute current/history/ledger digest endpoints. Existing events remain historical facts; stored titles cannot replace trusted structure or source geometry. Since old success receipts name the previous digest basis, title normalization replaces them with `{ commandDigest, result: null }` tombstones and shows a reread/new-command-key notice. The old key cannot silently apply again.
+- Hydrated canonical anchors and patch revisions remain deeply frozen. Active read receipts and unsaved staged explanations never survive reload; tools require fresh reads.
 - On storage quota failure, keep session state, show **Not saved in this browser**, and avoid a false persistence event.
 - The snapshot excludes PDF bytes. Reupload is required to reopen the document.
 
@@ -668,7 +719,7 @@ The initial map must not require the user to prompt the browser agent.
 5. Identify candidate headings using document outline first, then conservative heuristics such as relative font height, line isolation, numbering patterns, and repetition suppression.
 6. Label heuristic headings `document_structure`; never describe them as author-confirmed main ideas.
 7. Create section nodes for trustworthy ranges. For any uncovered page, create a page or page-group node; visual-only/failed pages remain explicit.
-8. Establish the entire initial structural map as the protected system baseline at revision 1. Human Undo/Redo reverses later reader/agent changes; it must not erase generated page coverage. The broader command-history patch format remains the separate item-7 work package.
+8. Establish the entire initial structural map as the protected system baseline at revision 1. Human Undo/Redo reverses later reader/agent changes through the shared item-7 patch ledger; it must not erase generated page coverage or manufacture an initial agent revision.
 9. Set coverage to `structural_ready` only when every admitted page is navigably structural or limited and no page failed. Use `structural_partial` when some pages remain failed and `failed` when no page is navigable; never call an all-failed index ready.
 10. Allow the agent to enrich semantic nodes through later anchored reads/mutations. Update `semanticPages` only when a source-grounded semantic entity covers that section/page.
 
@@ -1112,18 +1163,18 @@ node/edge selection or focus_source callback
 
 ```text
 human Undo
-  -> verify current history head
-  -> validate inverse on clone
-  -> apply inverse as new revision
+  -> verify ledger/stack heads and recomputed current digests
+  -> validate exact inverse records and topology on clone
+  -> apply inverse as new human revision with relatedRevisionId
   -> update graph/annotation projections
-  -> retain original mutation event
-  -> append undo event + snapshot
+  -> retain original patch revision and mutation event
+  -> commit ledger/stacks/event atomically, then optional v3 save
 
 human Redo
   -> verify non-diverged redo branch
   -> validate original forward patch on clone
-  -> apply as new revision
-  -> append redo event + snapshot
+  -> apply as new human revision with relatedRevisionId
+  -> commit ledger/stacks/event atomically, then optional v3 save
 ```
 
 ### 6. Browser-local restore
@@ -1131,8 +1182,10 @@ human Redo
 ```text
 reupload PDF
   -> recompute digest
-  -> load matching versioned snapshot only
-  -> closed parse + bounds + digest/invariant validation
+  -> load matching v3, or inspect v2 only if v3 is absent
+  -> closed parse + checksum + bounds + patch/receipt/chain/invariant validation
+  -> migrate validated v2 retained history without inventing a historical ledger
+  -> normalize trusted display title and invalidate old-basis replay receipts if needed
   -> rebuild canonical Graphology graph
   -> derive Sigma/outline/overlay
   -> show Saved in this browser
@@ -1266,12 +1319,14 @@ CSS may place Mentor visually left. Each region has a heading and skip link.
 | Grounding missing | Grounding required | No paper-grounded entity created |
 | Stale graph/entity revision | Map changed; reread and retry | Atomic conflict; no partial change |
 | Invalid graph batch | Explain bounded validation issue | All-or-nothing no-op |
-| Mandatory reducer/history commit failure | Change rolled back | Trusted before snapshot restores live semantic state |
+| Mandatory reducer/history/projection failure | Change rolled back | Transient transaction state restores semantics, ledgers, both stacks, replay cache, and events together; no retained success |
 | Optional browser-snapshot quota/write failure | **Not saved in this browser** | Valid live revision remains; no false persistence event; byte-identical PDF reupload will not restore that unsaved revision |
 | Explanation invalid | Mentor response could not be used | Graph remains independent; no partial explanation |
 | Agent mutation after explanation | Distinct revision event | Never imply one transaction unless it was one |
 | Undo invalidated | Cannot undo this change now | No partial inverse |
 | Redo invalidated by new edit | Redo unavailable after newer change | Clear redo branch safely |
+| Revision ledger at capacity | Browser workspace history is full | Reject new work without compaction; preserve reserved Undo capacity |
+| Historical replay invalidated during recovery | Reread the workspace and use a new command key | Reserved-key tombstone prevents both duplicate application and a false success receipt |
 | Missing source on restore | Source incomplete | Preserve graph/explanation for audit |
 | Sigma/render failure | Graph visualization unavailable | Accessible outline stays functional |
 | Corrupt local snapshot | Could not restore browser state | PDF opens with fresh map; no false restore event |
