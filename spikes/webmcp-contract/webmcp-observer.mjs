@@ -107,8 +107,53 @@ export function createObservedTrace({
 }
 
 /**
+ * Turn an observed result into outcome copy, never inferring an applied edit
+ * merely because a callback returned. Visual replay has no mutation effects.
+ *
+ * @param {ReturnType<typeof createObservedTrace>} trace
+ * @param {{ replay?: boolean }} [options]
+ */
+export function createObservedPresentation(trace, { replay = false } = {}) {
+  const copy = TOOL_PRESENTATION_COPY[/** @type {keyof typeof TOOL_PRESENTATION_COPY} */ (trace.toolName)]
+    || { complete: "Page callback returned" };
+  const mutation = trace.toolName === "paperpilot.apply_graph" || trace.toolName === "paperpilot.apply_annotation";
+  const applied = mutation && trace.status === "applied_reversible" && !trace.replayed;
+  const readableStatus = String(trace.status).replaceAll("_", " ");
+  /** @type {"error" | "complete"} */
+  let phase = "complete";
+  let label;
+  let announcement;
+  if (trace.status === "rolled_back") {
+    phase = "error";
+    label = "Change rolled back · no revision kept";
+    announcement = `PaperPilot rolled back ${trace.toolName}. The prior workspace was restored; no annotation or graph revision from this callback remains applied.`;
+  } else if (trace.status === "rejected") {
+    phase = "error";
+    label = `Callback rejected · ${String(trace.code || "invalid request").replaceAll("_", " ")}`;
+    announcement = `PaperPilot rejected ${trace.toolName}. No annotation or graph revision was created.`;
+  } else if (mutation && !applied && !trace.replayed) {
+    phase = "error";
+    label = `No applied revision receipt · ${readableStatus}`;
+    announcement = `PaperPilot returned ${trace.status} from ${trace.toolName}. This is not an applied mutation receipt; no edit is being shown.`;
+  } else {
+    label = trace.replayed ? "Idempotent replay · no new revision" : `${copy.complete} · ${readableStatus}`;
+    announcement = `PaperPilot returned ${trace.status} from ${trace.toolName} at page ${trace.pageLabel}. This confirms a page callback, not private model reasoning.`;
+  }
+  return Object.freeze({
+    phase,
+    label: replay ? `Replay · ${label}` : label,
+    announcement: replay
+      ? `Replaying the observed outcome. ${announcement} No tool or command ran during this replay and no revision changed.`
+      : announcement,
+    flashAnnotation: !replay && applied && trace.toolName === "paperpilot.apply_annotation",
+  });
+}
+
+/**
  * Wrap trusted tool callbacks with observable lifecycle hooks while preserving
- * the original tool definitions and callback arguments.
+ * the original tool definitions, callback arguments, and authoritative outcome.
+ * Observer failures must not stop a callback or turn a committed edit into a
+ * thrown request. The page's canonical receipts remain the source of truth.
  *
  * @param {ExecutableTool[]} rawTools
  * @param {ToolObservationHooks} [hooks]
@@ -124,15 +169,28 @@ export function instrumentWebmcpTools(rawTools, hooks = {}) {
       ...tool,
       async execute(input = {}, options = {}) {
         const before = { tool, input, options };
-        await hooks.beforeExecute?.(before);
         try {
-          const result = await tool.execute(input, options);
-          await hooks.onResult?.({ ...before, result });
-          return result;
+          await hooks.beforeExecute?.(before);
+        } catch {
+          // A missing visual request indicator does not change tool authority.
+        }
+        let result;
+        try {
+          result = await tool.execute(input, options);
         } catch (error) {
-          await hooks.onError?.({ ...before, error });
+          try {
+            await hooks.onError?.({ ...before, error });
+          } catch {
+            // Keep the real callback failure rather than an observer exception.
+          }
           throw error;
         }
+        try {
+          await hooks.onResult?.({ ...before, result });
+        } catch {
+          // The tool returned; do not invent a second failed callback event.
+        }
+        return result;
       },
     };
   });

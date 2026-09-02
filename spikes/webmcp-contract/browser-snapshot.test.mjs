@@ -26,6 +26,7 @@ import {
   createSpatialAnchor,
   createSpatialRendererRecipe,
 } from "./spatial-anchor.mjs";
+import { createWholePaperStructuralMap } from "./structural-map.mjs";
 
 const CANONICAL_ANCHOR_ID = "anchor:reader:snapshot-canonical";
 
@@ -64,6 +65,24 @@ function deterministicOptions(overrides = {}) {
 
 async function fixture(overrides = {}) {
   return createSpikeState(MultiDirectedGraph, deterministicOptions(overrides));
+}
+
+function structuralMapFixture(outlineEntries = [
+  { title: "Abstract", pageIndex: 0 },
+  { title: "Methods", pageIndex: 5 },
+  { title: "Results", pageIndex: 10 },
+]) {
+  return createWholePaperStructuralMap({
+    documentSha256: PAPER_FIXTURE.documentSha256,
+    pages: Array.from({ length: 15 }, (_, pageIndex) => ({
+      pageIndex,
+      pageLabel: String(pageIndex + 1),
+      pageViewBox: [0, 0, 612, 792],
+      pageRotation: 0,
+      textCapability: "exact_candidate",
+    })),
+    outlineEntries,
+  });
 }
 
 function toolsFor(state) {
@@ -182,10 +201,59 @@ async function tamperCanonicalEnvelope(raw, mutate, { rehashAnchor = true } = {}
   return JSON.stringify(envelope);
 }
 
+async function tamperStoredGraph(raw, mutate) {
+  const envelope = JSON.parse(raw);
+  const current = envelope.payload.workspace.current;
+  mutate(current.graph);
+  const excluded = new Set(["x", "y", "size", "color", "hidden", "selected", "hovered", "entityRevision", "createdAt", "updatedAt"]);
+  const attributes = (value) => Object.fromEntries(Object.entries(value).filter(([key]) => !excluded.has(key)));
+  const graph = {
+    nodes: [...current.graph.nodes].sort((left, right) => left.key.localeCompare(right.key)).map(({ key, attributes: value }) => ({ key, ...attributes(value) })),
+    edges: [...current.graph.edges].sort((left, right) => left.key.localeCompare(right.key)).map(({ key, source, target, attributes: value }) => ({ key, sourceKey: source, targetKey: target, ...attributes(value) })),
+  };
+  const annotations = [...current.annotations].sort(([left], [right]) => left.localeCompare(right)).map(([, annotation]) => (
+    Object.fromEntries(Object.entries(annotation).filter(([key]) => !["entityRevision", "createdAt", "updatedAt"].includes(key)))
+  ));
+  current.graphDigest = await sha256Text(canonicalSnapshotJson(graph));
+  current.workspaceDigest = await sha256Text(canonicalSnapshotJson({ graph, annotations }));
+  envelope.payloadChecksum = await sha256Text(canonicalSnapshotJson(envelope.payload));
+  return JSON.stringify(envelope);
+}
+
+async function remintStoredStructuralAnchor(anchor, change) {
+  const canonical = Boolean(anchor.rendererRecipe);
+  const input = canonical
+    ? Object.fromEntries([
+      "anchorId", "paperRef", "documentSha256", "pageIndex", "pageLabel",
+      "pageViewBox", "rotation", "rendererRecipe", "sourceKind", "geometryKind",
+      "normalizedBounds", "textItemRefs", "createdBy", "createdAt",
+    ].map((key) => [key, structuredClone(anchor[key])]))
+    : structuredClone(anchor);
+  if (change === "wrong page") {
+    input.pageIndex = 14;
+    input.pageLabel = "15";
+  } else if (change === "different geometry") {
+    input.pageViewBox = [20, 30, 590, 770];
+    if (canonical) {
+      input.rotation = 90;
+      input.rendererRecipe = createSpatialRendererRecipe({
+        rendererVersion: SPIKE_VERSIONS.pdfjs,
+        pageViewBox: input.pageViewBox,
+        pageRotation: input.rotation,
+      });
+    } else input.pageRotation = 90;
+  } else if (change === "different source kind") {
+    input.sourceKind = "visual_region";
+  } else throw new Error(`Unknown structural-anchor test change: ${change}`);
+  if (canonical) return createSpatialAnchor(input);
+  delete input.anchorDigest;
+  return { ...input, anchorDigest: await sha256Text(canonicalSnapshotJson(input)) };
+}
+
 test("versions and keys each browser snapshot by the lowercase PDF SHA-256 identity", () => {
-  assert.equal(BROWSER_SNAPSHOT_SCHEMA_VERSION, 1);
+  assert.equal(BROWSER_SNAPSHOT_SCHEMA_VERSION, 2);
   assert.equal(MAX_BROWSER_SNAPSHOT_BYTES, 4 * 1024 * 1024);
-  assert.equal(BROWSER_SNAPSHOT_KEY_PREFIX, "paperpilot:webmcp:v1:");
+  assert.equal(BROWSER_SNAPSHOT_KEY_PREFIX, "paperpilot:webmcp:v2:");
   assert.deepEqual(BROWSER_SNAPSHOT_LIMITS, {
     history: 200,
     redoHistory: 200,
@@ -199,6 +267,84 @@ test("versions and keys each browser snapshot by the lowercase PDF SHA-256 ident
   );
   assert.throws(() => browserSnapshotKey("A".repeat(64)), /lowercase SHA-256/);
   assert.throws(() => browserSnapshotKey("short"), /lowercase SHA-256/);
+});
+
+test("detects only the exact current-PDF v1 key without decoding, hydrating, or changing its bytes", async () => {
+  const state = await fixture({ structuralMap: structuralMapFixture() });
+  const before = fingerprint(state);
+  const storage = memoryStorage();
+  const key = browserSnapshotKey(state.paper.documentSha256);
+  const legacyKey = `paperpilot:webmcp:v1:${state.paper.documentSha256}`;
+  const legacyBytes = "Preserved v1 bytes: intentionally not decoded as a v2 envelope.";
+  const unrelatedKey = `paperpilot:webmcp:v1:${"f".repeat(64)}`;
+  storage.values.set(legacyKey, legacyBytes);
+  storage.values.set(unrelatedKey, "Another paper must never be inspected.");
+  const requestedKeys = [];
+  const getItem = storage.getItem.bind(storage);
+  storage.getItem = (requestedKey) => {
+    requestedKeys.push(requestedKey);
+    return getItem(requestedKey);
+  };
+  assert.deepEqual(await loadBrowserSnapshot({ storage, state }), {
+    status: "legacy_preserved",
+    key,
+    legacyKey,
+    legacySchemaVersion: 1,
+  });
+  assert.deepEqual(requestedKeys, [key, legacyKey]);
+  assert.deepEqual(fingerprint(state), before);
+  assert.equal(storage.values.get(legacyKey), legacyBytes);
+  assert.equal(storage.values.get(unrelatedKey), "Another paper must never be inspected.");
+  assert.equal(storage.values.has(key), false);
+  assert.equal(storage.calls.set, 0);
+  assert.equal(storage.calls.remove, 0);
+
+  storage.values.delete(legacyKey);
+  assert.deepEqual(await loadBrowserSnapshot({ storage, state }), { status: "not_found", key });
+  assert.deepEqual(fingerprint(state), before);
+});
+
+test("prefers an existing v2 snapshot over v1 and never falls back from unsupported v2 formats", async () => {
+  const source = await fixture({ structuralMap: structuralMapFixture() });
+  const storage = memoryStorage();
+  const legacyKey = `paperpilot:webmcp:v1:${source.paper.documentSha256}`;
+  const legacyBytes = "The existing v1 snapshot stays separate.";
+  storage.values.set(legacyKey, legacyBytes);
+  const saved = await saveBrowserSnapshot({ storage, state: source });
+  const requestedKeys = [];
+  const getItem = storage.getItem.bind(storage);
+  storage.getItem = (key) => {
+    requestedKeys.push(key);
+    return getItem(key);
+  };
+  const target = await fixture({ structuralMap: structuralMapFixture() });
+  const restored = await loadBrowserSnapshot({ storage, state: target });
+  assert.equal(restored.status, "restored");
+  assert.deepEqual(requestedKeys, [saved.key]);
+  assert.deepEqual(
+    { ...fingerprint(target), anchors: target.anchors },
+    { ...fingerprint(source), anchors: source.anchors },
+    "Recovery preserves the anchor registry; serialized key order is not semantic state.",
+  );
+  assert.equal(storage.values.get(legacyKey), legacyBytes);
+  assert.equal(storage.calls.set, 1);
+  assert.equal(storage.calls.remove, 0);
+
+  const unsupported = JSON.parse(storage.values.get(saved.key));
+  unsupported.schemaVersion = 999;
+  const unsupportedBytes = JSON.stringify(unsupported);
+  storage.values.set(saved.key, unsupportedBytes);
+  const before = fingerprint(target);
+  requestedKeys.length = 0;
+  const rejected = await loadBrowserSnapshot({ storage, state: target });
+  assert.equal(rejected.status, "invalid");
+  assert.equal(rejected.reason, "schema_version_mismatch");
+  assert.deepEqual(requestedKeys, [saved.key]);
+  assert.deepEqual(fingerprint(target), before);
+  assert.equal(storage.values.get(saved.key), unsupportedBytes);
+  assert.equal(storage.values.get(legacyKey), legacyBytes);
+  assert.equal(storage.calls.set, 1);
+  assert.equal(storage.calls.remove, 0);
 });
 
 test("round-trips graph, annotations, audit trail, idempotency receipts, saved explanations, and both history branches", async () => {
@@ -266,6 +412,185 @@ test("round-trips graph, annotations, audit trail, idempotency receipts, saved e
   assert.equal(restored.workspaceDigest, secondDigest);
   assert.equal(restored.history.length, 2);
   assert.equal(restored.redoHistory.length, 0);
+});
+
+test("restores only snapshots that retain the current deterministic structural baseline", async () => {
+  const structuralMap = structuralMapFixture();
+  const source = await fixture({ structuralMap });
+  const storage = memoryStorage();
+  const saved = await saveBrowserSnapshot({ storage, state: source });
+  assert.equal(saved.status, "saved");
+
+  const matching = await fixture({ structuralMap: structuralMapFixture() });
+  const restored = await loadBrowserSnapshot({ storage, state: matching });
+  assert.equal(restored.status, "restored");
+  assert.ok(matching.structuralMap.nodes.every(({ key, edgeKey }) => (
+    matching.graph.getNodeAttribute(key, "status") === "active"
+    && matching.graph.getEdgeAttribute(edgeKey, "status") === "active"
+  )));
+
+  const changedStructure = structuralMapFixture([
+    { title: "Abstract", pageIndex: 0 },
+    { title: "Architecture", pageIndex: 4 },
+    { title: "Evaluation", pageIndex: 11 },
+  ]);
+  const mismatched = await fixture({ structuralMap: changedStructure });
+  const baseline = fingerprint(mismatched);
+  const rejected = await loadBrowserSnapshot({ storage, state: mismatched });
+  assert.equal(rejected.status, "invalid");
+  assert.equal(rejected.reason, "structural_baseline_mismatch");
+  assert.deepEqual(fingerprint(mismatched), baseline, "a rejected structural restore must be atomic");
+});
+
+test("rejects fully rehashed structural and paper-root anchor changes across current, Undo, and Redo snapshots", async (t) => {
+  const paper = (filename, title) => ({ ...PAPER_FIXTURE, filename, title });
+  const source = await fixture({
+    paper: paper("original.pdf", "Original paper"),
+    textAnchor: null,
+    structuralMap: structuralMapFixture(),
+  });
+  const tools = toolsFor(source);
+  for (const sequence of [1, 2]) {
+    const command = graphCommand(source, sequence);
+    command.operations[0].node.sourceAnchorIds = [source.structuralMap.nodes[0].anchorId];
+    assert.equal((await tools.get("paperpilot.apply_graph").execute(command)).status, "applied_reversible");
+  }
+  assert.equal((await undoLastHumanChange(source)).status, "undone");
+  const storage = memoryStorage();
+  const saved = await saveBrowserSnapshot({ storage, state: source });
+  assert.equal(saved.status, "saved");
+  const original = storage.values.get(saved.key);
+  const locations = [
+    ["current", (workspace) => workspace.current],
+    ["history before", (workspace) => workspace.history[0].before],
+    ["history after", (workspace) => workspace.history[0].after],
+    ["redo before", (workspace) => workspace.redoHistory[0].before],
+    ["redo after", (workspace) => workspace.redoHistory[0].after],
+  ];
+  const targets = [
+    ["structural range", source.structuralMap.nodes[0].anchorId],
+    ["paper root", "anchor:page:1"],
+  ];
+  for (const [location, selectSnapshot] of locations) {
+    for (const [targetKind, anchorId] of targets) {
+      for (const change of ["wrong page", "different geometry", "different source kind"]) {
+        await t.test(`${location}: ${targetKind} ${change}`, async () => {
+          const envelope = JSON.parse(original);
+          const snapshot = selectSnapshot(envelope.payload.workspace);
+          const pair = snapshot.anchors.find(([key]) => key === anchorId);
+          assert.ok(pair, "The generated primary anchor must exist in every retained snapshot.");
+          pair[1] = await remintStoredStructuralAnchor(pair[1], change);
+          envelope.payloadChecksum = await sha256Text(canonicalSnapshotJson(envelope.payload));
+          const tampered = JSON.stringify(envelope);
+          storage.values.set(saved.key, tampered);
+          const target = await fixture({
+            paper: paper("renamed.pdf", "Renamed paper"),
+            textAnchor: null,
+            structuralMap: structuralMapFixture(),
+          });
+          const before = fingerprint(target);
+          const storageWritesBefore = storage.calls.set;
+          const storageRemovalsBefore = storage.calls.remove;
+          const loaded = await loadBrowserSnapshot({ storage, state: target });
+          assert.equal(loaded.status, "invalid");
+          assert.equal(loaded.reason, "structural_baseline_mismatch",
+            "Self-consistent canonical hashes must not bypass the fresh PDF baseline.");
+          assert.deepEqual(fingerprint(target), before, "Rejection must preserve the complete live baseline.");
+          assert.equal(target.savedExplanations, undefined);
+          assert.equal(storage.values.get(saved.key), tampered, "Read-only rejection must retain the stored copy.");
+          assert.equal(storage.calls.set, storageWritesBefore);
+          assert.equal(storage.calls.remove, storageRemovalsBefore);
+        });
+      }
+    }
+  }
+});
+
+test("byte-identical PDFs restore after filename changes with trusted title and consistent Undo/Redo digests", async () => {
+  const paper = (filename, title) => ({ ...PAPER_FIXTURE, filename, title });
+  const source = await fixture({ paper: paper("original.pdf", "Original paper"), textAnchor: null, structuralMap: structuralMapFixture() });
+  const tools = toolsFor(source);
+  for (const sequence of [1, 2]) {
+    const command = graphCommand(source, sequence);
+    command.operations[0].node.sourceAnchorIds = [source.structuralMap.nodes[0].anchorId];
+    assert.equal((await tools.get("paperpilot.apply_graph").execute(command)).status, "applied_reversible");
+  }
+  assert.equal((await undoLastHumanChange(source)).status, "undone");
+  const storage = memoryStorage();
+  const saved = await saveBrowserSnapshot({ storage, state: source });
+  assert.equal(saved.status, "saved");
+  const storedBytes = storage.values.get(saved.key);
+  const originalEvents = structuredClone(source.events);
+  const originalReceipts = structuredClone([...source.requestResults]);
+
+  const restored = await fixture({ paper: paper("renamed.pdf", "Renamed paper"), textAnchor: null, structuralMap: structuralMapFixture() });
+  const loaded = await loadBrowserSnapshot({ storage, state: restored });
+  assert.equal(loaded.status, "restored");
+  assert.equal(loaded.displayTitleRefreshed, true);
+  assert.equal(restored.paper.documentSha256, source.paper.documentSha256);
+  assert.equal(restored.paper.filename, "renamed.pdf");
+  for (const snapshot of [restored, ...[...restored.history, ...restored.redoHistory].flatMap((entry) => [entry.before, entry.after])]) {
+    assert.equal(snapshot.graph.getNodeAttribute("node:paper", "label"), "Renamed paper");
+  }
+  assert.deepEqual(restored.anchors, source.anchors);
+  assert.deepEqual(restored.events, originalEvents, "historic receipts are not rewritten as new observations");
+  assert.deepEqual([...restored.requestResults], originalReceipts, "original idempotency receipts remain historical");
+  assert.equal(storage.values.get(saved.key), storedBytes, "read-only recovery must not overwrite the saved copy");
+  const restoredDigest = restored.workspaceDigest;
+  assert.equal((await undoLastHumanChange(restored)).digestMatches, true);
+  assert.equal((await redoLastHumanChange(restored)).digestMatches, true);
+  assert.equal(restored.workspaceDigest, restoredDigest);
+  assert.equal((await redoLastHumanChange(restored)).digestMatches, true);
+
+  assert.equal((await saveBrowserSnapshot({ storage, state: restored })).status, "saved");
+  const reopened = await fixture({ paper: paper("renamed.pdf", "Renamed paper"), textAnchor: null, structuralMap: structuralMapFixture() });
+  const reopenedResult = await loadBrowserSnapshot({ storage, state: reopened });
+  assert.equal(reopenedResult.status, "restored");
+  assert.equal(reopenedResult.displayTitleRefreshed, false);
+  assert.equal(reopened.workspaceDigest, restored.workspaceDigest);
+});
+
+test("a rechecksummed stored root display title cannot override the current trusted title", async () => {
+  const source = await fixture({ structuralMap: structuralMapFixture() });
+  const storage = memoryStorage();
+  const saved = await saveBrowserSnapshot({ storage, state: source });
+  storage.values.set(saved.key, await tamperStoredGraph(storage.values.get(saved.key), (graph) => {
+    graph.nodes.find(({ key }) => key === "node:paper").attributes.label = "Untrusted stored display title";
+  }));
+  const restored = await fixture({ structuralMap: structuralMapFixture() });
+  const trustedTitle = restored.graph.getNodeAttribute("node:paper", "label");
+  const loaded = await loadBrowserSnapshot({ storage, state: restored });
+  assert.equal(loaded.status, "restored");
+  assert.equal(loaded.displayTitleRefreshed, true);
+  assert.equal(restored.graph.getNodeAttribute("node:paper", "label"), trustedTitle);
+  assert.equal(restored.graphDigest, source.graphDigest);
+  assert.equal(restored.workspaceDigest, source.workspaceDigest);
+});
+
+test("display-title normalization never relaxes structural labels, source ranges, root kind, or containment claims", async (t) => {
+  const source = await fixture({ structuralMap: structuralMapFixture() });
+  const storage = memoryStorage();
+  const saved = await saveBrowserSnapshot({ storage, state: source });
+  const original = storage.values.get(saved.key);
+  const sectionKey = source.structuralMap.nodes[0].key;
+  const mutations = [
+    ["section label", (graph) => { graph.nodes.find(({ key }) => key === sectionKey).attributes.label = "Invented section"; }],
+    ["section source", (graph) => { graph.nodes.find(({ key }) => key === sectionKey).attributes.structuralCoverage[0].primaryAnchorId = "anchor:page:1"; }],
+    ["section source override", (graph) => { graph.nodes.find(({ key }) => key === sectionKey).attributes.sourceAnchorIds = [source.structuralMap.nodes[2].anchorId]; }],
+    ["root kind", (graph) => { graph.nodes.find(({ key }) => key === "node:paper").attributes.kind = "concept"; }],
+    ["root summary", (graph) => { graph.nodes.find(({ key }) => key === "node:paper").attributes.summary = "Invented document summary"; }],
+    ["root source override", (graph) => { graph.nodes.find(({ key }) => key === "node:paper").attributes.sourceAnchorIds = [source.structuralMap.nodes[2].anchorId]; }],
+    ["containment claim", (graph) => { graph.edges[0].attributes.claim = "Invented containment claim"; }],
+  ];
+  for (const [name, mutate] of mutations) await t.test(name, async () => {
+    storage.values.set(saved.key, await tamperStoredGraph(original, mutate));
+    const target = await fixture({ structuralMap: structuralMapFixture() });
+    const before = fingerprint(target);
+    const loaded = await loadBrowserSnapshot({ storage, state: target });
+    assert.equal(loaded.status, "invalid");
+    assert.equal(loaded.reason, "structural_baseline_mismatch");
+    assert.deepEqual(fingerprint(target), before, "rejected normalization must not touch live state");
+  });
 });
 
 test("validates canonical spatial anchors before saving and restores their deeply frozen canonical records", async () => {

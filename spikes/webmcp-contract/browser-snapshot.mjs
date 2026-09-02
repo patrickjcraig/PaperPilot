@@ -9,7 +9,10 @@ import { validateSpatialAnchor } from "./spatial-anchor.mjs";
  * PDF/File/Blob/ArrayBuffer data is rejected before serialization.
  */
 
-export const BROWSER_SNAPSHOT_SCHEMA_VERSION = 1;
+// Version 2 guarantees that a saved graph was created from the whole-paper
+// structural baseline. Version-1 candidate-only snapshots are intentionally
+// not hydrated over the new deterministic structure.
+export const BROWSER_SNAPSHOT_SCHEMA_VERSION = 2;
 export const MAX_BROWSER_SNAPSHOT_BYTES = 4 * 1024 * 1024;
 export const BROWSER_SNAPSHOT_KEY_PREFIX = `paperpilot:webmcp:v${BROWSER_SNAPSHOT_SCHEMA_VERSION}:`;
 export const BROWSER_SNAPSHOT_LIMITS = Object.freeze({
@@ -454,12 +457,17 @@ function semanticAnnotationProjection(annotations) {
     ));
 }
 
-async function verifySemanticDigests(decoded, stored) {
+async function semanticStateDigests(decoded) {
   const graphProjection = semanticGraphProjection(decoded.graph);
   const annotationProjection = semanticAnnotationProjection(decoded.annotations);
   const graphDigest = await sha256Text(canonicalJson(graphProjection));
   const annotationDigest = await sha256Text(canonicalJson(annotationProjection));
   const workspaceDigest = await sha256Text(canonicalJson({ graph: graphProjection, annotations: annotationProjection }));
+  return { graphDigest, annotationDigest, workspaceDigest };
+}
+
+async function verifySemanticDigests(decoded, stored) {
+  const { graphDigest, annotationDigest, workspaceDigest } = await semanticStateDigests(decoded);
   if (
     graphDigest !== stored.graphDigest
     || annotationDigest !== stored.annotationDigest
@@ -489,6 +497,100 @@ function validateGraphAnchorReferences(graph, anchors) {
   }
 }
 
+function validateStructuralBaseline(snapshot, structuralMap, templateState) {
+  if (!structuralMap) return;
+  const { graph, anchors } = snapshot;
+  const templateGraph = templateState.graph;
+  const expectedNodeKeys = new Set(["node:paper", ...structuralMap.nodes.map(({ key }) => key)]);
+  const expectedEdgeKeys = new Set(structuralMap.nodes.map(({ edgeKey }) => edgeKey));
+  const root = graph.hasNode("node:paper") ? graph.getNodeAttributes("node:paper") : null;
+  const baselineRoot = templateGraph.getNodeAttributes("node:paper");
+  if (
+    !root
+    || root.kind !== "paper"
+    || root.authority !== "document_structure"
+    || root.status !== "active"
+    || root.summary !== baselineRoot.summary
+    || canonicalJson(root.sourceAnchorIds) !== canonicalJson(baselineRoot.sourceAnchorIds)
+    || canonicalJson(root.structuralCoverage) !== canonicalJson(baselineRoot.structuralCoverage)
+  ) {
+    fail("structural_baseline_mismatch", "The stored graph does not retain the active PDF paper root.");
+  }
+  // The upload filename supplies this display title; it is not PDF identity.
+  // Bound the stored value, then replace it with the current trusted title only
+  // after the entire envelope (including all structural records) is validated.
+  assertString(root.label, "structural_baseline_mismatch", "The stored paper display title is invalid.", { max: 240 });
+  const expectedAnchorIds = new Set([
+    ...baselineRoot.structuralCoverage.map(({ primaryAnchorId }) => primaryAnchorId),
+    ...structuralMap.nodes.map(({ anchorId }) => anchorId),
+  ]);
+  for (const anchorId of expectedAnchorIds) {
+    const trusted = templateState.anchors.get(anchorId);
+    const stored = anchors.get(anchorId);
+    // These page-minted baseline records have no volatile metadata: structural
+    // createdAt is fixed, the paper-root anchor has no timestamp, and neither
+    // includes the upload filename. Compare the complete canonical record, not
+    // only a self-reported digest/ID that a stored envelope can recompute.
+    if (!trusted || !stored || canonicalJson(stored) !== canonicalJson(trusted)) {
+      fail("structural_baseline_mismatch", "A stored PDF-derived primary anchor no longer matches the current page-minted source.");
+    }
+  }
+  for (const expected of structuralMap.nodes) {
+    if (!graph.hasNode(expected.key) || !graph.hasEdge(expected.edgeKey)) {
+      fail("structural_baseline_mismatch", "The stored graph is missing a PDF-derived structural range.");
+    }
+    const attributes = graph.getNodeAttributes(expected.key);
+    const baselineAttributes = templateGraph.getNodeAttributes(expected.key);
+    const coverage = attributes.structuralCoverage;
+    if (
+      attributes.kind !== "section"
+      || attributes.authority !== "document_structure"
+      || attributes.origin !== "automatic_map"
+      || attributes.status !== "active"
+      || attributes.label !== baselineAttributes.label
+      || attributes.summary !== baselineAttributes.summary
+      || canonicalJson(attributes.sourceAnchorIds) !== canonicalJson(baselineAttributes.sourceAnchorIds)
+      || attributes.structuralBasis !== expected.basis
+      || attributes.structuralConfidence !== expected.confidence
+      || !Array.isArray(coverage)
+      || coverage.length !== 1
+      || coverage[0].startPageIndex !== expected.startPageIndex
+      || coverage[0].endPageIndex !== expected.endPageIndex
+      || coverage[0].primaryAnchorId !== expected.anchorId
+    ) {
+      fail("structural_baseline_mismatch", "A stored PDF-derived structural range no longer matches the current deterministic map.");
+    }
+    const edge = graph.getEdgeAttributes(expected.edgeKey);
+    const baselineEdge = templateGraph.getEdgeAttributes(expected.edgeKey);
+    if (
+      graph.source(expected.edgeKey) !== "node:paper"
+      || graph.target(expected.edgeKey) !== expected.key
+      || edge.kind !== "contains"
+      || edge.authority !== "document_structure"
+      || edge.origin !== "automatic_map"
+      || edge.status !== "active"
+      || edge.claim !== baselineEdge.claim
+      || !Array.isArray(edge.sourceAnchorIds)
+      || edge.sourceAnchorIds.length !== 1
+      || edge.sourceAnchorIds[0] !== expected.anchorId
+    ) {
+      fail("structural_baseline_mismatch", "A stored PDF-derived containment edge no longer matches the current deterministic map.");
+    }
+  }
+  for (const key of graph.nodes()) {
+    const attributes = graph.getNodeAttributes(key);
+    if (attributes.authority === "document_structure" && !expectedNodeKeys.has(key)) {
+      fail("structural_baseline_mismatch", "The stored graph contains an unexpected document-structure node.");
+    }
+  }
+  for (const key of graph.edges()) {
+    const attributes = graph.getEdgeAttributes(key);
+    if (attributes.authority === "document_structure" && !expectedEdgeKeys.has(key)) {
+      fail("structural_baseline_mismatch", "The stored graph contains an unexpected document-structure edge.");
+    }
+  }
+}
+
 function validateAnnotations(annotations, anchors, graph, identity) {
   for (const [key, annotation] of annotations) {
     if (annotation.annotationId !== key || annotation.paperRef !== identity.paperRef || !anchors.has(annotation.anchorId)) {
@@ -501,6 +603,23 @@ function validateAnnotations(annotations, anchors, graph, identity) {
       if (!graph.hasEdge(edgeKey)) fail("annotation_invalid", `Annotation ${key} references a missing graph edge.`);
     }
   }
+}
+
+async function refreshTrustedPaperTitle(decoded, state) {
+  if (!state.structuralMap) return false;
+  const trustedTitle = state.graph.getNodeAttribute("node:paper", "label");
+  const snapshots = [decoded.current, ...[...decoded.history, ...decoded.redoHistory].flatMap((entry) => [entry.before, entry.after])];
+  let refreshed = false;
+  for (const snapshot of snapshots) {
+    if (snapshot.graph.getNodeAttribute("node:paper", "label") === trustedTitle) continue;
+    snapshot.graph.setNodeAttribute("node:paper", "label", trustedTitle);
+    // The current schema includes labels in semantic digests. Normalize every
+    // undo/redo snapshot consistently; original callback/event receipts remain
+    // unchanged historical records of the earlier display-title generation.
+    Object.assign(snapshot, await semanticStateDigests(snapshot));
+    refreshed = true;
+  }
+  return refreshed;
 }
 
 async function decodeSemanticState(value, templateGraph, identity, path) {
@@ -629,6 +748,11 @@ async function decodeEnvelope(raw, state) {
   const current = await decodeSemanticState(payload.workspace.current, state.graph, expectedIdentity, "workspace.current");
   const history = await decodeHistory(payload.workspace.history, state.graph, expectedIdentity, "workspace.history");
   const redoHistory = await decodeHistory(payload.workspace.redoHistory, state.graph, expectedIdentity, "workspace.redoHistory");
+  validateStructuralBaseline(current, state.structuralMap, state);
+  for (const entry of [...history, ...redoHistory]) {
+    validateStructuralBaseline(entry.before, state.structuralMap, state);
+    validateStructuralBaseline(entry.after, state.structuralMap, state);
+  }
   const requestResults = validateRequestResults(payload.requestResults);
   if (
     !Array.isArray(payload.events)
@@ -683,10 +807,25 @@ export async function loadBrowserSnapshot({ storage, state } = {}) {
   } catch (error) {
     return { ...storageFailure(error), key };
   }
-  if (raw === null || raw === undefined) return { status: "not_found", key };
+  if (raw === null || raw === undefined) {
+    // Detect only this PDF's known predecessor key. Preserve its bytes without
+    // decoding or hydrating candidate-only state over the structural baseline.
+    const legacyKey = `paperpilot:webmcp:v1:${identity.documentSha256}`;
+    let legacyRaw;
+    try {
+      legacyRaw = storage.getItem(legacyKey);
+    } catch (error) {
+      return { ...storageFailure(error), key };
+    }
+    if (legacyRaw !== null && legacyRaw !== undefined) {
+      return { status: "legacy_preserved", key, legacyKey, legacySchemaVersion: 1 };
+    }
+    return { status: "not_found", key };
+  }
   let decoded;
   try {
     decoded = await decodeEnvelope(raw, state);
+    decoded.displayTitleRefreshed = await refreshTrustedPaperTitle(decoded, state);
   } catch (error) {
     if (error instanceof SnapshotValidationError) {
       return { status: "invalid", key, reason: error.reason, message: error.message };
@@ -701,6 +840,7 @@ export async function loadBrowserSnapshot({ storage, state } = {}) {
     workspaceRevision: state.workspaceRevision,
     savedExplanations: structuredClone(decoded.savedExplanations),
     presentation: structuredClone(decoded.presentation),
+    displayTitleRefreshed: decoded.displayTitleRefreshed,
   };
 }
 

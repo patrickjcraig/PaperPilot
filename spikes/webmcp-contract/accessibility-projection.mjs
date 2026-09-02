@@ -9,7 +9,7 @@ import { annotationAnchorId } from "./webmcp-observer.mjs";
  * behavior; it only turns trusted PaperPilot state into copied visible facts.
  */
 
-/** @typedef {{ primaryAnchorId: string }} StructuralCoverage */
+/** @typedef {{ startPageIndex?: number, endPageIndex?: number, primaryAnchorId: string }} StructuralCoverage */
 /** @typedef {{
  *   label?: string,
  *   kind?: string,
@@ -19,6 +19,8 @@ import { annotationAnchorId } from "./webmcp-observer.mjs";
  *   salience?: number,
  *   sourceAnchorIds?: readonly string[],
  *   structuralCoverage?: readonly StructuralCoverage[],
+ *   structuralBasis?: string,
+ *   structuralConfidence?: string,
  * }} GraphNodeAttributes */
 /** @typedef {{
  *   relation?: string,
@@ -115,6 +117,56 @@ function nodeSourceIds(directSources, structuralCoverage) {
   const structuralSources = (structuralCoverage || []).map((coverage) => coverage.primaryAnchorId);
   return Object.freeze(structuralSources);
 }
+
+/** @param {GraphNodeAttributes} attributes */
+function nodeGroup(attributes) {
+  if (attributes.kind === "paper" || attributes.structuralBasis === "paper_root") return 0;
+  return attributes.authority === "document_structure" ? 1 : 2;
+}
+
+/** @param {GraphNodeAttributes} attributes */
+function firstStructuralPage(attributes) {
+  const indexes = (attributes.structuralCoverage || [])
+    .map(({ startPageIndex }) => Number(startPageIndex))
+    .filter(Number.isInteger);
+  return indexes.length ? Math.min(...indexes) : Number.MAX_SAFE_INTEGER;
+}
+
+/** @param {GraphNodeAttributes} attributes */
+function lastStructuralPage(attributes) {
+  const indexes = (attributes.structuralCoverage || [])
+    .map(({ endPageIndex }) => Number(endPageIndex))
+    .filter(Number.isInteger);
+  return indexes.length ? Math.max(...indexes) : Number.MAX_SAFE_INTEGER;
+}
+
+/** @param {readonly StructuralCoverage[] | undefined} coverage */
+function structuralRangeText(coverage) {
+  const ranges = (coverage || []).filter(({ startPageIndex, endPageIndex }) => (
+    Number.isInteger(startPageIndex) && Number.isInteger(endPageIndex)
+  ));
+  if (!ranges.length) return null;
+  const start = Math.min(...ranges.map(({ startPageIndex }) => Number(startPageIndex)));
+  const end = Math.max(...ranges.map(({ endPageIndex }) => Number(endPageIndex)));
+  return start === end ? `page ${start + 1}` : `pages ${start + 1}–${end + 1}`;
+}
+
+/** @param {string | undefined} value */
+function structuralBasisText(value) {
+  if (value === "paper_root") return "paper root";
+  if (value === "pdf_outline") return "PDF outline";
+  if (value === "heading_heuristic") return "detected heading";
+  if (value === "page_fallback") return "deterministic page fallback";
+  return "document structure";
+}
+
+/** @param {string | undefined} value */
+function structuralConfidenceText(value) {
+  if (value === "document_declared") return "document-provided";
+  if (value === "system_inferred") return "system-inferred, provisional";
+  if (value === "coverage_fallback") return "coverage fallback, no heading claim";
+  return "not recorded";
+}
 /**
  * Project the facts currently exposed by Sigma's equal accessible DOM outline.
  * Layout attributes are intentionally excluded: they are presentation-only and
@@ -126,6 +178,15 @@ function nodeSourceIds(directSources, structuralCoverage) {
  */
 export function projectAccessibleGraphOutline(graph, criticalIdeasByNodeKey = new Map()) {
   const orderedNodeKeys = [...graph.nodes()].sort((left, right) => {
+    const leftAttributes = /** @type {GraphNodeAttributes} */ (graph.getNodeAttributes(left));
+    const rightAttributes = /** @type {GraphNodeAttributes} */ (graph.getNodeAttributes(right));
+    const groupDifference = nodeGroup(leftAttributes) - nodeGroup(rightAttributes);
+    if (groupDifference !== 0) return groupDifference;
+    if (nodeGroup(leftAttributes) < 2) {
+      return firstStructuralPage(leftAttributes) - firstStructuralPage(rightAttributes)
+        || lastStructuralPage(leftAttributes) - lastStructuralPage(rightAttributes)
+        || left.localeCompare(right);
+    }
     const leftRank = criticalIdeasByNodeKey.get(left)?.rank ?? Number.MAX_SAFE_INTEGER;
     const rightRank = criticalIdeasByNodeKey.get(right)?.rank ?? Number.MAX_SAFE_INTEGER;
     if (leftRank !== rightRank) return leftRank - rightRank;
@@ -137,7 +198,7 @@ export function projectAccessibleGraphOutline(graph, criticalIdeasByNodeKey = ne
   const nodes = orderedNodeKeys.map((key) => {
     const attributes = /** @type {GraphNodeAttributes} */ (graph.getNodeAttributes(key));
     const sourceIds = nodeSourceIds(attributes.sourceAnchorIds, attributes.structuralCoverage);
-    const sources = sourceIds.join(", ") || "structural provenance";
+    const sources = sourceIds.join(", ") || "unavailable";
     const candidate = criticalIdeasByNodeKey.get(key);
     const candidateState = candidate
       ? attributes.origin === "agent" ? "agent refined" : "automatically ranked, unreviewed"
@@ -150,6 +211,11 @@ export function projectAccessibleGraphOutline(graph, criticalIdeasByNodeKey = ne
     const authority = attributes.authority || "unknown authority";
     const origin = attributes.origin || "unknown origin";
     const status = attributes.status || "unknown status";
+    const rangeText = structuralRangeText(attributes.structuralCoverage);
+    const structuralContext = authority === "document_structure" && rangeText
+      ? ` · ${rangeText} · structural source ${structuralBasisText(attributes.structuralBasis)} · confidence ${structuralConfidenceText(attributes.structuralConfidence)}`
+      : "";
+    const sourceLabel = authority === "document_structure" ? "paper source" : "source";
     return Object.freeze({
       type: /** @type {const} */ ("node"),
       key,
@@ -162,7 +228,7 @@ export function projectAccessibleGraphOutline(graph, criticalIdeasByNodeKey = ne
       primarySourceId: sourceIds[0] || null,
       candidateRank: candidate?.rank ?? null,
       candidateState,
-      text: `Node · ${label} · ${humanReadable(kind)} · ${humanReadable(authority)} · ${humanReadable(origin)} · ${humanReadable(status)}${candidateContext} · source ${sources}`,
+      text: `Node · ${label} · ${humanReadable(kind)} · ${humanReadable(authority)} · ${humanReadable(origin)} · ${humanReadable(status)}${candidateContext}${structuralContext} · ${sourceLabel} ${sources}`,
     });
   });
 
@@ -173,7 +239,7 @@ export function projectAccessibleGraphOutline(graph, criticalIdeasByNodeKey = ne
     const relation = attributes.relation || attributes.kind || "relates to";
     const status = attributes.status || "unknown status";
     const sourceIds = Object.freeze([...(attributes.sourceAnchorIds || [])]);
-    const sources = sourceIds.join(", ") || "structural provenance";
+    const sources = sourceIds.join(", ") || "unavailable";
     return Object.freeze({
       type: /** @type {const} */ ("edge"),
       key,

@@ -5,6 +5,7 @@ import test from "node:test";
 import { MultiDirectedGraph } from "graphology";
 
 import * as contract from "./contracts.mjs";
+import { createWholePaperStructuralMap } from "./structural-map.mjs";
 
 const {
   INPUT_SCHEMAS,
@@ -134,6 +135,31 @@ function automaticMapFixture({ candidates, coverage } = {}) {
   };
 }
 
+function structuralMapFixture({
+  documentSha256 = PAPER_FIXTURE.documentSha256,
+  pageCount = 15,
+  capabilities = {},
+  outlineEntries = [
+    { title: "Abstract", pageIndex: 0, order: 0 },
+    { title: "Introduction", pageIndex: 2, order: 1 },
+    { title: "Methods", pageIndex: 5, order: 2 },
+    { title: "Results", pageIndex: 9, order: 3 },
+    { title: "Discussion", pageIndex: 12, order: 4 },
+  ],
+} = {}) {
+  return createWholePaperStructuralMap({
+    documentSha256,
+    pages: Array.from({ length: pageCount }, (_, pageIndex) => ({
+      pageIndex,
+      pageLabel: String(pageIndex + 1),
+      pageViewBox: pageIndex % 2 ? [0, 0, 595, 842] : [0, 0, 612, 792],
+      pageRotation: [0, 90, 180, 270][pageIndex % 4],
+      textCapability: capabilities[pageIndex] || "exact_candidate",
+    })),
+    outlineEntries,
+  });
+}
+
 function toolsFor(state) {
   return new Map(createToolSuite(state).map((tool) => [tool.name, tool]));
 }
@@ -247,6 +273,74 @@ function snapshotForAtomicTest(state) {
     edges: state.graph.edges().sort().map((key) => [key, state.graph.source(key), state.graph.target(key), structuredClone(state.graph.getEdgeAttributes(key))]),
     historyLength: state.history.length,
   };
+}
+
+function snapshotTransactionForTest(state) {
+  return {
+    semantic: snapshotForAtomicTest(state),
+    focusAnchorId: state.focusAnchorId,
+    history: [...state.history],
+    redoHistory: [...state.redoHistory],
+    requestResults: new Map(state.requestResults),
+    events: [...state.events],
+  };
+}
+
+function assertRolledBackTransaction(state, before) {
+  assert.deepEqual(snapshotForAtomicTest(state), before.semantic);
+  assert.equal(state.focusAnchorId, before.focusAnchorId);
+  assert.deepEqual(state.history, before.history);
+  assert.deepEqual(state.redoHistory, before.redoHistory);
+  assert.deepEqual(state.requestResults, before.requestResults);
+  assert.deepEqual(state.events.slice(0, -1), before.events);
+  assert.equal(state.events.at(-1).eventType, "graph_rolled_back");
+  assert.equal(state.events.at(-1).beforeDigest, before.semantic.workspaceDigest);
+  assert.equal(state.events.at(-1).afterDigest, before.semantic.workspaceDigest);
+}
+
+async function fixtureWithHistoryAndRedo() {
+  const state = await createFixture();
+  const tools = toolsFor(state);
+  await tools.get("paperpilot.apply_graph").execute(graphCommand(state, { idempotencyKey: "prior-history-0001" }));
+  await tools.get("paperpilot.apply_graph").execute(graphCommand(state, { idempotencyKey: "prior-history-0002" }));
+  await undoLastHumanChange(state);
+  assert.equal(state.history.length, 1);
+  assert.equal(state.redoHistory.length, 1);
+  return { state, tools };
+}
+
+function injectTransactionFailure(state, command, kind, phase) {
+  const failure = () => { throw new Error("private internal path E:/not-for-tool-results"); };
+  if (phase === "projection" || phase === "async projection") {
+    const original = state.onStateChange;
+    state.onStateChange = phase === "projection" ? failure : async () => failure();
+    return () => { state.onStateChange = original; };
+  }
+  if (phase === "revision metadata") {
+    const original = state.id;
+    state.id = (prefix) => prefix === "revision" ? failure() : original(prefix);
+    return () => { state.id = original; };
+  }
+  if (phase === "replay cache") {
+    const original = Map.prototype.set;
+    Map.prototype.set = function (key, value) {
+      const result = original.call(this, key, value);
+      if (key === command.idempotencyKey && value?.commandDigest) failure();
+      return result;
+    };
+    return () => { Map.prototype.set = original; };
+  }
+  const original = Array.prototype.push;
+  Array.prototype.push = function (...values) {
+    const result = original.apply(this, values);
+    const record = values[0];
+    if (
+      (phase === "history append" && record?.kind === kind && record?.before?.workspaceDigest)
+      || (phase === "event append" && record?.eventType === (kind === "graph" ? "graph_applied" : "annotation_changed"))
+    ) failure();
+    return result;
+  };
+  return () => { Array.prototype.push = original; };
 }
 
 test("freezes the exact six-tool registration surface and closed local schemas", () => {
@@ -409,6 +503,103 @@ test("hydrates a deterministic grounded critical-idea map as the revision-one ba
   assert.equal(JSON.stringify(read).includes("criticalityScore"), false);
 });
 
+test("hydrates an honest whole-paper structure with canonical page anchors and separate semantic coverage", async () => {
+  const structuralMap = structuralMapFixture({ capabilities: { 3: "visual_only" } });
+  const state = await createFixture({
+    structuralMap,
+    automaticMap: automaticMapFixture(),
+  });
+
+  assert.equal(state.structuralMap.status, "structural_ready");
+  assert.deepEqual(state.structuralMap.counts, {
+    structuralPages: 14,
+    limitedPages: 1,
+    failedPages: 0,
+    navigablePages: 15,
+  });
+  assert.equal(state.graph.order, 1 + structuralMap.nodes.length + 2);
+  assert.equal(state.graph.size, structuralMap.nodes.length + 2);
+
+  for (const inputNode of structuralMap.nodes) {
+    const hydrated = state.structuralMap.nodes.find(({ key }) => key === inputNode.key);
+    const attributes = state.graph.getNodeAttributes(inputNode.key);
+    const anchor = state.anchors.get(hydrated.anchorId);
+    assert.equal(attributes.kind, "section");
+    assert.equal(attributes.authority, "document_structure");
+    assert.equal(attributes.origin, "automatic_map");
+    assert.equal(attributes.structuralBasis, inputNode.basis);
+    assert.equal(attributes.structuralConfidence, inputNode.confidence);
+    assert.deepEqual(attributes.sourceAnchorIds, []);
+    assert.deepEqual(attributes.structuralCoverage, [{
+      startPageIndex: inputNode.startPageIndex,
+      endPageIndex: inputNode.endPageIndex,
+      primaryAnchorId: hydrated.anchorId,
+    }]);
+    assert.equal(anchor.documentSha256, PAPER_FIXTURE.documentSha256);
+    assert.equal(anchor.pageIndex, inputNode.startPageIndex);
+    assert.equal(anchor.pageLabel, inputNode.primaryPageLabel);
+    assert.equal(anchor.sourceKind, "whole_page");
+    assert.equal(anchor.geometryKind, "rectangle");
+    assert.equal(anchor.authority, "client_rendered_pdf");
+    assert.equal(anchor.createdBy, "system");
+    assert.deepEqual(anchor.normalizedBounds, [{ x: 0, y: 0, width: 1, height: 1 }]);
+    assert.equal(anchor.rendererRecipe.pageRotation, inputNode.primaryPageRotation);
+    assert.match(anchor.anchorDigest, /^[0-9a-f]{64}$/u);
+  }
+
+  const tools = toolsFor(state);
+  const read = await tools.get("paperpilot.read_graph").execute({ mode: "overview", limit: 30 });
+  assert.deepEqual(read.coverage, {
+    pageCount: 15,
+    indexedPages: 15,
+    structuralPages: 14,
+    semanticPages: 2,
+    limitedPages: 1,
+    failedPages: 0,
+    status: "semantic_partial",
+  });
+  assert.match(read.guidance, /whole-paper structural coverage/iu);
+  const sectionFact = read.nodes.find(({ key }) => key === structuralMap.nodes[1].key);
+  assert.equal(sectionFact.structuralBasis, structuralMap.nodes[1].basis);
+  assert.equal(sectionFact.structuralConfidence, structuralMap.nodes[1].confidence);
+  assert.equal(JSON.stringify(read).includes('"x"'), false);
+
+  const section = state.structuralMap.nodes[1];
+  const focused = await tools.get("paperpilot.focus_source").execute({
+    targetType: "section",
+    targetId: section.key,
+  });
+  assert.equal(focused.anchorId, section.anchorId);
+  assert.deepEqual(focused.coveredPageRange, {
+    startPageIndex: section.startPageIndex,
+    endPageIndex: section.endPageIndex,
+  });
+  const focusRead = await tools.get("paperpilot.read_focus").execute({});
+  assert.ok(focusRead.graph.relatedNodeKeys.includes(section.key));
+  const focusGraph = await tools.get("paperpilot.read_graph").execute({ mode: "focus" });
+  assert.ok(focusGraph.nodes.some(({ key }) => key === section.key));
+});
+
+test("rejects tampered structural ledgers, limitations, labels, and foreign document identities", async () => {
+  const base = structuralMapFixture();
+  const badLimited = structuredClone(base);
+  badLimited.nodes[0].limited = !badLimited.nodes[0].limited;
+  const badLabel = structuredClone(base);
+  badLabel.nodes[0].primaryPageLabel = "not-the-ledger-label";
+  const badLedger = structuredClone(base);
+  badLedger.coverage[1].structuralNodeKey = badLedger.nodes[1].key;
+  const badCounts = structuredClone(base);
+  badCounts.counts.structuralPages -= 1;
+  const foreign = structuralMapFixture({ documentSha256: "b".repeat(64) });
+
+  for (const structuralMap of [badLimited, badLabel, badLedger, badCounts, foreign]) {
+    await assert.rejects(
+      createFixture({ structuralMap, automaticMap: automaticMapFixture() }),
+      (error) => error.code === "structural_map_invalid",
+    );
+  }
+});
+
 test("binds an arbitrary browser-local PDF identity to the automatic map and first exact candidate", async () => {
   const automaticMap = automaticMapFixture({
     coverage: Array.from({ length: 8 }, (_, pageIndex) => ({
@@ -477,6 +668,118 @@ test("agent refinement and Human Undo preserve the automatic map and immutable s
   assert.equal(state.graph.getNodeAttribute("candidate:idea:p2:alpha001", "origin"), "automatic_map");
   assert.equal(state.graph.hasNode("candidate:idea:p7:beta002"), true);
   assert.deepEqual(state.anchors.get(anchorBefore.anchorId), anchorBefore);
+});
+
+test("keeps PDF-derived structure immutable while allowing grounded semantic links to it", async () => {
+  const structuralMap = structuralMapFixture();
+  const state = await createFixture({ structuralMap, automaticMap: automaticMapFixture() });
+  const tools = toolsFor(state);
+  const section = state.structuralMap.nodes[0];
+  const structureEdgeKey = section.edgeKey;
+  const baseline = snapshotForAtomicTest(state);
+
+  const rejectedCommands = [
+    {
+      idempotencyKey: "structure-update-node-0001",
+      operations: [{
+        op: "update_node",
+        nodeKey: section.key,
+        expectedEntityRevision: 1,
+        set: {
+          kind: "concept",
+          authority: "paper_grounded",
+          sourceAnchorIds: [section.anchorId],
+        },
+      }],
+    },
+    {
+      idempotencyKey: "structure-tombstone-node-0002",
+      operations: [{ op: "tombstone_node", nodeKey: section.key, expectedEntityRevision: 1 }],
+    },
+    {
+      idempotencyKey: "structure-restore-node-0002b",
+      operations: [{ op: "restore_node", nodeKey: section.key, expectedEntityRevision: 1 }],
+    },
+    {
+      idempotencyKey: "structure-tombstone-root-0003",
+      operations: [{ op: "tombstone_node", nodeKey: "node:paper", expectedEntityRevision: 1 }],
+    },
+    {
+      idempotencyKey: "structure-update-edge-0004",
+      operations: [{
+        op: "update_edge",
+        edgeKey: structureEdgeKey,
+        expectedEntityRevision: 1,
+        set: {
+          kind: "appears_in",
+          authority: "paper_grounded",
+          sourceAnchorIds: [section.anchorId],
+        },
+      }],
+    },
+    {
+      idempotencyKey: "structure-tombstone-edge-0005",
+      operations: [{ op: "tombstone_edge", edgeKey: structureEdgeKey, expectedEntityRevision: 1 }],
+    },
+    {
+      idempotencyKey: "structure-restore-edge-0005b",
+      operations: [{ op: "restore_edge", edgeKey: structureEdgeKey, expectedEntityRevision: 1 }],
+    },
+    {
+      idempotencyKey: "structure-mixed-rollback-0006",
+      operations: [
+        {
+          op: "update_node",
+          nodeKey: "candidate:idea:p2:alpha001",
+          expectedEntityRevision: 1,
+          set: { label: "This semantic edit must roll back" },
+        },
+        { op: "tombstone_node", nodeKey: section.key, expectedEntityRevision: 1 },
+      ],
+    },
+  ];
+
+  for (const command of rejectedCommands) {
+    const result = await tools.get("paperpilot.apply_graph").execute(graphCommand(state, command));
+    assert.equal(result.status, "rejected");
+    assert.equal(result.code, "structural_map_managed");
+    assert.deepEqual(snapshotForAtomicTest(state), baseline);
+  }
+
+  const semanticAnchorId = "anchor:auto:idea:p2:alpha001";
+  const linked = await tools.get("paperpilot.apply_graph").execute(graphCommand(state, {
+    idempotencyKey: "semantic-link-to-structure-0007",
+    operations: [
+      {
+        op: "add_node",
+        clientRef: "client:semantic:structure-link",
+        node: {
+          kind: "concept",
+          label: "Reader-facing semantic concept",
+          summary: "A separate semantic idea can link to PDF-derived structure without rewriting it.",
+          authority: "paper_grounded",
+          sourceAnchorIds: [semanticAnchorId],
+          salience: 0.7,
+        },
+      },
+      {
+        op: "add_edge",
+        clientRef: "client:edge:structure-link",
+        edge: {
+          source: { refType: "client_ref", clientRef: "client:semantic:structure-link" },
+          target: { refType: "issued_key", key: section.key },
+          kind: "appears_in",
+          claim: "This grounded concept appears in the mapped structural range.",
+          authority: "paper_grounded",
+          sourceAnchorIds: [semanticAnchorId],
+        },
+      },
+    ],
+  }));
+  assert.equal(linked.status, "applied_reversible");
+  assert.equal(linked.affected.created.length, 2);
+  assert.equal(state.graph.getNodeAttribute(section.key, "authority"), "document_structure");
+  assert.equal(state.graph.getNodeAttribute(section.key, "entityRevision"), 1);
 });
 
 test("rejects malformed automatic-map geometry atomically", async () => {
@@ -1061,6 +1364,175 @@ test("replays the same graph command with a fresh callback receipt and no new re
   assert.equal(state.events.length, eventCountAfterApply + 1);
   assert.equal(state.events.at(-1).callbackReceiptId, replayed.callbackReceiptId);
   assert.equal(state.events.at(-1).toolName, "paperpilot.apply_graph");
+});
+
+for (const kind of ["graph", "annotation"]) {
+  for (const phase of ["revision metadata", "history append", "replay cache", "event append", "projection", "async projection"]) {
+    test(`${kind} transaction restores history, redo, receipts, and events after ${phase} failure and permits a real retry`, async () => {
+      const { state, tools } = await fixtureWithHistoryAndRedo();
+      const tool = tools.get(`paperpilot.apply_${kind}`);
+      const command = (kind === "graph" ? graphCommand : annotationCommand)(state, { idempotencyKey: `atomic-${kind}-retry-0001` });
+      const before = snapshotTransactionForTest(state);
+      const published = [];
+      state.onEvent = (event) => published.push(event);
+      const resetFailure = injectTransactionFailure(state, command, kind, phase);
+      let result;
+      try {
+        result = await tool.execute(command);
+      } finally {
+        resetFailure();
+      }
+      assert.equal(result.status, "rolled_back");
+      assert.equal(result.code, "workspace_rolled_back");
+      assert.equal(JSON.stringify(result).includes("not-for-tool-results"), false);
+      assert.equal(Object.hasOwn(result, "affected"), false);
+      assertRolledBackTransaction(state, before);
+      assert.deepEqual(published.map(({ eventType }) => eventType), ["graph_rolled_back"]);
+      assert.equal(state.requestResults.has(command.idempotencyKey), false);
+
+      const retry = await tool.execute(command);
+      assert.equal(retry.status, "applied_reversible");
+      assert.equal(retry.replayed, false);
+      assert.equal(state.history.length, before.history.length + 1);
+      assert.equal(state.redoHistory.length, 0);
+      assert.equal(state.requestResults.size, before.requestResults.size + 1);
+      const exists = (key) => kind === "graph" ? state.graph.hasNode(key) : state.annotations.has(key);
+      assert.ok(retry.affected.created.every(exists));
+      const replay = await tool.execute(command);
+      assert.equal(replay.status, "replayed");
+      assert.deepEqual(replay.affected, retry.affected);
+      assert.ok(replay.affected.created.every(exists));
+    });
+  }
+
+  test(`${kind} validates its complete success result before committing or publishing`, async () => {
+    const { state, tools } = await fixtureWithHistoryAndRedo();
+    const before = snapshotTransactionForTest(state);
+    const published = [];
+    state.onEvent = (event) => published.push(event);
+    const originalId = state.id;
+    state.id = (prefix) => prefix === "callback" ? "invalid/receipt" : originalId(prefix);
+    const command = (kind === "graph" ? graphCommand : annotationCommand)(state, { idempotencyKey: `result-${kind}-retry-0001` });
+    const result = await tools.get(`paperpilot.apply_${kind}`).execute(command);
+    state.id = originalId;
+    assert.equal(result.status, "rejected");
+    assert.equal(result.code, "result_schema_invalid");
+    assert.deepEqual(snapshotTransactionForTest(state), before);
+    assert.deepEqual(published, []);
+    assert.equal((await tools.get(`paperpilot.apply_${kind}`).execute(command)).status, "applied_reversible");
+  });
+
+  test(`${kind} observer failures do not reject a committed revision or corrupt replay`, async () => {
+    const state = await createFixture();
+    const tools = toolsFor(state);
+    let notifications = 0;
+    state.onEvent = async () => {
+      notifications += 1;
+      throw new Error("optional activity projection failed");
+    };
+    const command = (kind === "graph" ? graphCommand : annotationCommand)(state);
+    const result = await tools.get(`paperpilot.apply_${kind}`).execute(command);
+    assert.equal(result.status, "applied_reversible");
+    assert.equal(state.history.length, 1);
+    assert.equal(state.events.length, 1);
+    assert.equal(notifications, 1);
+    assert.equal((await tools.get(`paperpilot.apply_${kind}`).execute(command)).status, "replayed");
+    assert.equal(state.history.length, 1);
+  });
+}
+
+for (const action of ["reader create", "reader remove", "undo", "redo"]) {
+  test(`${action} shares the workspace transaction guard and retains both history branches after projection failure`, async () => {
+    const { state } = await fixtureWithHistoryAndRedo();
+    let execute;
+    if (action === "reader create") {
+      const command = readerAnnotationCommand(state, await readerAnchor(state));
+      execute = () => applyReaderAnnotation(state, command);
+    } else if (action === "reader remove") {
+      const created = await applyReaderAnnotation(state, readerAnnotationCommand(state, await readerAnchor(state)));
+      execute = () => removeReaderAnnotation(state, created.annotationId);
+    } else {
+      execute = () => (action === "undo" ? undoLastHumanChange : redoLastHumanChange)(state);
+    }
+    const before = snapshotTransactionForTest(state);
+    const published = [];
+    state.onEvent = (event) => published.push(event);
+    state.onStateChange = async () => { throw new Error("private projection failure"); };
+    await assert.rejects(execute, { code: "workspace_rolled_back" });
+    assertRolledBackTransaction(state, before);
+    assert.deepEqual(published.map(({ eventType }) => eventType), ["graph_rolled_back"]);
+    state.onStateChange = () => {};
+    const retry = await execute();
+    assert.equal(retry.status, action === "undo" ? "undone" : action === "redo" ? "redone" : "applied_reversible");
+  });
+}
+
+test("reads and Human Undo wait for an asynchronous mutation rollback instead of observing provisional state", async () => {
+  const { state, tools } = await fixtureWithHistoryAndRedo();
+  const before = snapshotTransactionForTest(state);
+  let releaseProjection;
+  let announceProjection;
+  const blocked = new Promise((resolve) => { releaseProjection = resolve; });
+  const started = new Promise((resolve) => { announceProjection = resolve; });
+  let projectionCalls = 0;
+  state.onStateChange = async () => {
+    if (++projectionCalls !== 1) return;
+    announceProjection();
+    await blocked;
+    throw new Error("projection failed after a concurrent read arrived");
+  };
+  const applying = tools.get("paperpilot.apply_graph").execute(graphCommand(state, { idempotencyKey: "concurrent-rollback-0001" }));
+  await started;
+  let readFinished = false;
+  const reading = tools.get("paperpilot.read_graph").execute({ mode: "overview" }).then((result) => {
+    readFinished = true;
+    return result;
+  });
+  const undoing = undoLastHumanChange(state);
+  await Promise.resolve();
+  assert.equal(readFinished, false);
+  releaseProjection();
+  assert.equal((await applying).status, "rolled_back");
+  const read = await reading;
+  assert.equal(read.workspaceRevision, before.semantic.workspaceRevision);
+  assert.equal(read.workspaceDigest, before.semantic.workspaceDigest);
+  assert.equal((await undoing).status, "undone");
+  assert.equal(state.events.filter(({ eventType }) => eventType === "graph_read").length, 1);
+});
+
+test("a broken event writer still restores the workspace when even a rollback event is unavailable", async () => {
+  const { state, tools } = await fixtureWithHistoryAndRedo();
+  const before = snapshotTransactionForTest(state);
+  const originalId = state.id;
+  state.id = (prefix) => {
+    if (prefix === "event") throw new Error("event metadata is unavailable");
+    return originalId(prefix);
+  };
+  const command = graphCommand(state, { idempotencyKey: "broken-event-writer-0001" });
+  const result = await tools.get("paperpilot.apply_graph").execute(command);
+  state.id = originalId;
+  assert.equal(result.status, "rolled_back");
+  assert.deepEqual(snapshotTransactionForTest(state), before);
+  assert.equal((await tools.get("paperpilot.apply_graph").execute(command)).status, "applied_reversible");
+});
+
+test("agent transactions preserve issued canonical anchor objects and empty Undo/Redo remain no-ops", async () => {
+  const state = await createFixture();
+  const before = snapshotTransactionForTest(state);
+  state.onStateChange = () => { throw new Error("no-op controls must not project"); };
+  assert.deepEqual(await undoLastHumanChange(state), { status: "nothing_to_undo" });
+  assert.deepEqual(await redoLastHumanChange(state), { status: "nothing_to_redo" });
+  assert.deepEqual(snapshotTransactionForTest(state), before);
+  state.onStateChange = () => {};
+  const created = await applyReaderAnnotation(state, readerAnnotationCommand(state, await readerAnchor(state)));
+  const issued = state.anchors.get(created.anchorId);
+  assert.equal(Object.isFrozen(issued), true);
+  const tools = toolsFor(state);
+  await tools.get("paperpilot.apply_graph").execute(graphCommand(state));
+  assert.equal(state.anchors.get(created.anchorId), issued);
+  await tools.get("paperpilot.apply_annotation").execute(annotationCommand(state));
+  assert.equal(state.anchors.get(created.anchorId), issued);
+  assert.equal(Object.isFrozen(issued), true);
 });
 
 test("serializes concurrent duplicate commands into one apply and one replay", async () => {

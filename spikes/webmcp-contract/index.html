@@ -30,8 +30,8 @@
         <p class="eyebrow">Private, in-app reading</p>
         <h2 id="paper-source-heading">Start with a paper</h2>
         <p>
-          PaperPilot reads the file only in this tab, fingerprints the exact bytes, and builds a reviewable
-          critical-idea map with page-owned provenance. Nothing is uploaded or written back into the PDF.
+          PaperPilot reads this file only in this tab, fingerprints the exact bytes, and builds a page-by-page
+          structural map. It may then suggest unreviewed ideas grounded in the paper. Nothing is uploaded or written back into the PDF.
         </p>
       </div>
       <div class="paper-start-actions">
@@ -53,7 +53,7 @@
         <div><span>WebMCP</span><strong id="webmcp-status" role="status" aria-live="polite">Connecting…</strong></div>
         <div><span>Workspace</span><strong id="workspace-status">Revision 1</strong></div>
         <div><span>Paper focus</span><strong id="focus-status">Exact text</strong></div>
-        <div><span>Paper parse</span><strong id="paper-analysis-status">Waiting for PDF…</strong></div>
+        <div><span>Paper map</span><strong id="paper-analysis-status">Waiting for PDF…</strong></div>
         <div><span>Graph view</span><strong id="renderer-status">Starting…</strong></div>
       </section>
 
@@ -289,6 +289,36 @@
             <p class="eyebrow">Graphology model · Sigma renderer</p>
             <h2 id="graph-heading">Graph &amp; annotations</h2>
           </header>
+          <section id="paper-map" class="paper-map" aria-labelledby="paper-map-heading" aria-describedby="paper-map-boundary" tabindex="-1">
+            <div class="paper-map-heading">
+              <div>
+                <p class="eyebrow">Whole-paper structure</p>
+                <h3 id="paper-map-heading">Paper route</h3>
+              </div>
+              <span id="paper-map-state" class="map-state-chip">Waiting</span>
+            </div>
+            <p id="paper-map-status" class="paper-map-status" role="status" aria-live="polite" aria-atomic="true">
+              Waiting for the verified page index.
+            </p>
+            <label class="paper-map-progress-label" for="paper-map-progress">Structural page coverage</label>
+            <progress id="paper-map-progress" max="1" value="0" aria-valuetext="No pages mapped">0 of 1 pages</progress>
+            <div id="paper-page-ledger" class="paper-page-ledger" aria-hidden="true"></div>
+            <dl class="paper-map-facts">
+              <div><dt>Indexed</dt><dd id="paper-map-indexed">0</dd></div>
+              <div><dt>Navigable</dt><dd id="paper-map-navigable">0</dd></div>
+              <div><dt>Limited</dt><dd id="paper-map-limited">0</dd></div>
+              <div><dt>Failed</dt><dd id="paper-map-failed">0</dd></div>
+            </dl>
+            <p id="paper-map-boundary" class="paper-map-boundary">
+              Structure tells you where material appears. It does not mean PaperPilot understood every scientific claim.
+            </p>
+            <details class="paper-structure-details" open>
+              <summary>Paper structure · <span id="paper-structure-count">0 ranges</span></summary>
+              <ol id="paper-structure-list" aria-label="Page-ordered document structure">
+                <li>Paper structure has not been built.</li>
+              </ol>
+            </details>
+          </section>
           <section class="graph-arranger" aria-labelledby="graph-arranger-heading">
             <div class="graph-arranger-copy">
               <p class="eyebrow">Evidence desk</p>
@@ -322,19 +352,20 @@
           <section class="critical-map" aria-labelledby="critical-map-heading">
             <div class="critical-map-heading">
               <div>
-                <p class="eyebrow">Whole-paper parse</p>
-                <h3 id="critical-map-heading">Critical idea spine</h3>
+                <p class="eyebrow">Ideas so far</p>
+                <h3 id="critical-map-heading">Unreviewed idea candidates</h3>
               </div>
-              <span id="critical-idea-count" class="count-chip" aria-label="0 critical idea candidates">0</span>
+              <span id="critical-idea-count" class="count-chip" aria-label="0 unreviewed idea candidates">0</span>
             </div>
+            <label class="critical-map-progress-label" for="paper-analysis-progress">Idea extraction progress</label>
             <progress id="paper-analysis-progress" max="15" value="0">0 of 15 pages</progress>
             <p id="paper-analysis-summary" role="status" aria-live="polite">
               Waiting for the verified PDF text index.
             </p>
             <p class="critical-map-boundary">
-              These are automatically ranked, extractive candidates—not verified conclusions. Each one keeps an exact page source, and WebMCP can search, navigate, refine, connect, or tombstone it through the existing graph tools.
+              Extractive suggestions for orientation. They are grounded in paper text, but they are not author-confirmed structure or verified conclusions. WebMCP can search, navigate, refine, connect, or tombstone them through the existing graph tools.
             </p>
-            <ol id="critical-idea-list" aria-label="Ranked critical idea candidates">
+            <ol id="critical-idea-list" aria-label="Ranked unreviewed idea candidates">
               <li>Paper analysis has not started.</li>
             </ol>
           </section>

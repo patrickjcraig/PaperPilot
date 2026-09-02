@@ -19,6 +19,8 @@ test("projects stable Graphology node and edge facts without layout fields", () 
     origin: "system",
     status: "active",
     salience: 0.4,
+    structuralBasis: "paper_root",
+    structuralConfidence: "document_declared",
     structuralCoverage: [{ startPageIndex: 0, endPageIndex: 14, primaryAnchorId: "anchor:page:1" }],
     x: 99,
     y: -99,
@@ -47,8 +49,8 @@ test("projects stable Graphology node and edge facts without layout fields", () 
     candidates,
   );
 
-  assert.deepEqual(projected.nodes.map(({ key }) => key), ["candidate:mechanism", "node:paper"]);
-  assert.deepEqual(projected.nodes[0], {
+  assert.deepEqual(projected.nodes.map(({ key }) => key), ["node:paper", "candidate:mechanism"]);
+  assert.deepEqual(projected.nodes[1], {
     type: "node",
     key: "candidate:mechanism",
     label: "Multi-Head Attention",
@@ -62,7 +64,10 @@ test("projects stable Graphology node and edge facts without layout fields", () 
     candidateState: "agent refined",
     text: "Node · Multi-Head Attention · main idea · paper grounded · agent · active · critical candidate rank 2 · agent refined · source anchor:auto:mechanism",
   });
-  assert.equal(projected.nodes[1].text, "Node · Paper root · paper · document structure · system · active · source anchor:page:1");
+  assert.equal(
+    projected.nodes[0].text,
+    "Node · Paper root · paper · document structure · system · active · pages 1–15 · structural source paper root · confidence document-provided · paper source anchor:page:1",
+  );
   assert.deepEqual(projected.edges[0], {
     type: "edge",
     key: "edge:paper:mechanism",
@@ -73,34 +78,82 @@ test("projects stable Graphology node and edge facts without layout fields", () 
     sourceIds: ["anchor:auto:mechanism"],
     text: "Edge · node:paper → candidate:mechanism · evidenced by · active · source anchor:auto:mechanism",
   });
-  assert.equal("x" in projected.nodes[0], false);
-  assert.equal("y" in projected.nodes[0], false);
+  assert.equal("x" in projected.nodes[1], false);
+  assert.equal("y" in projected.nodes[1], false);
   assert.equal(Object.isFrozen(projected), true);
   assert.equal(Object.isFrozen(projected.nodes[0].sourceIds), true);
 });
-test("uses the current graph-outline defaults and deterministic rank/salience ordering", () => {
+test("orders the paper root and structural leaves by page before semantic rank and salience", () => {
   const graph = new MultiDirectedGraph({ allowSelfLoops: false });
-  graph.addNode("node:lower", { salience: 0.2 });
-  graph.addNode("node:higher", { salience: 0.8, sourceAnchorIds: [] });
+  graph.addNode("node:semantic:higher", {
+    authority: "paper_grounded",
+    salience: 0.8,
+    sourceAnchorIds: [],
+  });
   graph.addNode("candidate:first", {
     label: "First candidate",
     origin: "automatic_map",
-    structuralCoverage: [{ primaryAnchorId: "anchor:section:1" }],
+    authority: "paper_grounded",
+    sourceAnchorIds: ["anchor:candidate:1"],
   });
-  graph.addDirectedEdgeWithKey("edge:default", "node:lower", "node:higher", {});
+  graph.addNode("node:structure:later", {
+    label: "Pages 5–10",
+    kind: "section",
+    authority: "document_structure",
+    origin: "automatic_map",
+    status: "active",
+    salience: 0.99,
+    structuralBasis: "page_fallback",
+    structuralConfidence: "coverage_fallback",
+    structuralCoverage: [{ startPageIndex: 4, endPageIndex: 9, primaryAnchorId: "anchor:structure:fallback" }],
+  });
+  graph.addNode("node:paper", {
+    label: "Paper root",
+    kind: "paper",
+    authority: "document_structure",
+    origin: "system",
+    status: "active",
+    structuralBasis: "paper_root",
+    structuralConfidence: "document_declared",
+    structuralCoverage: [{ startPageIndex: 0, endPageIndex: 9, primaryAnchorId: "anchor:page:1" }],
+  });
+  graph.addNode("node:structure:earlier", {
+    label: "Methods",
+    kind: "section",
+    authority: "document_structure",
+    origin: "automatic_map",
+    status: "active",
+    salience: 0.01,
+    structuralBasis: "heading_heuristic",
+    structuralConfidence: "system_inferred",
+    structuralCoverage: [{ startPageIndex: 1, endPageIndex: 3, primaryAnchorId: "anchor:structure:methods" }],
+  });
+  graph.addDirectedEdgeWithKey("edge:default", "node:semantic:higher", "candidate:first", {});
 
   const projected = projectAccessibleGraphOutline(
     /** @type {any} */ (graph),
     new Map([["candidate:first", { rank: 1 }]]),
   );
 
-  assert.deepEqual(projected.nodes.map(({ key }) => key), ["candidate:first", "node:higher", "node:lower"]);
+  assert.deepEqual(projected.nodes.map(({ key }) => key), [
+    "node:paper",
+    "node:structure:earlier",
+    "node:structure:later",
+    "candidate:first",
+    "node:semantic:higher",
+  ]);
   assert.equal(
-    projected.nodes[0].text,
-    "Node · First candidate · concept · unknown authority · automatic map · unknown status · critical candidate rank 1 · automatically ranked, unreviewed · source anchor:section:1",
+    projected.nodes[1].text,
+    "Node · Methods · section · document structure · automatic map · active · pages 2–4 · structural source detected heading · confidence system-inferred, provisional · paper source anchor:structure:methods",
   );
-  assert.equal(projected.nodes[1].text, "Node · node:higher · concept · unknown authority · unknown origin · unknown status · source structural provenance");
-  assert.equal(projected.edges[0].text, "Edge · node:lower → node:higher · relates to · unknown status · source structural provenance");
+  assert.equal(
+    projected.nodes[2].text,
+    "Node · Pages 5–10 · section · document structure · automatic map · active · pages 5–10 · structural source deterministic page fallback · confidence coverage fallback, no heading claim · paper source anchor:structure:fallback",
+  );
+  assert.equal(projected.nodes[1].primarySourceId, "anchor:structure:methods");
+  assert.match(projected.nodes.at(-1).text, /source unavailable$/u);
+  assert.doesNotMatch(projected.nodes.at(-1).text, /structural provenance/u);
+  assert.equal(projected.edges[0].text, "Edge · node:semantic:higher → candidate:first · relates to · unknown status · source unavailable");
 });
 
 test("projects the exact accessible annotation summary, source, and chip facts", () => {

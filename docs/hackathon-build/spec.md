@@ -625,6 +625,8 @@ Events are append-only. Undo does not delete the mutation it reverses. Registrat
 
 ### Browser snapshot
 
+The canonical target model below is retained for the remaining forward/inverse-patch history work in checklist item 7. It is not the current public storage envelope: the deployed-compatible implementation is version 2, described after the target type.
+
 ```ts
 type BrowserPaperSnapshotV1 = {
   schemaVersion: 1;
@@ -644,10 +646,12 @@ type BrowserPaperSnapshotV1 = {
 };
 ```
 
-- Key: `paperpilot:webmcp:v1:<documentSha256>`.
+- Current public key: `paperpilot:webmcp:v2:<documentSha256>`. `browser-snapshot.mjs` owns the closed `{ schemaVersion: 2, payloadChecksum, payload }` envelope. The payload contains `paperIdentity`, current/before/after workspace snapshots, history/redo history, replay receipts, events, human-saved explanations, and presentation-only annotation order. Snapshot history remains a compatibility implementation, not completion of item 7's canonical forward/inverse-patch migration.
+- Preserve older version-1 copies without hydration, deletion, or overwrite. If only an older copy exists, show an explicit preserved-but-not-yet-migrated notice; an explicit new save creates a separate version-2 copy.
 - Bound total bytes and history counts; retain recent revisions/events while never silently altering the current graph.
-- Validate schema, bounds, digest, and same-paper identities before hydration.
+- Validate schema, bounds, checksum, semantic digests, same-paper identity, and the regenerated structural nodes, edges, and primary source anchors before hydrating current state or any Undo/Redo state.
 - Same filename/different digest never restores.
+- A different filename with identical bytes does restore. Filename-derived paper-root titles are display metadata: validate the stored envelope first, then use the freshly loaded title and recompute derived workspace/history digests. Stored titles cannot replace trusted structure or source geometry.
 - On storage quota failure, keep session state, show **Not saved in this browser**, and avoid a false persistence event.
 - The snapshot excludes PDF bytes. Reupload is required to reopen the document.
 
@@ -664,7 +668,7 @@ The initial map must not require the user to prompt the browser agent.
 5. Identify candidate headings using document outline first, then conservative heuristics such as relative font height, line isolation, numbering patterns, and repetition suppression.
 6. Label heuristic headings `document_structure`; never describe them as author-confirmed main ideas.
 7. Create section nodes for trustworthy ranges. For any uncovered page, create a page or page-group node; visual-only/failed pages remain explicit.
-8. Apply the entire initial structural map as one system revision with full inverse.
+8. Establish the entire initial structural map as the protected system baseline at revision 1. Human Undo/Redo reverses later reader/agent changes; it must not erase generated page coverage. The broader command-history patch format remains the separate item-7 work package.
 9. Set coverage to `structural_ready` only when every admitted page is navigably structural or limited and no page failed. Use `structural_partial` when some pages remain failed and `failed` when no page is navigable; never call an all-failed index ready.
 10. Allow the agent to enrich semantic nodes through later anchored reads/mutations. Update `semanticPages` only when a source-grounded semantic entity covers that section/page.
 
@@ -674,7 +678,7 @@ The initial map must not require the user to prompt the browser agent.
 - Prefer PDF outline boundaries over inferred headings.
 - Fallback groups are deterministic contiguous ranges of at most ten pages.
 - Avoid a noisy one-node-per-line graph.
-- Automatic map nodes may be renamed or reorganized through reversible commands.
+- Automatically suggested semantic candidates may be refined through reversible commands. Generated paper/section nodes and structural containment edges are page-owned and read-only to agent mutations; agents may add separately grounded ideas and relationships. Visual node placement remains presentation-only for both layers.
 - Remapping cannot overwrite a reader-edited label in the authenticated port without matching its entity revision.
 - “Whole-paper” refers to coverage of all admitted pages, not universal semantic understanding.
 

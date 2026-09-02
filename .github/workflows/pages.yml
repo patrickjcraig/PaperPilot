@@ -7,8 +7,11 @@ on:
       - ".github/workflows/pages.yml"
       - "public/webmcp/**"
       - "scripts/package-webmcp-pages.mjs"
+      - "scripts/package-webmcp-pages.test.mjs"
       - "spikes/webmcp-contract/**"
+      - "package.json"
       - "package-lock.json"
+      - "tsconfig.webmcp.json"
   workflow_dispatch:
 
 permissions:
@@ -39,8 +42,17 @@ jobs:
       - name: Install pinned browser dependencies
         run: npm ci --ignore-scripts
 
+      - name: Typecheck the WebMCP implementation
+        run: npm run typecheck:webmcp
+
+      - name: Verify WebMCP contracts and real PDF fixtures
+        run: npm run test:webmcp:contracts
+
+      - name: Verify reproducible and safe Pages packaging
+        run: npm run test:webmcp:pages
+
       - name: Package the redesigned demo without paper bytes
-        run: node scripts/package-webmcp-pages.mjs
+        run: npm run webmcp:pages:build
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5

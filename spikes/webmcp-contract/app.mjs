@@ -23,6 +23,7 @@ import {
   resolvePrimaryGraphNodeKey,
 } from "./presentation-layout.mjs";
 import { analyzePaperPages } from "./paper-analysis.mjs";
+import { createWholePaperStructuralMap } from "./structural-map.mjs";
 import {
   clearBrowserSnapshot,
   loadBrowserSnapshot,
@@ -31,6 +32,7 @@ import {
 import {
   TOOL_PRESENTATION_COPY,
   annotationAnchorId,
+  createObservedPresentation,
   createObservedTrace,
   instrumentWebmcpTools,
   resolveObservedAnchor,
@@ -50,6 +52,12 @@ import {
   projectAccessibleAnnotationSummary,
   projectAccessibleGraphOutline,
 } from "./accessibility-projection.mjs";
+import {
+  captureFocusBookmark,
+  disclosureOpenState,
+  planInteractionRefresh,
+  resolveFocusBookmark,
+} from "./interaction-state.mjs";
 
 const byId = (id) => document.getElementById(id);
 
@@ -73,6 +81,17 @@ const elements = {
   graphLayoutReset: byId("graph-layout-reset"),
   graphNudgeButtons: [...document.querySelectorAll("[data-graph-nudge]")],
   graphOutline: byId("graph-outline"),
+  paperMap: byId("paper-map"),
+  paperMapState: byId("paper-map-state"),
+  paperMapStatus: byId("paper-map-status"),
+  paperMapProgress: byId("paper-map-progress"),
+  paperPageLedger: byId("paper-page-ledger"),
+  paperMapIndexed: byId("paper-map-indexed"),
+  paperMapNavigable: byId("paper-map-navigable"),
+  paperMapLimited: byId("paper-map-limited"),
+  paperMapFailed: byId("paper-map-failed"),
+  paperStructureCount: byId("paper-structure-count"),
+  paperStructureList: byId("paper-structure-list"),
   annotationList: byId("annotation-list"),
   annotationLayoutStatus: byId("annotation-layout-status"),
   activityList: byId("activity-list"),
@@ -168,6 +187,7 @@ let draggedAnnotationNodeKey = null;
 let draggedGraphNodeKey = null;
 let graphDragStartPosition = null;
 let paperAnalysis = null;
+let paperStructuralMap = null;
 let savedExplanations = [];
 let snapshotEnabled = false;
 let snapshotDirty = false;
@@ -239,6 +259,8 @@ function sourceThreadToken(anchorId) {
 }
 
 function renderMentorExplanation() {
+  const disclosureStates = new Map([...elements.mentorExplanationBody.querySelectorAll("details[data-mentor-section-key]")]
+    .map((section) => [section.dataset.mentorSectionKey, section.open]));
   const review = createMentorReviewViewModel({
     stagedExplanations: state?.explanations,
     savedExplanations,
@@ -273,7 +295,9 @@ function renderMentorExplanation() {
   for (const sectionModel of review.sections) {
     const section = document.createElement("details");
     section.className = "mentor-section";
-    section.open = sectionModel.initiallyOpen;
+    section.dataset.mentorSectionKey = `${explanation.explanationId}:${sectionModel.key}`;
+    section.dataset.interactionKey = `mentor-section:${sectionModel.key}`;
+    section.open = disclosureOpenState(disclosureStates, section.dataset.mentorSectionKey, sectionModel.initiallyOpen);
     const summary = document.createElement("summary");
     summary.textContent = sectionModel.label;
     const authority = document.createElement("span");
@@ -290,6 +314,7 @@ function renderMentorExplanation() {
   for (const anchorId of review.sourceAnchorIds) {
     const button = document.createElement("button");
     button.type = "button";
+    button.dataset.interactionKey = `mentor-source:${anchorId}`;
     button.textContent = sourceThreadToken(anchorId);
     button.setAttribute("aria-label", `Go to ${sourceThreadToken(anchorId)} used by this mentor note`);
     button.addEventListener("click", async () => {
@@ -302,6 +327,7 @@ function renderMentorExplanation() {
   for (const graphKey of review.graphEntityKeys) {
     const button = document.createElement("button");
     button.type = "button";
+    button.dataset.interactionKey = `mentor-graph:${graphKey}`;
     button.textContent = `Map · ${graphNodeLabel(graphKey)}`;
     button.setAttribute("aria-label", `Select ${graphNodeLabel(graphKey)} in the knowledge graph and go to its paper evidence`);
     button.addEventListener("click", () => focusGraphNodeEvidence(graphKey));
@@ -413,10 +439,18 @@ async function restoreBrowserWorkspace() {
     mergeRestoredActivity(state.events);
     snapshotEnabled = true;
     snapshotStored = true;
+    snapshotDirty = Boolean(result.displayTitleRefreshed);
+    snapshotStatusKind = snapshotDirty ? "dirty" : "restored";
+    const titleNotice = result.displayTitleRefreshed ? " · current filename applied; save to update the stored title" : "";
+    snapshotStatusMessage = `Restored from this browser · ${new Date(result.savedAt).toLocaleString()} · revision ${state.workspaceRevision}${titleNotice}`;
+    recordActivity("browser_workspace_restored", { actor: "page", status: `revision ${state.workspaceRevision}${result.displayTitleRefreshed ? " · display title refreshed" : ""}` });
+  } else if (result.status === "legacy_preserved") {
+    snapshotEnabled = false;
+    snapshotStored = false;
     snapshotDirty = false;
-    snapshotStatusKind = "restored";
-    snapshotStatusMessage = `Restored from this browser · ${new Date(result.savedAt).toLocaleString()} · revision ${state.workspaceRevision}`;
-    recordActivity("browser_workspace_restored", { actor: "page", status: `revision ${state.workspaceRevision}` });
+    snapshotStatusKind = "legacy";
+    snapshotStatusMessage = "An older saved workspace is preserved in this browser. It cannot be safely imported into the new paper map yet. Save here to start a separate compatible copy.";
+    recordActivity("browser_workspace_legacy_preserved", { actor: "page", status: "older format retained without changes" });
   } else if (result.status === "not_found") {
     snapshotStatusKind = "idle";
     snapshotStatusMessage = "Not saved · active tab only";
@@ -574,12 +608,26 @@ function cursorTargetForAnchor(anchorId) {
   return focusElementForAnchor(anchorId) || elements.paperStage;
 }
 
-async function ensureAnchorVisible(anchorId, { moveKeyboardFocus = false, scrollIntoView = true } = {}) {
+async function ensureAnchorVisible(anchorId, {
+  moveKeyboardFocus = false,
+  scrollIntoView = true,
+  behavior = prefersReducedMotion() ? "auto" : "smooth",
+} = {}) {
   const anchor = state?.anchors.get(anchorId);
   if (!anchor) return null;
   const diagnosticVisual = anchor.sourceKind === "visual_region"
     && ["visual-region-a", "visual-region-b"].includes(anchor.visibleRegionId);
   if (paperViewer && !diagnosticVisual) {
+    if (anchor.sourceKind === "whole_page") {
+      if (scrollIntoView || moveKeyboardFocus) {
+        await paperViewer.showPage(anchor.pageIndex + 1, {
+          behavior,
+          block: "start",
+        });
+      }
+      renderFocus({ moveKeyboardFocus, scrollIntoView: false });
+      return paperViewer.getPageSurface?.(anchor.pageIndex + 1) || elements.paperStage;
+    }
     if (!paperViewer.getAnchorTarget?.(anchorId) && Array.isArray(anchor.normalizedBounds)) {
       const linkedAnnotation = [...state.annotations.values()].find((annotation) => (
         annotationAnchorId(annotation) === anchorId && annotation.status === "active"
@@ -601,7 +649,7 @@ async function ensureAnchorVisible(anchorId, { moveKeyboardFocus = false, scroll
     }
     if (typeof paperViewer.focusAnchor === "function") {
       await paperViewer.focusAnchor(anchorId, {
-        behavior: prefersReducedMotion() ? "auto" : "smooth",
+        behavior,
         block: "center",
         scrollIntoView,
         moveKeyboardFocus,
@@ -645,24 +693,18 @@ function showToolRequest(toolName, input) {
 
 function showToolResult(toolName, input, result) {
   const trace = createObservedTrace({ state, toolName, input, result });
-  const copy = TOOL_PRESENTATION_COPY[toolName] || { complete: "Page callback returned" };
-  const replayCopy = trace.status === "rejected"
-    ? `Callback rejected · ${humanReadable(trace.code || "invalid request")}`
-    : trace.replayed
-      ? "Idempotent replay · no new revision"
-      : `${copy.complete} · ${humanReadable(trace.status)}`;
+  const presentation = createObservedPresentation(trace);
   placeAgentCursor(
     trace.anchorId,
-    trace.status === "rejected" ? "error" : "complete",
-    replayCopy,
-    trace.status === "rejected"
-      ? `PaperPilot rejected ${toolName}. No annotation or graph revision was created.`
-      : `PaperPilot returned ${trace.status} from ${toolName} at page ${trace.pageLabel}. This confirms a page callback, not private model reasoning.`,
+    presentation.phase,
+    presentation.label,
+    presentation.announcement,
   );
   lastObservedTrace = trace;
   elements.replayAgentAction.disabled = false;
 
-  if (toolName === "paperpilot.apply_annotation" && trace.status !== "rejected") {
+  if (presentation.phase === "error") clearAgentEditHighlights();
+  if (presentation.flashAnnotation) {
     const target = cursorTargetForAnchor(trace.anchorId);
     target.classList.add("is-agent-editing");
     const highlights = [...document.querySelectorAll(".pdf-source-highlight")];
@@ -671,6 +713,12 @@ function showToolResult(toolName, input, result) {
       target.classList.remove("is-agent-editing");
       for (const highlight of highlights) highlight.classList.remove("is-agent-editing");
     }, 1_300);
+  }
+}
+
+function clearAgentEditHighlights() {
+  for (const target of document.querySelectorAll(".is-agent-editing")) {
+    target.classList.remove("is-agent-editing");
   }
 }
 
@@ -685,12 +733,14 @@ async function replayObservedTrace(trace) {
     `Replaying the observed page callback for ${trace.toolName}. No tool or mutation is running.`,
   );
   await waitForReplay(650);
+  const presentation = createObservedPresentation(trace, { replay: true });
   placeAgentCursor(
     trace.anchorId,
-    "complete",
-    `Replay · page returned ${humanReadable(trace.status)}`,
-    `Replay complete for ${trace.toolName}. No command ran and no revision changed.`,
+    presentation.phase,
+    presentation.label,
+    presentation.announcement,
   );
+  if (presentation.phase === "error") clearAgentEditHighlights();
   await waitForReplay(450);
   elements.replayAgentAction.disabled = false;
   recordActivity("callback_visual_replay_completed", { actor: "human", toolName: trace.toolName, status: trace.status });
@@ -952,12 +1002,161 @@ function reorderAnnotation(annotationId, targetId, placement, { direction = null
   return true;
 }
 
+function structuralRangeLabel(startPageIndex, endPageIndex) {
+  return startPageIndex === endPageIndex
+    ? `Page ${startPageIndex + 1}`
+    : `Pages ${startPageIndex + 1}–${endPageIndex + 1}`;
+}
+
+function structuralBasisLabel(basis) {
+  if (basis === "pdf_outline") return "PDF outline";
+  if (basis === "heading_heuristic") return "Detected heading · provisional";
+  return "Page fallback";
+}
+
+function semanticPagesInCurrentGraph() {
+  const pages = new Set();
+  if (!state?.graph) return pages;
+  state.graph.forEachNode((_key, attributes) => {
+    if (attributes.status !== "active" || attributes.authority !== "paper_grounded") return;
+    for (const anchorId of attributes.sourceAnchorIds || []) {
+      const anchor = state.anchors.get(anchorId);
+      if (anchor) pages.add(anchor.pageIndex);
+    }
+  });
+  return pages;
+}
+
+async function focusStructuralRange(node) {
+  const graphNode = state?.graph?.hasNode(node.key) ? state.graph.getNodeAttributes(node.key) : null;
+  const structuralCoverage = graphNode?.structuralCoverage?.[0];
+  const anchorId = structuralCoverage?.primaryAnchorId;
+  if (!anchorId || !state.anchors.has(anchorId)) {
+    elements.paperMapStatus.textContent = `${node.label} has incomplete page provenance and cannot be opened from the map.`;
+    return false;
+  }
+  state.focusAnchorId = anchorId;
+  recordActivity("structural_source_focused", {
+    actor: "human",
+    status: `${node.key} · ${node.startPageIndex + 1}-${node.endPageIndex + 1}`,
+  });
+  await ensureAnchorVisible(anchorId, { moveKeyboardFocus: true, scrollIntoView: true });
+  elements.paperMapStatus.textContent = `${graphNode.label || node.label} covers ${structuralRangeLabel(node.startPageIndex, node.endPageIndex).toLocaleLowerCase("en-US")}. Moved to page ${node.startPageIndex + 1} of ${paperStructuralMap.pageCount}.`;
+  return true;
+}
+
+function renderStructuralMap() {
+  elements.paperPageLedger.replaceChildren();
+  elements.paperStructureList.replaceChildren();
+  if (!paperStructuralMap || !state?.structuralMap) {
+    elements.paperMapState.textContent = "Waiting";
+    elements.paperMapState.dataset.state = "waiting";
+    elements.paperMapStatus.textContent = "Waiting for the verified page index.";
+    elements.paperMapProgress.max = 1;
+    elements.paperMapProgress.value = 0;
+    elements.paperMapProgress.setAttribute("aria-valuetext", "No pages mapped");
+    elements.paperMapIndexed.textContent = "0";
+    elements.paperMapNavigable.textContent = "0";
+    elements.paperMapLimited.textContent = "0";
+    elements.paperMapFailed.textContent = "0";
+    elements.paperStructureCount.textContent = "0 ranges";
+    appendTextListItem(elements.paperStructureList, "Paper structure has not been built.");
+    return;
+  }
+
+  const { counts, coverage, nodes, status, pageCount } = paperStructuralMap;
+  const semanticPages = semanticPagesInCurrentGraph();
+  const stateLabel = status === "structural_ready" ? "Map ready" : status === "structural_partial" ? "Map partial" : "Map unavailable";
+  const stateKind = status === "structural_ready" ? "ready" : status === "structural_partial" ? "partial" : "failed";
+  elements.paperMapState.textContent = stateLabel;
+  elements.paperMapState.dataset.state = stateKind;
+  elements.paperMapStatus.textContent = status === "structural_ready"
+    ? `Map ready · ${counts.navigablePages} of ${pageCount} pages navigable${counts.limitedPages ? ` · ${counts.limitedPages} limited` : ""}.`
+    : status === "structural_partial"
+      ? `Map partial · ${counts.navigablePages} of ${pageCount} pages navigable · ${counts.failedPages} failed.`
+      : "Map unavailable · no navigable page structure.";
+  elements.paperMapProgress.max = pageCount;
+  elements.paperMapProgress.value = counts.navigablePages;
+  elements.paperMapProgress.textContent = `${counts.navigablePages} of ${pageCount} pages navigable`;
+  elements.paperMapProgress.setAttribute(
+    "aria-valuetext",
+    `${counts.navigablePages} of ${pageCount} pages navigable; ${counts.limitedPages} limited; ${counts.failedPages} failed`,
+  );
+  elements.paperMapIndexed.textContent = String(pageCount);
+  elements.paperMapNavigable.textContent = String(counts.navigablePages);
+  elements.paperMapLimited.textContent = String(counts.limitedPages);
+  elements.paperMapFailed.textContent = String(counts.failedPages);
+  elements.paperPageLedger.style.setProperty("--page-count", String(pageCount));
+  for (const entry of coverage) {
+    const segment = document.createElement("span");
+    segment.classList.toggle("is-limited", entry.mappingState === "limited");
+    segment.classList.toggle("is-failed", entry.mappingState === "failed");
+    segment.classList.toggle("has-semantic", semanticPages.has(entry.pageIndex));
+    segment.title = `Page ${entry.pageLabel} · ${humanReadable(entry.mappingState)}${semanticPages.has(entry.pageIndex) ? " · idea evidence present" : ""}`;
+    elements.paperPageLedger.append(segment);
+  }
+
+  const unavailablePages = coverage.filter(({ mappingState }) => mappingState === "failed");
+  elements.paperStructureCount.textContent = `${nodes.length} ${nodes.length === 1 ? "range" : "ranges"}${unavailablePages.length ? ` · ${unavailablePages.length} unavailable` : ""}`;
+  for (const node of nodes) {
+    const graphNode = state.graph.hasNode(node.key) ? state.graph.getNodeAttributes(node.key) : null;
+    const active = graphNode?.status === "active";
+    const item = document.createElement("li");
+    if (node.limited) item.classList.add("is-limited");
+    if (!active) item.classList.add("is-failed");
+    item.dataset.graphNodeKey = node.key;
+    const label = document.createElement("strong");
+    label.className = "paper-structure-label";
+    label.textContent = graphNode?.label || node.label;
+    const meta = document.createElement("p");
+    meta.className = "paper-structure-meta";
+    const range = document.createElement("span");
+    range.textContent = structuralRangeLabel(node.startPageIndex, node.endPageIndex);
+    const authority = document.createElement("span");
+    authority.textContent = "Document structure";
+    const basis = document.createElement("span");
+    basis.textContent = structuralBasisLabel(node.basis);
+    const limitation = document.createElement("span");
+    limitation.textContent = active ? (node.limited ? "Limited text" : "Navigable") : "Removed from active graph";
+    meta.append(range, authority, basis, limitation);
+    const summary = document.createElement("p");
+    summary.className = "paper-structure-summary";
+    summary.textContent = graphNode?.summary || node.summary;
+    const actions = document.createElement("div");
+    actions.className = "paper-structure-actions";
+    const sourceButton = document.createElement("button");
+    sourceButton.type = "button";
+    sourceButton.disabled = !active;
+    sourceButton.textContent = `Go to page ${node.startPageIndex + 1}`;
+    sourceButton.setAttribute(
+      "aria-label",
+      `Go to ${graphNode?.label || node.label}, ${structuralRangeLabel(node.startPageIndex, node.endPageIndex)}; ${structuralBasisLabel(node.basis)}`,
+    );
+    sourceButton.addEventListener("click", () => { void focusStructuralRange(node); });
+    actions.append(sourceButton);
+    item.append(label, meta, summary, actions);
+    elements.paperStructureList.append(item);
+  }
+  for (const page of unavailablePages) {
+    const item = document.createElement("li");
+    item.className = "is-failed";
+    const label = document.createElement("strong");
+    label.className = "paper-structure-label";
+    label.textContent = `Page ${page.pageLabel} · source unavailable`;
+    const summary = document.createElement("p");
+    summary.className = "paper-structure-summary";
+    summary.textContent = "This page remains explicit in coverage but was not promoted into a navigable structural leaf.";
+    item.append(label, summary);
+    elements.paperStructureList.append(item);
+  }
+}
+
 function renderCriticalIdeaMap() {
   elements.criticalIdeaList.replaceChildren();
   if (!paperAnalysis || !state?.automaticMap) {
     elements.criticalIdeaCount.textContent = "0";
-    elements.criticalIdeaCount.setAttribute("aria-label", "0 critical idea candidates");
-    appendTextListItem(elements.criticalIdeaList, "No grounded critical-idea candidates are available.");
+    elements.criticalIdeaCount.setAttribute("aria-label", "0 unreviewed idea candidates");
+    appendTextListItem(elements.criticalIdeaList, "No grounded, unreviewed idea candidates are available.");
     return;
   }
   const ordered = [...paperAnalysis.candidates].sort((left, right) => left.rank - right.rank || left.key.localeCompare(right.key));
@@ -967,7 +1166,7 @@ function renderCriticalIdeaMap() {
   elements.criticalIdeaCount.textContent = String(activeCount);
   elements.criticalIdeaCount.setAttribute(
     "aria-label",
-    `${activeCount} active critical idea ${activeCount === 1 ? "candidate" : "candidates"}`,
+    `${activeCount} active unreviewed idea ${activeCount === 1 ? "candidate" : "candidates"}`,
   );
   for (const candidate of ordered) {
     const attributes = state.graph.hasNode(candidate.key) ? state.graph.getNodeAttributes(candidate.key) : null;
@@ -989,10 +1188,9 @@ function renderCriticalIdeaMap() {
     const kind = document.createElement("span");
     kind.textContent = humanReadable(attributes?.kind || candidate.kind);
     const origin = document.createElement("span");
-    origin.textContent = attributes?.origin === "agent" ? "Agent refined" : "Automatic map · unreviewed";
+    origin.textContent = attributes?.origin === "agent" ? "Agent refined" : "Automatically suggested · unreviewed";
     const stateLabel = document.createElement("span");
-    const currentSalience = Number(attributes?.salience ?? candidate.salience);
-    stateLabel.textContent = isActive ? `Salience ${currentSalience.toFixed(2)}` : "Removed from map";
+    stateLabel.textContent = isActive ? "Paper-grounded" : "Removed from map";
     meta.append(page, kind, origin, stateLabel);
     const excerpt = document.createElement("p");
     excerpt.className = "critical-idea-excerpt";
@@ -1038,7 +1236,7 @@ function renderGraphOutline() {
       arrangeButton.dataset.graphNodeKey = key;
       arrangeButton.textContent = "Arrange this node";
       arrangeButton.setAttribute("aria-pressed", String(key === selectedGraphNodeKey));
-      arrangeButton.addEventListener("click", () => { void focusGraphNodeEvidence(key); });
+      arrangeButton.addEventListener("click", () => selectGraphNode(key));
       actions.append(arrangeButton);
     }
     const primaryAnchorId = node.primarySourceId;
@@ -1414,21 +1612,96 @@ function renderSigma() {
   }
 }
 
+let lastInteractionRenderStamp = null;
+
+function workspaceInteractionTargets() {
+  const targets = [];
+  for (const region of [elements.paperStructureList, elements.criticalIdeaList, elements.graphOutline,
+    elements.annotationList, elements.graphSearchResults, elements.mentorExplanationBody]) {
+    for (const element of region.querySelectorAll("button, summary, [tabindex]")) {
+      const row = element.closest("[data-annotation-id]") || element.closest("[data-mentor-section-key]")
+        || element.closest("li[data-graph-node-key]") || element.closest("[data-graph-node-key]");
+      const rowKey = row?.dataset.annotationId || row?.dataset.graphNodeKey || row?.dataset.interactionKey || row?.dataset.mentorSectionKey
+        || element.dataset.interactionKey || element.id;
+      if (!rowKey) continue;
+      const action = element.dataset.interactionKey || element.dataset.reorderDirection
+        || (element.dataset.removeAnnotation ? "remove-annotation" : null)
+        || (element === row ? "card" : element.tagName === "SUMMARY" ? "disclosure" : element.textContent);
+      const closedDisclosure = element.closest("details:not([open])");
+      targets.push({
+        key: JSON.stringify([region.id, rowKey, action]),
+        regionKey: region.id,
+        rowKey,
+        available: !element.disabled && !element.closest("[hidden], [inert]")
+          && (!closedDisclosure || closedDisclosure.querySelector(":scope > summary") === element),
+        element,
+      });
+    }
+  }
+  return targets;
+}
+
+function captureWorkspaceInteraction() {
+  const targets = workspaceInteractionTargets();
+  const active = targets.find(({ element }) => element === document.activeElement);
+  return { element: active?.element, bookmark: captureFocusBookmark(active?.key || null, targets) };
+}
+
+function restoreWorkspaceInteraction(previous) {
+  if (!previous.bookmark || (previous.element?.isConnected && !previous.element.disabled)) return;
+  // Do not override an intentional focus change made elsewhere during rendering.
+  if (document.activeElement && document.activeElement !== document.body && document.activeElement !== previous.element) return;
+  const targets = workspaceInteractionTargets();
+  const key = resolveFocusBookmark(previous.bookmark, targets);
+  const target = targets.find((entry) => entry.key === key)?.element;
+  if (target) {
+    target.focus({ preventScroll: true });
+    return;
+  }
+  const region = byId(previous.bookmark.target.regionKey);
+  const fallback = region === elements.mentorExplanationBody ? byId("mentor-explanation-heading")
+    : region === elements.annotationList ? elements.annotationList : byId("graph-heading");
+  fallback?.setAttribute("tabindex", "-1");
+  fallback?.focus({ preventScroll: true });
+}
+
 function renderState() {
-  reconcileGraphPresentation();
+  const nextStamp = {
+    documentKey: `${state.paper.paperRef}:${state.paper.documentSha256}`,
+    graph: state.graph,
+    workspaceRevision: state.workspaceRevision,
+    workspaceDigest: state.workspaceDigest,
+    anchorCount: state.anchors.size,
+    mentorKey: JSON.stringify([state.explanations, savedExplanations].map((explanations) => explanations.map(
+      ({ explanationId, responseDigest, humanDecision, savedAt, takeaway }) => [explanationId, responseDigest, humanDecision, savedAt, takeaway],
+    ))),
+  };
+  const refresh = planInteractionRefresh(lastInteractionRenderStamp, nextStamp);
+  const interaction = refresh.content || refresh.mentor ? captureWorkspaceInteraction() : null;
+  // A projection error may trigger a reducer rollback. Do not leave a cache
+  // stamp that would mistake its required repaint for an unchanged workspace.
+  if (refresh.content || refresh.mentor) lastInteractionRenderStamp = null;
   elements.workspaceStatus.textContent = `Revision ${state.workspaceRevision} · ${state.workspaceDigest.slice(0, 10)}…`;
   elements.visualMode.textContent = `Evidence mode: ${state.visualEvidenceMode}`;
   elements.humanUndo.disabled = state.history.length === 0;
   elements.humanRedo.disabled = state.redoHistory.length === 0;
-  syncPersistedAnnotationOverlays();
+  if (refresh.content) {
+    reconcileGraphPresentation();
+    syncPersistedAnnotationOverlays();
+  }
   renderFocus();
-  renderCriticalIdeaMap();
-  renderGraphOutline();
-  renderAnnotations();
-  renderMentorExplanation();
+  if (refresh.content) {
+    renderStructuralMap();
+    renderCriticalIdeaMap();
+    renderGraphOutline();
+    renderAnnotations();
+    if (elements.graphSearchQuery.value.trim()) renderGraphSearch();
+    renderSigma();
+  }
+  if (refresh.mentor) renderMentorExplanation();
   renderBrowserSaveState();
-  if (elements.graphSearchQuery.value.trim()) renderGraphSearch();
-  renderSigma();
+  if (interaction) restoreWorkspaceInteraction(interaction);
+  lastInteractionRenderStamp = nextStamp;
 }
 
 function instrumentTools(rawTools) {
@@ -1465,7 +1738,8 @@ function instrumentTools(rawTools) {
         elements.mentorExplanationStatus.textContent = "Explanation ready for your review. Save or discard it; the browser agent cannot make that decision.";
         elements.agentAnnouncement.textContent = "A source-grounded mentor explanation is ready for human review.";
       }
-      renderState();
+      // Mutating tools already publish through state.onStateChange. Reads only
+      // update their receipt/pointer, never rebuild the reader's controls.
       showToolResult(tool.name, input, result);
     },
     onError({ tool, input, error }) {
@@ -1930,6 +2204,7 @@ function renderGraphSearch(query = elements.graphSearchQuery.value) {
     : "No label or summary matches in the current paper graph.";
   for (const { key, attributes } of matches) {
     const item = document.createElement("li");
+    item.dataset.graphNodeKey = key;
     const summary = document.createElement("span");
     summary.textContent = `${attributes.label || key} · ${humanReadable(attributes.kind)} · ${humanReadable(attributes.authority)}`;
     item.append(summary);
@@ -1940,7 +2215,7 @@ function renderGraphSearch(query = elements.graphSearchQuery.value) {
     arrangeButton.dataset.graphNodeKey = key;
     arrangeButton.textContent = "Arrange this node";
     arrangeButton.setAttribute("aria-pressed", String(key === selectedGraphNodeKey));
-    arrangeButton.addEventListener("click", () => { void focusGraphNodeEvidence(key); });
+    arrangeButton.addEventListener("click", () => selectGraphNode(key));
     actions.append(arrangeButton);
     const anchorId = attributes.sourceAnchorIds?.[0] || attributes.structuralCoverage?.[0]?.primaryAnchorId;
     if (anchorId && state.anchors.has(anchorId)) {
@@ -2313,6 +2588,9 @@ function wireHumanControls() {
 }
 
 async function boot({ pdfFile = null } = {}) {
+  paperStructuralMap = null;
+  paperAnalysis = null;
+  criticalIdeaByNodeKey.clear();
   renderToolList();
   await renderContractManifest();
   renderActivity();
@@ -2387,6 +2665,13 @@ async function boot({ pdfFile = null } = {}) {
 
   let documentText = null;
   let groundedAutomaticMap;
+  elements.paperMapState.textContent = "Building";
+  elements.paperMapState.dataset.state = "building";
+  elements.paperMapStatus.textContent = `Indexing 0 of ${paperFacts.pageCount} pages for the structural map.`;
+  elements.paperMapProgress.max = paperFacts.pageCount;
+  elements.paperMapProgress.removeAttribute("value");
+  elements.paperMapProgress.textContent = "Building the structural page map";
+  elements.paperMapProgress.setAttribute("aria-valuetext", "Building the structural page map");
   try {
     elements.paperAnalysisStatus.textContent = `Reading 0 / ${paperFacts.pageCount} pages`;
     setAnalysisProgress(0, paperFacts.pageCount, `0 of ${paperFacts.pageCount} pages read`);
@@ -2410,19 +2695,55 @@ async function boot({ pdfFile = null } = {}) {
     elements.paperAnalysisStatus.textContent = "Ranking grounded passages…";
     elements.paperAnalysisSummary.textContent = "Segmenting sections and ranking extractive candidates. Importance is heuristic, not a truth score.";
     const analysis = analyzePaperPages(documentText.pages, { minCandidates: 5, maxCandidates: 10 });
+    paperStructuralMap = createWholePaperStructuralMap({
+      documentSha256: paperFacts.sha256,
+      pages: documentText.pages,
+      outlineEntries: documentText.outline?.entries || [],
+      heuristicHeadings: analysis.headings,
+    });
+    recordActivity("structural_map_created", {
+      actor: "page",
+      status: `${paperStructuralMap.status} · ${paperStructuralMap.nodes.length} ranges · ${paperStructuralMap.counts.navigablePages}/${paperStructuralMap.pageCount} navigable`,
+    });
     groundedAutomaticMap = groundAutomaticMap(documentText, analysis);
     setAnalysisProgress(0, groundedAutomaticMap.contract.candidates.length, `0 of ${groundedAutomaticMap.contract.candidates.length} candidates grounded`);
     elements.paperAnalysisStatus.textContent = `Grounding 0 / ${groundedAutomaticMap.contract.candidates.length} candidates`;
   } catch (error) {
     const pageCount = paperFacts.pageCount;
+    if (!paperStructuralMap) {
+      const structuralPages = documentText?.pages || paperViewer.getStructuralPageRecords();
+      try {
+        paperStructuralMap = createWholePaperStructuralMap({
+          documentSha256: paperFacts.sha256,
+          pages: structuralPages,
+          outlineEntries: documentText?.outline?.entries || [],
+          heuristicHeadings: [],
+        });
+      } catch (structuralError) {
+        paperStructuralMap = createWholePaperStructuralMap({
+          documentSha256: paperFacts.sha256,
+          pages: structuralPages.map((page) => ({ ...page, textCapability: "failed" })),
+          outlineEntries: [],
+          heuristicHeadings: [],
+        });
+        recordActivity("structural_map_failed_closed", {
+          actor: "page",
+          status: structuralError?.name || "structural_map_error",
+        });
+      }
+      recordActivity("structural_map_created", {
+        actor: "page",
+        status: `${paperStructuralMap.status} · fallback ranges · ${paperStructuralMap.counts.navigablePages}/${paperStructuralMap.pageCount} navigable`,
+      });
+    }
     const coverage = documentText?.pages?.map(({ pageIndex, pageLabel, textCapability }) => ({
       pageIndex,
       pageLabel,
       textCapability,
-    })) || Array.from({ length: pageCount }, (_, pageIndex) => ({
+    })) || paperViewer.getStructuralPageRecords().map(({ pageIndex, pageLabel, textCapability }) => ({
       pageIndex,
-      pageLabel: String(pageIndex + 1),
-      textCapability: "failed",
+      pageLabel,
+      textCapability,
     }));
     const claimBoundary = "Automatic critical-idea analysis was unavailable. The verified PDF remains readable; no fallback ideas were fabricated.";
     groundedAutomaticMap = {
@@ -2466,6 +2787,7 @@ async function boot({ pdfFile = null } = {}) {
       pageViewBox: paperFacts.firstPageViewBox,
       pageRotation: paperFacts.firstPageRotation,
     },
+    structuralMap: paperStructuralMap,
     automaticMap: groundedAutomaticMap.contract,
     textAnchor: exactAnchor ? {
       normalizedBounds: exactAnchor.rects.map((rectangle) => ({ ...rectangle })),
@@ -2492,7 +2814,7 @@ async function boot({ pdfFile = null } = {}) {
     if (!state.graph.hasNode(position.nodeKey)) continue;
     state.graph.mergeNodeAttributes(position.nodeKey, { x: position.x, y: position.y });
   }
-  await restoreBrowserWorkspace();
+  const restoredWorkspace = await restoreBrowserWorkspace();
   let groundedCount = 0;
   for (const seeded of state.automaticMap?.candidates || []) {
     const anchor = state.anchors.get(seeded.anchorId);
@@ -2510,22 +2832,27 @@ async function boot({ pdfFile = null } = {}) {
     elements.paperAnalysisStatus.textContent = `Grounding ${groundedCount} / ${paperAnalysis.candidateCount} candidates`;
   }
   syncPersistedAnnotationOverlays();
-  const textLimitedPages = state.automaticMap?.coverage.filter((entry) => (
-    entry.textCapability === "no_text" || entry.textCapability === "visual_only" || entry.textCapability === "failed"
-    || entry.textCapability === "weak_text"
-  )).length || 0;
+  const textLimitedPages = paperStructuralMap.counts.limitedPages + paperStructuralMap.counts.failedPages;
   setAnalysisProgress(
-    paperFacts.pageCount - textLimitedPages,
-    paperFacts.pageCount,
-    `${paperFacts.pageCount - textLimitedPages} of ${paperFacts.pageCount} pages indexed with usable text`,
+    groundedCount,
+    Math.max(1, paperAnalysis.candidateCount),
+    `${groundedCount} of ${paperAnalysis.candidateCount} unreviewed suggestions grounded`,
   );
+  const mapStatusLabel = paperStructuralMap.status === "structural_ready"
+    ? "Map ready"
+    : paperStructuralMap.status === "structural_partial"
+      ? "Map partial"
+      : "Map unavailable";
+  elements.paperAnalysisStatus.textContent = `${mapStatusLabel} · ${paperStructuralMap.counts.navigablePages} / ${paperFacts.pageCount} pages navigable`;
+  elements.pdfSourceStatus.textContent = `${paperStructuralMap.counts.navigablePages} of ${paperFacts.pageCount} pages have source locators. ${textLimitedPages ? `${textLimitedPages} pages have limited or failed text; use their visible PDF regions.` : "Choose a passage, annotation, or map source to return to its place in the PDF."}`;
   if (paperAnalysis.candidateCount > 0) {
-    elements.paperAnalysisStatus.textContent = `${paperAnalysis.candidateCount} candidates · ${paperFacts.pageCount} pages read`;
-    elements.paperAnalysisSummary.textContent = `${paperAnalysis.candidateCount} critical-idea candidates were ranked and grounded across the verified paper. ${textLimitedPages} pages had limited or failed text.`;
+    elements.paperAnalysisSummary.textContent = `${paperAnalysis.candidateCount} unreviewed idea suggestions were grounded separately from the whole-paper structure. ${textLimitedPages} pages had limited or failed text.`;
     recordActivity("automatic_map_hydrated", {
       actor: "page",
       status: `${paperAnalysis.candidateCount} candidates · revision 1 baseline`,
     });
+  } else {
+    elements.paperAnalysisSummary.textContent = `The paper structure is available, but PaperPilot found no reliable text for idea suggestions. ${textLimitedPages} pages had limited or failed text.`;
   }
   tools = instrumentTools(createToolSuite(state));
   elements.primarySourceButton.dataset.focusAnchor = state.focusAnchorId;
@@ -2536,6 +2863,18 @@ async function boot({ pdfFile = null } = {}) {
   wireHumanControls();
   await setupVisualTrial();
   renderState();
+  if (restoredWorkspace.status === "restored" && state.anchors.has(state.focusAnchorId)) {
+    try {
+      await ensureAnchorVisible(state.focusAnchorId, {
+        moveKeyboardFocus: false,
+        scrollIntoView: true,
+        behavior: "auto",
+      });
+    } catch {
+      elements.pdfSourceStatus.textContent = "Your workspace was restored, but the saved source could not be brought into view. Use the page locator or a source link to continue.";
+      recordActivity("restored_source_navigation_failed", { actor: "page", status: "source_unavailable" });
+    }
+  }
   placeAgentCursor(
     state.focusAnchorId,
     "ready",

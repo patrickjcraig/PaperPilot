@@ -227,6 +227,27 @@ export function calculatePageScrollTop({
   return Math.max(0, top - inset);
 }
 
+/**
+ * Navigation is explicit: presenting a callback marker must not change the
+ * reader's active page, mounted neighborhood, scroll position, or keyboard
+ * focus. The small target/showPage seam also makes that invariant testable.
+ */
+export async function focusPdfAnchorTarget({ target, pageNumber, showPage }, {
+  behavior = "smooth",
+  block = "center",
+  scrollIntoView = true,
+  moveKeyboardFocus = true,
+} = {}) {
+  if (scrollIntoView) {
+    await showPage(pageNumber, { behavior: "auto", block: "nearest" });
+    if (moveKeyboardFocus) target.focus({ preventScroll: true });
+    target.scrollIntoView({ behavior, block, inline: "nearest" });
+  } else if (moveKeyboardFocus) {
+    target.focus({ preventScroll: true });
+  }
+  return target;
+}
+
 /** Keep a small rendered neighborhood while page shells preserve full scroll geometry. */
 export function pageNumbersForRenderWindow(activePage, pageCount, radius = DEFAULT_RENDER_RADIUS) {
   const totalPages = Math.max(1, asPositiveInteger(pageCount, 1));
@@ -1061,6 +1082,117 @@ export function buildPdfPageTextRecord({
   });
 }
 
+function freezeOutlineResult(value) {
+  if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
+  for (const child of Object.values(value)) freezeOutlineResult(child);
+  return Object.freeze(value);
+}
+
+function boundedOutlineTitle(value) {
+  return String(value ?? "")
+    .normalize("NFKC")
+    .replace(/[\u0000-\u001f\u007f-\u009f]/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .slice(0, 160);
+}
+
+/**
+ * Resolve PDF outline destinations with public PDF.js APIs. Outline failures
+ * never block reading: callers receive an honest empty/partial result and the
+ * structural mapper can fall back to inferred headings or page ranges.
+ *
+ * @param {{
+ *   numPages?: number,
+ *   getOutline?: () => Promise<unknown>,
+ *   getDestination?: (name: string) => Promise<unknown>,
+ *   getPageIndex?: (reference: unknown) => Promise<number>,
+ * }} pdfDocument
+ */
+export async function resolvePdfOutline(pdfDocument) {
+  const pageCount = Number(pdfDocument?.numPages);
+  if (!Number.isInteger(pageCount) || pageCount < 1 || typeof pdfDocument?.getOutline !== "function") {
+    return freezeOutlineResult({
+      status: "unavailable",
+      itemCount: 0,
+      resolvedCount: 0,
+      unresolvedCount: 0,
+      entries: [],
+    });
+  }
+
+  let outline;
+  try {
+    outline = await pdfDocument.getOutline();
+  } catch (error) {
+    return freezeOutlineResult({
+      status: "failed",
+      itemCount: 0,
+      resolvedCount: 0,
+      unresolvedCount: 0,
+      limitation: error?.name || "outline_read_failed",
+      entries: [],
+    });
+  }
+  if (!Array.isArray(outline) || outline.length === 0) {
+    return freezeOutlineResult({
+      status: "absent",
+      itemCount: 0,
+      resolvedCount: 0,
+      unresolvedCount: 0,
+      entries: [],
+    });
+  }
+
+  const flat = [];
+  const visit = (items, depth) => {
+    for (const item of items || []) {
+      if (!item || typeof item !== "object" || flat.length >= 512) continue;
+      flat.push({ item, depth, order: flat.length });
+      if (Array.isArray(item.items) && depth < 12) visit(item.items, depth + 1);
+    }
+  };
+  visit(outline, 0);
+
+  const entries = [];
+  let unresolvedCount = 0;
+  for (const { item, depth, order } of flat) {
+    const title = boundedOutlineTitle(item.title);
+    if (!title || item.dest === undefined || item.dest === null) {
+      unresolvedCount += 1;
+      continue;
+    }
+    try {
+      let destination = item.dest;
+      if (typeof destination === "string") {
+        if (typeof pdfDocument.getDestination !== "function") throw new Error("Named destination resolution is unavailable.");
+        destination = await pdfDocument.getDestination(destination);
+      }
+      if (!Array.isArray(destination) || destination.length === 0) throw new Error("Outline destination is malformed.");
+      const pageReference = destination[0];
+      const pageIndex = Number.isInteger(pageReference)
+        ? Number(pageReference)
+        : typeof pdfDocument.getPageIndex === "function"
+          ? Number(await pdfDocument.getPageIndex(pageReference))
+          : Number.NaN;
+      if (!Number.isInteger(pageIndex) || pageIndex < 0 || pageIndex >= pageCount) {
+        throw new Error("Outline destination is outside the active PDF.");
+      }
+      entries.push({ title, pageIndex, depth, order });
+    } catch {
+      unresolvedCount += 1;
+    }
+  }
+
+  return freezeOutlineResult({
+    status: entries.length === 0 ? "failed" : unresolvedCount > 0 ? "partial" : "resolved",
+    itemCount: flat.length,
+    resolvedCount: entries.length,
+    unresolvedCount,
+    entries,
+  });
+}
+
 function pdfQuadsFromClientRects(rects, pageRect, viewport) {
   return rects.map((rect) => {
     const left = clamp(rect.left - pageRect.left, 0, pageRect.width);
@@ -1156,7 +1288,67 @@ function isExpectedCancellation(error) {
   return error instanceof StalePdfRenderError
     || error instanceof RenderingCancelledException
     || error?.name === "RenderingCancelledException"
-    || error?.name === "AbortException";
+    || error?.name === "AbortException"
+    || error?.name === "AbortError";
+}
+
+/**
+ * Canvas pixels are mandatory; selectable text is an optional enhancement.
+ * Narrow catches deliberately exclude canvas and stale-generation failures.
+ * No fallback manufactures text or resolves a required exact source.
+ */
+export async function renderPdfPageLayers({
+  renderCanvas,
+  loadTextContent,
+  renderTextLayer,
+  assertCurrent,
+  requiresExactSource = false,
+}) {
+  await renderCanvas();
+  assertCurrent();
+  const unavailable = (limitation) => Object.freeze({
+    textLayer: null,
+    textCapability: "visual_only",
+    limitation,
+  });
+  let textContent;
+  try {
+    textContent = await loadTextContent();
+  } catch (error) {
+    assertCurrent();
+    if (requiresExactSource || isExpectedCancellation(error)) throw error;
+    return unavailable("text_extraction_failed");
+  }
+  assertCurrent();
+  if (!Array.isArray(textContent?.items) || !textContent.items.some((item) => typeof item?.str === "string" && item.str.trim().length > 0)) {
+    if (requiresExactSource) {
+      throw new PaperPdfError("PDF_SOURCE_UNAVAILABLE", "The required exact source has no usable embedded PDF text.");
+    }
+    return unavailable("no_embedded_text");
+  }
+  let textLayer;
+  try {
+    textLayer = await renderTextLayer(textContent);
+  } catch (error) {
+    assertCurrent();
+    if (requiresExactSource || isExpectedCancellation(error)) throw error;
+    return unavailable("text_layer_failed");
+  }
+  assertCurrent();
+  return Object.freeze({ textLayer, textCapability: "exact_candidate", limitation: null });
+}
+
+export function describePdfTextLimitation(pageNumber, limitation) {
+  if (limitation === "text_extraction_failed") {
+    return `Page ${pageNumber} is visible, but embedded text could not be extracted. Use a page or figure region.`;
+  }
+  if (limitation === "text_layer_failed") {
+    return `Page ${pageNumber} is visible, but selectable text could not be displayed. Use a page or figure region.`;
+  }
+  if (limitation === "no_embedded_text") {
+    return `Page ${pageNumber} has no usable embedded text. Use a page or figure region.`;
+  }
+  return "";
 }
 
 /**
@@ -1367,6 +1559,19 @@ export async function initializePaperPdfViewer(options = {}) {
       else viewer.append(surface);
     }
     configurePageElements({ pageNumber, surface, canvas, textLayerElement, annotationOverlay });
+    const textLimitationElement = document.createElement("p");
+    textLimitationElement.id = `${DEFAULT_PDF_VIEWER_IDS.surface}-${pageNumber}-text-limitation`;
+    textLimitationElement.className = "pdf-page-text-limitation";
+    textLimitationElement.setAttribute("role", "note");
+    textLimitationElement.hidden = true;
+    Object.assign(textLimitationElement.style, {
+      position: "absolute", insetInline: "0.5rem", bottom: "0.35rem",
+      margin: "0", padding: "0.4rem 0.55rem", zIndex: "6",
+      background: "rgba(255, 248, 225, 0.96)", color: "#493817",
+      border: "1px solid #b89c59", borderRadius: "0.3rem", fontSize: "0.75rem",
+      lineHeight: "1.4", pointerEvents: "none",
+    });
+    surface.append(textLimitationElement);
     const baseViewport = pdfPage.getViewport({ scale: 1 });
     const record = {
       pageNumber,
@@ -1376,6 +1581,9 @@ export async function initializePaperPdfViewer(options = {}) {
       surface,
       canvas,
       textLayerElement,
+      textLimitationElement,
+      textCapability: null,
+      textLimitation: null,
       annotationOverlay,
       renderTask: null,
       textLayer: null,
@@ -1430,9 +1638,11 @@ export async function initializePaperPdfViewer(options = {}) {
 
   const emitReadyStatus = () => {
     if (!state.ready || state.failed || state.destroyed) return;
+    const textLimitation = pageRecords.get(state.currentPage)?.textLimitation;
+    const limitationMessage = describePdfTextLimitation(state.currentPage, textLimitation);
     emitStatus(
       "ready",
-      `PDF identity ready · continuous page ${state.currentPage} of ${state.pdfDocument.numPages} · ${Math.round(state.scale * 100)}%`,
+      `PDF identity ready · continuous page ${state.currentPage} of ${state.pdfDocument.numPages} · ${Math.round(state.scale * 100)}%${limitationMessage ? ` · ${limitationMessage}` : ""}`,
       { pageNumber: state.currentPage, scale: state.scale, mode: state.zoomMode },
     );
   };
@@ -1544,11 +1754,28 @@ export async function initializePaperPdfViewer(options = {}) {
     return record.textContentPromise;
   };
 
+  const updatePageTextAvailability = (record, { textCapability, limitation }) => {
+    record.textCapability = textCapability;
+    record.textLimitation = limitation;
+    record.surface.dataset.textCapability = textCapability;
+    record.surface.dataset.textLayerState = limitation ? "unavailable" : "ready";
+    const notice = record.textLimitationElement;
+    notice.textContent = describePdfTextLimitation(record.pageNumber, limitation);
+    notice.hidden = !limitation;
+    const descriptions = (record.surface.getAttribute("aria-describedby") || "").split(/\s+/u).filter(Boolean);
+    const withoutNotice = descriptions.filter((id) => id !== notice.id);
+    if (limitation) withoutNotice.push(notice.id);
+    if (withoutNotice.length) record.surface.setAttribute("aria-describedby", withoutNotice.join(" "));
+    else record.surface.removeAttribute("aria-describedby");
+    if (limitation) record.textLayerElement.setAttribute("aria-hidden", "true");
+    else record.textLayerElement.removeAttribute("aria-hidden");
+  };
+
   const renderPage = (record, { announce = false, force = false } = {}) => {
     if (state.destroyed || state.failed || !state.pdfDocument) return Promise.resolve(null);
     const scale = state.scale;
     if (!force && record.renderedScale !== null && Math.abs(record.renderedScale - scale) < 0.000001) {
-      return Promise.resolve({ pageNumber: record.pageNumber, viewport: record.viewport, anchor: state.anchorGeometry });
+      return Promise.resolve({ pageNumber: record.pageNumber, viewport: record.viewport, anchor: state.anchorGeometry, textCapability: record.textCapability, limitation: record.textLimitation });
     }
     if (!force && record.renderPromise && Math.abs(record.requestedScale - scale) < 0.000001) {
       return record.renderPromise;
@@ -1590,25 +1817,37 @@ export async function initializePaperPdfViewer(options = {}) {
       if (!canvasContext) {
         throw new PaperPdfError("PDF_CANVAS_UNAVAILABLE", "The browser could not create the PDF canvas context.");
       }
-      record.renderTask = record.pdfPage.render({
-        canvasContext,
-        viewport,
-        transform: devicePixelRatio === 1
-          ? undefined
-          : [devicePixelRatio, 0, 0, devicePixelRatio, 0, 0],
+      const textOutcome = await renderPdfPageLayers({
+        requiresExactSource: Boolean(fixedSourceAnchor && record.pageNumber === fixedSourceAnchor.pageNumber),
+        assertCurrent: () => assertLivePageRender(record, generation, zoomGeneration, scale),
+        async renderCanvas() {
+          record.renderTask = record.pdfPage.render({
+            canvasContext,
+            viewport,
+            transform: devicePixelRatio === 1
+              ? undefined
+              : [devicePixelRatio, 0, 0, devicePixelRatio, 0, 0],
+          });
+          await record.renderTask.promise;
+        },
+        loadTextContent: () => loadPageTextContent(record),
+        async renderTextLayer(textContent) {
+          record.textLayer = new TextLayer({
+            textContentSource: textContent,
+            container: record.textLayerElement,
+            viewport,
+          });
+          await record.textLayer.render();
+          return record.textLayer;
+        },
       });
-      await record.renderTask.promise;
       assertLivePageRender(record, generation, zoomGeneration, scale);
-
-      const textContent = await loadPageTextContent(record);
-      assertLivePageRender(record, generation, zoomGeneration, scale);
-      record.textLayer = new TextLayer({
-        textContentSource: textContent,
-        container: record.textLayerElement,
-        viewport,
-      });
-      await record.textLayer.render();
-      assertLivePageRender(record, generation, zoomGeneration, scale);
+      if (textOutcome.limitation) {
+        try { record.textLayer?.cancel?.(); } catch { /* Optional text-layer cleanup must not discard the rendered page. */ }
+        record.textLayer = null;
+        record.textLayerElement.replaceChildren();
+      }
+      updatePageTextAvailability(record, textOutcome);
 
       let anchor = state.anchorGeometry;
       if (fixedSourceAnchor && record.pageNumber === fixedSourceAnchor.pageNumber) {
@@ -1617,7 +1856,7 @@ export async function initializePaperPdfViewer(options = {}) {
       record.viewport = viewport;
       record.renderedScale = scale;
       record.surface.dataset.renderState = "ready";
-      return { pageNumber: record.pageNumber, viewport, anchor };
+      return { pageNumber: record.pageNumber, viewport, anchor, textCapability: textOutcome.textCapability, limitation: textOutcome.limitation };
     })().catch((error) => {
       if (isExpectedCancellation(error)) return null;
       throw fail(error);
@@ -2380,17 +2619,12 @@ export async function initializePaperPdfViewer(options = {}) {
     if (!overlay?.target?.isConnected) {
       throw new PaperPdfError("PDF_SOURCE_UNAVAILABLE", `The PDF anchor ${anchorId} is not materialized.`);
     }
-    if (scrollIntoView) {
-      await showPage(overlay.pageNumber, { behavior: "auto", block: "nearest" });
-      if (moveKeyboardFocus) overlay.target.focus({ preventScroll: true });
-      overlay.target.scrollIntoView({ behavior, block, inline: "nearest" });
-    } else {
-      setActivePage(overlay.pageNumber);
-      state.renderPromise = renderPage(pageRecords.get(overlay.pageNumber));
-      safelyHandle(renderActiveWindow);
-      await state.renderPromise;
-    }
-    return overlay.target;
+    return focusPdfAnchorTarget({ target: overlay.target, pageNumber: overlay.pageNumber, showPage }, {
+      behavior,
+      block,
+      scrollIntoView,
+      moveKeyboardFocus,
+    });
   };
 
   const focus = async (focusOptions = {}) => {
@@ -2422,6 +2656,7 @@ export async function initializePaperPdfViewer(options = {}) {
       let exactCandidatePages = 0;
       let visualOnlyPages = 0;
       let failedPages = 0;
+      const outline = await resolvePdfOutline(state.pdfDocument);
       const records = [...pageRecords.values()].sort((left, right) => left.pageNumber - right.pageNumber);
       for (const record of records) {
         if (signal?.aborted || abortController.signal.aborted || state.destroyed) {
@@ -2442,13 +2677,17 @@ export async function initializePaperPdfViewer(options = {}) {
           else visualOnlyPages += 1;
         } catch (error) {
           if (signal?.aborted || abortController.signal.aborted || state.destroyed) throw error;
-          failedPages += 1;
+          // The PDF page and its CropBox were already admitted and loaded.
+          // Failure to obtain embedded text limits semantic extraction, but it
+          // does not make the visible page or whole-page structural source
+          // unavailable.
+          visualOnlyPages += 1;
           pageRecord = Object.freeze({
             pageIndex: record.pageIndex,
             pageLabel: String(record.pageNumber),
             pageViewBox: freezePdfPageViewBox(record.baseViewport.viewBox),
             pageRotation: record.baseViewport.rotation,
-            textCapability: "failed",
+            textCapability: "visual_only",
             text: "",
             lines: Object.freeze([]),
             limitation: error?.name || "text_extraction_failed",
@@ -2480,6 +2719,7 @@ export async function initializePaperPdfViewer(options = {}) {
         visualOnlyPages,
         failedPages,
         status,
+        outline,
         pages: Object.freeze(pages),
       });
       state.documentTextIndex = snapshot;
@@ -2684,6 +2924,20 @@ export async function initializePaperPdfViewer(options = {}) {
     },
     getPageAnnotationOverlay(pageNumber) {
       return pageRecords.get(clampPdfPageNumber(pageNumber, state.pdfDocument.numPages, state.currentPage))?.annotationOverlay || null;
+    },
+    getStructuralPageRecords() {
+      return Object.freeze([...pageRecords.values()]
+        .sort((left, right) => left.pageNumber - right.pageNumber)
+        .map((record) => {
+          const indexed = state.documentTextIndex?.pages?.[record.pageIndex];
+          return Object.freeze({
+            pageIndex: record.pageIndex,
+            pageLabel: String(record.pageNumber),
+            pageViewBox: freezePdfPageViewBox(record.baseViewport.viewBox),
+            pageRotation: record.baseViewport.rotation,
+            textCapability: indexed?.textCapability || "visual_only",
+          });
+        }));
     },
     captureSelection,
     createAnchorFromSelection: captureSelection,

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
 
 const modulePath = new URL("./pdf-viewer.mjs", import.meta.url);
 const moduleSource = await readFile(modulePath, "utf8");
@@ -423,6 +424,199 @@ test("a textless PDF page remains an honest visual-only index entry", () => {
   assert.deepEqual(record.lines, []);
 });
 
+test("optional page text extraction and layer rendering failures keep successfully rendered pixels without inventing text", async () => {
+  for (const failurePhase of ["extraction", "layer"]) {
+    const calls = [];
+    const result = await viewerModule.renderPdfPageLayers({
+      async renderCanvas() { calls.push("canvas"); },
+      assertCurrent() { calls.push("current"); },
+      async loadTextContent() {
+        calls.push("extraction");
+        if (failurePhase === "extraction") throw new Error("private extraction details");
+        return { items: [{ str: "Actual embedded source" }] };
+      },
+      async renderTextLayer() { calls.push("layer"); throw new Error("private layer details"); },
+    });
+    assert.equal(calls[0], "canvas");
+    assert.equal(result.textCapability, "visual_only");
+    assert.equal(result.textLayer, null);
+    assert.equal(result.limitation, failurePhase === "extraction" ? "text_extraction_failed" : "text_layer_failed");
+    assert.equal(Object.hasOwn(result, "text"), false);
+    assert.equal(JSON.stringify(result).includes("private"), false);
+    assert.equal(Object.isFrozen(result), true);
+    assert.match(viewerModule.describePdfTextLimitation(4, result.limitation), /Page 4 is visible/u);
+    assert.match(viewerModule.describePdfTextLimitation(4, result.limitation), /Use a page or figure region/u);
+  }
+});
+
+test("empty or unusable embedded text stays visual-only and never renders a fabricated selectable layer", async () => {
+  for (const textContent of [{ items: [] }, { items: [{ str: "  " }, { type: "beginMarkedContent" }] }, { items: {} }, null]) {
+    let layerRendered = false;
+    const result = await viewerModule.renderPdfPageLayers({
+      async renderCanvas() {}, assertCurrent() {},
+      async loadTextContent() { return textContent; },
+      async renderTextLayer() { layerRendered = true; },
+    });
+    assert.equal(result.limitation, "no_embedded_text");
+    assert.equal(result.textCapability, "visual_only");
+    assert.equal(layerRendered, false);
+  }
+  assert.equal(viewerModule.describePdfTextLimitation(1, null), "");
+});
+
+test("canvas failure, required exact-source text failures, and cancellation are never downgraded to optional limitations", async () => {
+  for (const failurePhase of ["canvas", "extraction", "layer"]) {
+    const failure = new Error(`Required ${failurePhase} failure`);
+    await assert.rejects(viewerModule.renderPdfPageLayers({
+      requiresExactSource: failurePhase !== "canvas",
+      assertCurrent() {},
+      async renderCanvas() { if (failurePhase === "canvas") throw failure; },
+      async loadTextContent() {
+        if (failurePhase === "extraction") throw failure;
+        return { items: [{ str: "Actual text" }] };
+      },
+      async renderTextLayer() { throw failure; },
+    }), (error) => error === failure);
+  }
+  await assert.rejects(viewerModule.renderPdfPageLayers({
+    requiresExactSource: true,
+    async renderCanvas() {}, assertCurrent() {},
+    async loadTextContent() { return { items: [] }; }, async renderTextLayer() {},
+  }), (error) => error.code === "PDF_SOURCE_UNAVAILABLE");
+  for (const name of ["AbortError", "AbortException", "RenderingCancelledException"]) {
+    const cancellation = Object.assign(new Error("cancelled"), { name });
+    for (const failurePhase of ["extraction", "layer"]) {
+      await assert.rejects(viewerModule.renderPdfPageLayers({
+        async renderCanvas() {}, assertCurrent() {},
+        async loadTextContent() {
+          if (failurePhase === "extraction") throw cancellation;
+          return { items: [{ str: "Actual text" }] };
+        },
+        async renderTextLayer() { throw cancellation; },
+      }), (error) => error === cancellation);
+    }
+  }
+});
+
+test("stale page generations escape optional text catches and successful text preserves the actual layer", async () => {
+  const stale = new Error("stale generation");
+  let current = true;
+  await assert.rejects(viewerModule.renderPdfPageLayers({
+    async renderCanvas() {},
+    assertCurrent() { if (!current) throw stale; },
+    async loadTextContent() { current = false; throw new Error("late extraction failure"); },
+    async renderTextLayer() { throw new Error("not reached"); },
+  }), (error) => error === stale);
+  const actualLayer = { textDivs: ["Actual source"] };
+  const outcome = await viewerModule.renderPdfPageLayers({
+    async renderCanvas() {}, assertCurrent() {},
+    async loadTextContent() { return { items: [{ str: "Actual source" }] }; },
+    async renderTextLayer() { return actualLayer; },
+  });
+  assert.equal(outcome.textLayer, actualLayer);
+  assert.equal(outcome.textCapability, "exact_candidate");
+  assert.equal(outcome.limitation, null);
+});
+
+function renderPageHarness(failurePhase, { requiresExactSource = false } = {}) {
+  const attributes = () => {
+    const values = new Map();
+    return {
+      values,
+      setAttribute: (name, value) => values.set(name, value),
+      getAttribute: (name) => values.get(name),
+      removeAttribute: (name) => values.delete(name),
+    };
+  };
+  const state = { destroyed: false, failed: false, pdfDocument: { numPages: 2 }, scale: 1, zoomGeneration: 0, anchorGeometry: null };
+  const record = {
+    pageNumber: 2, generation: 0, renderedScale: null, renderPromise: null, textContentPromise: null,
+    surface: { dataset: {}, ...attributes() },
+    canvas: { ...attributes(), getContext: () => failurePhase === "context" ? null : {} },
+    textLayerElement: { ...attributes(), children: [], replaceChildren() { this.children = []; } },
+    textLimitationElement: { id: "page-2-limitation", hidden: true, textContent: "" },
+    pdfPage: {
+      render() { return { promise: failurePhase === "canvas" ? Promise.reject(new Error("canvas failed")) : Promise.resolve() }; },
+      async getTextContent() {
+        if (failurePhase === "stale") { state.zoomGeneration += 1; throw new Error("late stale extraction failure"); }
+        if (failurePhase === "abort") throw Object.assign(new Error("cancelled"), { name: "AbortError" });
+        if (failurePhase === "extraction") throw new Error("extraction failed");
+        return { items: failurePhase === "empty" ? [] : [{ str: "Actual source text" }] };
+      },
+    },
+  };
+  const failures = [];
+  const context = {
+    state,
+    fixedSourceAnchor: requiresExactSource ? { pageNumber: 2 } : null,
+    anchorTarget: { hidden: true },
+    viewer: attributes(),
+    emitStatus() {},
+    applyPageDimensions: () => ({ width: 100, height: 200 }),
+    clamp: (value, min, max) => Math.min(max, Math.max(min, value)),
+    MAX_DEVICE_PIXEL_RATIO: 2,
+    PaperPdfError: viewerModule.PaperPdfError,
+    StalePdfRenderError: class extends Error { constructor() { super("stale"); this.name = "StalePdfRenderError"; } },
+    isExpectedCancellation: (error) => ["StalePdfRenderError", "AbortError", "RenderingCancelledException", "AbortException"].includes(error.name),
+    renderPdfPageLayers: viewerModule.renderPdfPageLayers,
+    describePdfTextLimitation: viewerModule.describePdfTextLimitation,
+    TextLayer: class {
+      async render() {
+        record.textLayerElement.children.push("partial real source text");
+        if (failurePhase === "layer") throw new Error("layer failed");
+      }
+      cancel() {}
+    },
+    resolveSourceAnchor() { throw new Error("required source did not resolve"); },
+    fail(error) { state.failed = true; failures.push(error); return error; },
+  };
+  const start = moduleSource.indexOf("  const assertLivePageRender =");
+  const end = moduleSource.indexOf("  const evictPage =", start);
+  assert.ok(start >= 0 && end > start);
+  const renderPage = runInNewContext(`${moduleSource.slice(start, end)}\nrenderPage;`, context);
+  return { renderPage: () => renderPage(record), record, state, failures };
+}
+
+test("renderPage keeps weak pages ready, clears partial text, and exposes a page-local accessible limitation", async () => {
+  for (const failurePhase of ["extraction", "layer", "empty"]) {
+    const fixture = renderPageHarness(failurePhase);
+    const result = await fixture.renderPage();
+    assert.equal(result.textCapability, "visual_only");
+    assert.equal(fixture.state.failed, false);
+    assert.deepEqual(fixture.failures, []);
+    assert.equal(fixture.record.surface.dataset.renderState, "ready");
+    assert.equal(fixture.record.surface.dataset.textLayerState, "unavailable");
+    assert.equal(fixture.record.canvas.width, 100);
+    assert.equal(fixture.record.canvas.height, 200);
+    assert.deepEqual(fixture.record.textLayerElement.children, []);
+    assert.equal(fixture.record.textLayerElement.getAttribute("aria-hidden"), "true");
+    assert.equal(fixture.record.textLimitationElement.hidden, false);
+    assert.match(fixture.record.textLimitationElement.textContent, /Page 2/u);
+    assert.equal(fixture.record.surface.getAttribute("aria-describedby"), "page-2-limitation");
+    assert.equal(fixture.record.renderedScale, 1);
+    assert.equal((await fixture.renderPage()).textCapability, "visual_only");
+  }
+  assert.match(moduleSource, /textLimitationElement\.setAttribute\("role", "note"\)/u);
+  assert.match(moduleSource, /surface\.append\(textLimitationElement\)/u);
+});
+
+test("renderPage retains fatal canvas/exact-source failures while stale and aborted work creates no limitation", async () => {
+  for (const failurePhase of ["context", "canvas", "extraction", "layer", "empty", "source"]) {
+    const fixture = renderPageHarness(failurePhase, { requiresExactSource: !["context", "canvas"].includes(failurePhase) });
+    await assert.rejects(fixture.renderPage());
+    assert.equal(fixture.state.failed, true);
+    assert.equal(fixture.failures.length, 1);
+    assert.equal(fixture.record.textLimitationElement.hidden, true);
+  }
+  for (const failurePhase of ["stale", "abort"]) {
+    const fixture = renderPageHarness(failurePhase);
+    assert.equal(await fixture.renderPage(), null);
+    assert.equal(fixture.state.failed, false);
+    assert.equal(fixture.record.textLimitationElement.hidden, true);
+    assert.deepEqual(fixture.failures, []);
+  }
+});
+
 test("overlapping PDF.js span rectangles merge into one visual line", () => {
   const lines = viewerModule.mergeClientRectsByLine([
     { left: 140, top: 456.8, right: 468, bottom: 466.8, width: 328, height: 10 },
@@ -440,6 +634,61 @@ test("page navigation clamps valid input and preserves the fallback for invalid 
   assert.equal(viewerModule.clampPdfPageNumber(99, 15, 1), 15);
   assert.equal(viewerModule.clampPdfPageNumber(0, 15, 6), 6);
   assert.equal(viewerModule.clampPdfPageNumber("not-a-page", 15, 6), 6);
+});
+
+test("passive callback targeting does not navigate, render another page, or move keyboard focus", async () => {
+  const calls = [];
+  const target = {
+    focus(options) { calls.push(["focus", options]); },
+    scrollIntoView(options) { calls.push(["scroll", options]); },
+  };
+  const result = await viewerModule.focusPdfAnchorTarget({
+    target,
+    pageNumber: 4,
+    async showPage(...args) { calls.push(["showPage", ...args]); },
+  }, { scrollIntoView: false, moveKeyboardFocus: false });
+  assert.equal(result, target);
+  assert.deepEqual(calls, []);
+});
+
+test("restoring a source awaits the page mount and scrolls without stealing keyboard focus", async () => {
+  const calls = [];
+  let mounted = false;
+  const target = {
+    focus(options) { calls.push(["focus", options]); },
+    scrollIntoView(options) {
+      assert.equal(mounted, true);
+      calls.push(["scroll", options]);
+    },
+  };
+  await viewerModule.focusPdfAnchorTarget({
+    target,
+    pageNumber: 4,
+    async showPage(page, options) {
+      calls.push(["showPage", page, options]);
+      await Promise.resolve();
+      mounted = true;
+    },
+  }, { behavior: "auto", scrollIntoView: true, moveKeyboardFocus: false });
+  assert.deepEqual(calls, [
+    ["showPage", 4, { behavior: "auto", block: "nearest" }],
+    ["scroll", { behavior: "auto", block: "center", inline: "nearest" }],
+  ]);
+});
+
+test("explicit source navigation preserves focus-before-scroll ordering and fails closed on mount failure", async () => {
+  const calls = [];
+  const target = {
+    focus(options) { calls.push(["focus", options]); },
+    scrollIntoView(options) { calls.push(["scroll", options]); },
+  };
+  await viewerModule.focusPdfAnchorTarget({ target, pageNumber: 2, async showPage() { calls.push(["showPage"]); } });
+  assert.deepEqual(calls.map(([action]) => action), ["showPage", "focus", "scroll"]);
+  calls.length = 0;
+  await assert.rejects(viewerModule.focusPdfAnchorTarget({
+    target, pageNumber: 2, async showPage() { throw new Error("page unavailable"); },
+  }), /page unavailable/u);
+  assert.deepEqual(calls, []);
 });
 
 test("page-count guard rejects oversized PDFs before continuous surfaces are created", () => {
@@ -557,4 +806,79 @@ test("virtual render windows pin provenance page 1 and bound work around the act
   assert.deepEqual(viewerModule.pageNumbersForRenderWindow(99, 3, 1), [1, 2, 3]);
   assert.deepEqual(viewerModule.pageNumbersForRenderWindow(0, 5, 1), [1, 2]);
   assert.ok(viewerModule.pageNumbersForRenderWindow(150, 300, 3).length <= 8);
+});
+
+test("resolves nested PDF outline entries through public named and explicit destinations", async () => {
+  const references = new Map([["page-ref-2", 1], ["page-ref-5", 4]]);
+  const result = await viewerModule.resolvePdfOutline({
+    numPages: 8,
+    async getOutline() {
+      return [
+        {
+          title: "  1   Introduction  ",
+          dest: "intro",
+          items: [{ title: "1.1 Motivation", dest: [{ ref: "page-ref-2" }] }],
+        },
+        { title: "2 Methods", dest: [{ ref: "page-ref-5" }] },
+      ];
+    },
+    async getDestination(name) {
+      assert.equal(name, "intro");
+      return [0];
+    },
+    async getPageIndex(reference) {
+      return references.get(reference.ref);
+    },
+  });
+
+  assert.equal(result.status, "resolved");
+  assert.deepEqual(result.entries, [
+    { title: "1 Introduction", pageIndex: 0, depth: 0, order: 0 },
+    { title: "1.1 Motivation", pageIndex: 1, depth: 1, order: 1 },
+    { title: "2 Methods", pageIndex: 4, depth: 0, order: 2 },
+  ]);
+  assert.deepEqual({
+    itemCount: result.itemCount,
+    resolvedCount: result.resolvedCount,
+    unresolvedCount: result.unresolvedCount,
+  }, { itemCount: 3, resolvedCount: 3, unresolvedCount: 0 });
+  assert.equal(Object.isFrozen(result), true);
+  assert.equal(Object.isFrozen(result.entries), true);
+});
+
+test("keeps malformed outline destinations partial so structural page fallback remains available", async () => {
+  const result = await viewerModule.resolvePdfOutline({
+    numPages: 4,
+    async getOutline() {
+      return [
+        { title: "Valid section", dest: [2] },
+        { title: "Missing destination", dest: null },
+        { title: "Outside this PDF", dest: [99] },
+        { title: "Broken named destination", dest: "broken" },
+      ];
+    },
+    async getDestination() { throw new Error("unresolved"); },
+    async getPageIndex() { throw new Error("unresolved"); },
+  });
+
+  assert.equal(result.status, "partial");
+  assert.equal(result.itemCount, 4);
+  assert.equal(result.resolvedCount, 1);
+  assert.equal(result.unresolvedCount, 3);
+  assert.deepEqual(result.entries, [{ title: "Valid section", pageIndex: 2, depth: 0, order: 0 }]);
+});
+
+test("reports absent and failed outline reads without touching private PDF.js state", async () => {
+  const absent = await viewerModule.resolvePdfOutline({ numPages: 2, async getOutline() { return null; } });
+  assert.equal(absent.status, "absent");
+  assert.deepEqual(absent.entries, []);
+
+  const failed = await viewerModule.resolvePdfOutline({
+    numPages: 2,
+    async getOutline() { throw Object.assign(new Error("bad outline"), { name: "OutlineError" }); },
+  });
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.limitation, "OutlineError");
+  assert.deepEqual(failed.entries, []);
+  assert.equal(moduleSource.includes("._pages"), false);
 });
