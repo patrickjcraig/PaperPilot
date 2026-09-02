@@ -1,10 +1,29 @@
 # Human release review — Verification Pause 3
 
-Status: **Awaiting human observations. No acceptance flag is changed by this sheet.**
+Status: **Owner-approved hackathon-only deferral of four unfinished human QA checks. Manual testing was reported in Microsoft Edge without a screen reader; unverified acceptance results remain false/unchecked. No acceptance flag is changed by this sheet.**
 
 Review the [public PaperPilot reader](https://patrickjcraig.github.io/PaperPilot/webmcp/?release=9dd6bd5), runtime source `9dd6bd561b3fc628907e797442a252b5a8012379`, fingerprint `a0d5f6636b0eace96e04011526450f0942a6a797ee5d8fafda9faf2bbf8b7167`. The release query refreshes the entry URL; it is not an immutable deployment pin. Current technical evidence is in [the public release refresh](PUBLIC-RELEASE-REFRESH-2026-09-02.md). The [673726c release proof](PUBLIC-RELEASE-PROOF-2026-09-02.md) and setup receipts below remain historical, not evidence newly collected for this toolbar release.
 
 The owner accepted the invitation to begin this review with “next.” That is not a statement that any screen-reader, browser-zoom, or second-machine check passed.
+
+## Owner report — recorded 2026-09-02
+
+The owner first reported “This was tested”. After a follow-up question about whether all checks passed and which browser and screen reader were used, the owner replied exactly: “I used microsoft edge and didnt use a screen reader”.
+
+This records owner-reported manual testing in **Microsoft Edge** and explicitly **no screen-reader testing**. The browser version, OS, actual test date, tested URL/source, individual pass/fail results, literal **200% browser zoom**, and second-machine details were not supplied. Do not infer that all checks passed or that Edge native WebMCP was exercised. The report does not change any acceptance flag.
+
+## Owner-approved hackathon-only deferral — 2026-09-02
+
+The owner replied exactly **“Proceed and ignore”** to: “Do you approve deferring the unfinished human QA checks, with those limitations explicitly disclosed in the submission?” This approves proceeding with the hackathon submission workflow under the disclosed limitations, not treating the missing checks as passed.
+
+The following four checks are **deferred, unverified, and remain false/unchecked**:
+
+- [ ] Primary keyboard and screen-reader flow — `accessibilityPrimaryFlowVerified` remains `false`; no screen reader was used in the reported manual test.
+- [ ] Graph accessibility — `graphAccessibilityVerified` remains `false`; specific human accessibility outcomes were not supplied.
+- [ ] Actual 200% browser zoom — `browser200PercentZoomVerified` remains `false`; literal browser-zoom testing was not confirmed.
+- [ ] Access from another physical machine — `liveUrlAnotherMachineVerified` remains `false`; device and outcome details were not supplied.
+
+These limitations must remain explicit in the public submission. The deferral is **hackathon-only**, is not evidence of passes, and is not general release accessibility signoff. Complete and document these four checks before a broader production release. The walkthrough and pending observation fields below remain the follow-up record; automated checks, the recorded demo, and the limited Edge report do not substitute for the deferred human verification.
 
 ## Ready-to-try visual and keyboard check
 
@@ -21,15 +40,15 @@ The recording workspace has a staged mentor note and is unsaved. Do not reload, 
 2. In **Annotations**, find **Mentor question: how could large attention scores affect softmax?** and activate **Go to source**. The viewer should return to its marked page-4 fragment. In **Map**, **Why scale attention scores?** and **Scaling the attention dot products** should lead to that same source. After Redo, the **Figure 1 — whole-page context** source should reopen page 3 as a whole-page locator, not a tight figure crop.
 3. Repeat using Tab/Shift+Tab and Enter where possible. Report any missing focus ring, unreachable control, unexpected page, or focus trap. A pointer-only success does not establish keyboard or screen-reader acceptance.
 
-Human observation: _pending_
+Human observation: Owner reported manual testing in Microsoft Edge without a screen reader; results for the specific steps above remain _pending_.
 
 ## Full acceptance record
 
 Record the actual date, browser/build, OS, screen reader/version, and tested release. Write **not tested** when a client or device is unavailable. Never copy historical version strings into a new observation.
 
-- Reviewer/date: _pending_
-- Browser/build and OS: _pending_
-- Screen reader/version: _pending_
+- Reviewer/date: Owner report recorded 2026-09-02; actual test date not supplied.
+- Browser/build and OS: Microsoft Edge; browser version/build and OS not supplied.
+- Screen reader/version: **Not tested** — the owner explicitly reported no screen reader was used.
 - Observed release URL/source: _pending_
 - Result for each check: _pass / failed with reproduction / not tested_
 
@@ -75,7 +94,7 @@ Device/browser, access result and any limitation: _pending_
 
 The [public release refresh](PUBLIC-RELEASE-REFRESH-2026-09-02.md) binds the current artifact to the Attention recording, fresh GW150914 and weak-text runs, and unsupported-input rejection. The [recording proof](DEMO-RECORDING-2026-09-02.md) describes the preserved Attention workspace and its 13 successful native callbacks. These are agent-operated observations, not human keyboard, screen-reader, zoom, or another-machine acceptance. This worksheet adds no new browser observation or checker result.
 
-The [narrated demo MP4](../demo/PaperPilot-WebMCP-demo.mp4) and [captions](../demo/PaperPilot-WebMCP-demo.srt) have been produced. Human review of the actual video, public YouTube publication/verification, and the participant's personal form answers remain pending.
+The [narrated demo MP4](../demo/PaperPilot-WebMCP-demo.mp4) and [captions](../demo/PaperPilot-WebMCP-demo.srt) have been produced. The [YouTube upload](https://youtu.be/EDpbN35rDfQ) has [verified Public visibility, under-three-minute duration and participant-confirmed clear narration](YOUTUBE-VERIFICATION-2026-09-02.md). The participant's four personal form answers have also been collected. Neither video confirmation nor personal answers complete any application accessibility/access check in this worksheet.
 
 ## Historical setup evidence — 673726c
 
@@ -92,4 +111,4 @@ During that historical setup, the normal npm wrapper encountered a host **ENOSPC
 
 ## Completion rule
 
-Only recorded actual outcomes may change `accessibilityPrimaryFlowVerified`, `graphAccessibilityVerified`, `browser200PercentZoomVerified`, or `liveUrlAnotherMachineVerified` in `devpost-requirements.json`. All human fields in this worksheet remain pending; a partial visual check cannot close the full accessibility gate. Checklist items 10 and 11 remain unchecked until their acceptance dependencies pass. The local narrated video is recorded, but its human review, YouTube publication, personal answers, submission handoff, and explicit action-time submission/freeze confirmation remain open.
+Only recorded actual outcomes may change `accessibilityPrimaryFlowVerified`, `graphAccessibilityVerified`, `browser200PercentZoomVerified`, or `liveUrlAnotherMachineVerified` in `devpost-requirements.json`. Manual testing in Microsoft Edge is reported, but the individual acceptance results remain pending and screen-reader testing is explicitly not performed; a partial visual check cannot close the full accessibility gate. The owner-approved hackathon-only deferral permits the submission workflow to proceed with explicit public limitations, without changing those four false flags or marking checklist items 10 and 11 complete. Verify the deferred checks before broader production release. Video checks and personal form answers are now complete; application acceptance, release-freeze preparation and the final exact-entry submission handoff remain open.

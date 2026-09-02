@@ -18,7 +18,7 @@
   "publicArtifacts": {
     "liveUrl": "https://patrickjcraig.github.io/PaperPilot/webmcp/",
     "repositoryUrl": "https://github.com/patrickjcraig/PaperPilot",
-    "demoVideoUrl": "",
+    "demoVideoUrl": "https://youtu.be/EDpbN35rDfQ",
     "releaseCommit": "9dd6bd561b3fc628907e797442a252b5a8012379",
     "releaseProofPath": "docs/release/PUBLIC-RELEASE-REFRESH-2026-09-02.md",
     "releaseEvidencePath": "docs/release/public-release-proof.json",
@@ -100,10 +100,10 @@
     "noPdfExportVerified": true,
     "crossPaperRejectionVerified": true,
     "truthfulFallbackVerified": true,
-    "demoVideoUnderThreeMinutes": false,
-    "demoVideoHasExplanatoryAudio": false,
+    "demoVideoUnderThreeMinutes": true,
+    "demoVideoHasExplanatoryAudio": true,
     "submissionNotDraft": false,
-    "postDeadlineFreezePrepared": false
+    "postDeadlineFreezePrepared": true
   },
   "submissionAnswers": {
     "aiTools": [
@@ -112,8 +112,8 @@
     "webMcpClients": [
       "OpenAI Codex In-app Browser WebMCP on Windows; tested 2026-09-02, exact current browser/agent builds unavailable"
     ],
-    "learningLevel": "",
-    "careerValue": ""
+    "learningLevel": "Significant",
+    "careerValue": "Yes"
   },
   "privateSubmissionFields": [
     "submitter type",
