@@ -1,0 +1,128 @@
+{
+  "schemaVersion": 1,
+  "sourceCommit": "673726c0f00756bdbfa57a4c1c72ab3d61062d4a",
+  "artifactFingerprint": "d66782d3e9a1d6c723f93374b3d622268801a489337245218f17cace2c1b7ace",
+  "liveUrl": "https://patrickjcraig.github.io/PaperPilot/webmcp/",
+  "proofPath": "docs/release/PUBLIC-RELEASE-PROOF-2026-09-02.md",
+  "client": {
+    "name": "OpenAI Codex In-app Browser WebMCP",
+    "os": "Windows",
+    "observedOn": "2026-09-02",
+    "browserVersion": null,
+    "agentVersion": null,
+    "versionNote": "Exact browser and agent build strings were not exposed during this run. Historical August 30 versions are not reused as current evidence."
+  },
+  "runs": [
+    {
+      "id": "public-attention-final",
+      "origin": "public",
+      "documentClass": "born_digital",
+      "documentSha256": "bdfaa68d8984f0dc02beaca527b76f207d99b666d31d1da728ee0728182df697",
+      "pages": 15,
+      "callbacks": [
+        {
+          "toolName": "paperpilot.read_focus",
+          "receiptId": "callback:d0429727-87b1-4d91-b760-9817a3273a70"
+        },
+        {
+          "toolName": "paperpilot.read_graph",
+          "receiptId": "callback:fbe0e285-c3f7-47a4-a223-a08761a46f5c"
+        },
+        {
+          "toolName": "paperpilot.focus_source",
+          "receiptId": "callback:0e2173ef-dffc-43e6-8dd5-65a386a51eab"
+        },
+        {
+          "toolName": "paperpilot.apply_graph",
+          "receiptId": "callback:cbe627c8-466e-46ed-b6b7-910323c83899"
+        },
+        {
+          "toolName": "paperpilot.apply_annotation",
+          "receiptId": "callback:b19d5a96-797d-4118-9699-8d7e5543377c"
+        },
+        {
+          "toolName": "paperpilot.stage_explain",
+          "receiptId": "callback:4f45b0d5-e972-4334-9940-9460bc648e63"
+        }
+      ],
+      "source": "pass",
+      "graph": "pass",
+      "annotation": "pass",
+      "undoRedo": "pass"
+    },
+    {
+      "id": "public-gw150914-final",
+      "origin": "public",
+      "documentClass": "born_digital",
+      "documentSha256": "e5e864c23d015b69be17e5b5d51b5b462d2829353a867513414b6728f54589c4",
+      "pages": 16,
+      "callbacks": [
+        {
+          "toolName": "paperpilot.read_focus",
+          "receiptId": "callback:99a0bb94-c758-4ec1-b2cc-1b74d46d815c"
+        },
+        {
+          "toolName": "paperpilot.read_graph",
+          "receiptId": "callback:95043f9c-debf-4a09-a012-a7cfc6f8a809"
+        },
+        {
+          "toolName": "paperpilot.focus_source",
+          "receiptId": "callback:13ff6d15-734d-4caa-be56-1d5e4f212bb1"
+        },
+        {
+          "toolName": "paperpilot.apply_graph",
+          "receiptId": "callback:ee6098b2-1e5d-4b8d-8a90-0f55bca94eb5"
+        },
+        {
+          "toolName": "paperpilot.apply_annotation",
+          "receiptId": "callback:9aae3c44-cc32-4b7d-a43f-52fc1bc100ed"
+        },
+        {
+          "toolName": "paperpilot.stage_explain",
+          "receiptId": "callback:c15f21a4-95ad-4f3b-a129-a3f708411a69"
+        }
+      ],
+      "source": "pass",
+      "graph": "pass",
+      "annotation": "pass",
+      "undoRedo": "pass"
+    },
+    {
+      "id": "public-weak-text-final",
+      "origin": "public",
+      "documentClass": "weak_text",
+      "documentSha256": "de4acf347cdc1b772536dcc620d4dd95cc88a57d5007e3719b5b4208d5fc8df5",
+      "pages": 4,
+      "callbacks": [
+        {
+          "toolName": "paperpilot.read_focus",
+          "receiptId": "callback:5153180a-f77b-4e11-b152-0061907fb9e0"
+        },
+        {
+          "toolName": "paperpilot.read_graph",
+          "receiptId": "callback:186a5632-36c1-4c1f-acb4-6cac7f1fd150"
+        },
+        {
+          "toolName": "paperpilot.focus_source",
+          "receiptId": "callback:caab0a34-b580-483d-8f0a-2ccbc1bcedc9"
+        }
+      ],
+      "source": "pass",
+      "graph": "limited",
+      "annotation": "pass",
+      "undoRedo": "pass"
+    },
+    {
+      "id": "public-non-pdf-rejected-final",
+      "origin": "public",
+      "documentClass": "unsupported",
+      "documentSha256": null,
+      "pages": null,
+      "callbacks": [],
+      "source": "rejected",
+      "graph": "not_run",
+      "annotation": "not_run",
+      "undoRedo": "not_run"
+    }
+  ]
+}

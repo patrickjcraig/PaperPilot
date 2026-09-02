@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "sourceCommit": "673726c0f00756bdbfa57a4c1c72ab3d61062d4a",
-  "artifactFingerprint": "d66782d3e9a1d6c723f93374b3d622268801a489337245218f17cace2c1b7ace",
+  "sourceCommit": "9dd6bd561b3fc628907e797442a252b5a8012379",
+  "artifactFingerprint": "a0d5f6636b0eace96e04011526450f0942a6a797ee5d8fafda9faf2bbf8b7167",
   "liveUrl": "https://patrickjcraig.github.io/PaperPilot/webmcp/",
-  "proofPath": "docs/release/PUBLIC-RELEASE-PROOF-2026-09-02.md",
+  "proofPath": "docs/release/PUBLIC-RELEASE-REFRESH-2026-09-02.md",
   "client": {
     "name": "OpenAI Codex In-app Browser WebMCP",
     "os": "Windows",
@@ -14,7 +14,7 @@
   },
   "runs": [
     {
-      "id": "public-attention-final",
+      "id": "public-attention-9dd6bd5-recording",
       "origin": "public",
       "documentClass": "born_digital",
       "documentSha256": "bdfaa68d8984f0dc02beaca527b76f207d99b666d31d1da728ee0728182df697",
@@ -22,27 +22,55 @@
       "callbacks": [
         {
           "toolName": "paperpilot.read_focus",
-          "receiptId": "callback:d0429727-87b1-4d91-b760-9817a3273a70"
+          "receiptId": "callback:a61ddca7-dd08-4d74-9c96-ed8d0a0f04b0"
         },
         {
           "toolName": "paperpilot.read_graph",
-          "receiptId": "callback:fbe0e285-c3f7-47a4-a223-a08761a46f5c"
-        },
-        {
-          "toolName": "paperpilot.focus_source",
-          "receiptId": "callback:0e2173ef-dffc-43e6-8dd5-65a386a51eab"
+          "receiptId": "callback:54204b1f-d710-4594-9144-6cc32505ec76"
         },
         {
           "toolName": "paperpilot.apply_graph",
-          "receiptId": "callback:cbe627c8-466e-46ed-b6b7-910323c83899"
+          "receiptId": "callback:bd435004-c4d2-4f34-b25b-89ee9600eb94"
+        },
+        {
+          "toolName": "paperpilot.read_focus",
+          "receiptId": "callback:fb99e8ef-6200-47f6-9b17-1b1e41a34eda"
         },
         {
           "toolName": "paperpilot.apply_annotation",
-          "receiptId": "callback:b19d5a96-797d-4118-9699-8d7e5543377c"
+          "receiptId": "callback:51c1ce72-3f3a-426f-b1b9-dfc87e3ec490"
+        },
+        {
+          "toolName": "paperpilot.focus_source",
+          "receiptId": "callback:c3f420dd-41b4-4f6b-8a70-d17687ecd514"
+        },
+        {
+          "toolName": "paperpilot.read_focus",
+          "receiptId": "callback:17d0a880-28cd-4de9-bea5-86c68b280c6f"
+        },
+        {
+          "toolName": "paperpilot.read_graph",
+          "receiptId": "callback:eb62c4e8-5419-4377-978d-ec06a91b81e4"
         },
         {
           "toolName": "paperpilot.stage_explain",
-          "receiptId": "callback:4f45b0d5-e972-4334-9940-9460bc648e63"
+          "receiptId": "callback:2ec9b546-4886-481c-9370-414b95356fba"
+        },
+        {
+          "toolName": "paperpilot.read_focus",
+          "receiptId": "callback:0f3e16c1-b055-46f0-b7ac-727a74ef2a50"
+        },
+        {
+          "toolName": "paperpilot.read_focus",
+          "receiptId": "callback:8fc66041-7633-427e-b94a-894e622f02a0"
+        },
+        {
+          "toolName": "paperpilot.read_focus",
+          "receiptId": "callback:0cb67a66-0b59-448c-87c6-6687f19e7a90"
+        },
+        {
+          "toolName": "paperpilot.focus_source",
+          "receiptId": "callback:3e395317-2d82-45f3-b4ba-a7b0a3c1c3af"
         }
       ],
       "source": "pass",
@@ -51,7 +79,7 @@
       "undoRedo": "pass"
     },
     {
-      "id": "public-gw150914-final",
+      "id": "public-gw150914-9dd6bd5-refresh",
       "origin": "public",
       "documentClass": "born_digital",
       "documentSha256": "e5e864c23d015b69be17e5b5d51b5b462d2829353a867513414b6728f54589c4",
@@ -59,27 +87,63 @@
       "callbacks": [
         {
           "toolName": "paperpilot.read_focus",
-          "receiptId": "callback:99a0bb94-c758-4ec1-b2cc-1b74d46d815c"
+          "receiptId": "callback:313d4f9c-40c0-43b0-b233-7cdba29ac056"
         },
         {
           "toolName": "paperpilot.read_graph",
-          "receiptId": "callback:95043f9c-debf-4a09-a012-a7cfc6f8a809"
+          "receiptId": "callback:419c12ba-e06d-4ac8-be16-b7ac5de90d7b"
         },
         {
           "toolName": "paperpilot.focus_source",
-          "receiptId": "callback:13ff6d15-734d-4caa-be56-1d5e4f212bb1"
+          "receiptId": "callback:ab8ec0d9-4bc3-42ad-b7e8-8042946b8737"
+        },
+        {
+          "toolName": "paperpilot.read_focus",
+          "receiptId": "callback:1d6e0b36-5369-450f-b1cf-3738e9463e12"
+        },
+        {
+          "toolName": "paperpilot.read_graph",
+          "receiptId": "callback:66060c02-ea08-4815-86f9-374482995a08"
         },
         {
           "toolName": "paperpilot.apply_graph",
-          "receiptId": "callback:ee6098b2-1e5d-4b8d-8a90-0f55bca94eb5"
+          "receiptId": "callback:d46df4c7-b7b2-4bf9-81f2-20ae08acc979"
+        },
+        {
+          "toolName": "paperpilot.read_focus",
+          "receiptId": "callback:9a363fc7-29a5-4245-bae0-4263ddb2faad"
         },
         {
           "toolName": "paperpilot.apply_annotation",
-          "receiptId": "callback:9aae3c44-cc32-4b7d-a43f-52fc1bc100ed"
+          "receiptId": "callback:e791a5e6-6263-481a-bb3d-aa971ec5df38"
+        },
+        {
+          "toolName": "paperpilot.read_focus",
+          "receiptId": "callback:0b64e497-40b5-4de9-9c53-7820a99475a4"
+        },
+        {
+          "toolName": "paperpilot.read_focus",
+          "receiptId": "callback:34119479-fbdc-4173-8382-c1ea64dffbee"
+        },
+        {
+          "toolName": "paperpilot.read_focus",
+          "receiptId": "callback:521ae28c-b1ac-43a6-9992-9e8b38f3eaaa"
+        },
+        {
+          "toolName": "paperpilot.read_graph",
+          "receiptId": "callback:c82042c7-8ed3-4466-88d6-efbe2db55d18"
         },
         {
           "toolName": "paperpilot.stage_explain",
-          "receiptId": "callback:c15f21a4-95ad-4f3b-a129-a3f708411a69"
+          "receiptId": "callback:cfe5d9d1-e852-4bda-8e9f-cfb6601c7ccd"
+        },
+        {
+          "toolName": "paperpilot.focus_source",
+          "receiptId": "callback:7071d43d-6b6d-457f-95c8-7a882b3d491a"
+        },
+        {
+          "toolName": "paperpilot.read_focus",
+          "receiptId": "callback:139f6961-0de2-4672-a401-2e550a65f3f2"
         }
       ],
       "source": "pass",
@@ -88,7 +152,7 @@
       "undoRedo": "pass"
     },
     {
-      "id": "public-weak-text-final",
+      "id": "public-weak-text-9dd6bd5-refresh",
       "origin": "public",
       "documentClass": "weak_text",
       "documentSha256": "de4acf347cdc1b772536dcc620d4dd95cc88a57d5007e3719b5b4208d5fc8df5",
@@ -96,15 +160,35 @@
       "callbacks": [
         {
           "toolName": "paperpilot.read_focus",
-          "receiptId": "callback:5153180a-f77b-4e11-b152-0061907fb9e0"
+          "receiptId": "callback:99f79a4b-f49c-4b66-b2fe-efaa223a44d1"
         },
         {
           "toolName": "paperpilot.read_graph",
-          "receiptId": "callback:186a5632-36c1-4c1f-acb4-6cac7f1fd150"
+          "receiptId": "callback:18251e30-fdf0-4f2a-b3bf-48ee627efaeb"
+        },
+        {
+          "toolName": "paperpilot.read_focus",
+          "receiptId": "callback:97f15a05-605e-4965-a097-39498cb3afc7"
+        },
+        {
+          "toolName": "paperpilot.read_graph",
+          "receiptId": "callback:8748789f-68f1-4603-a335-d8a1e29e2d1e"
+        },
+        {
+          "toolName": "paperpilot.read_focus",
+          "receiptId": "callback:88d691c0-7ee4-47cb-94cd-0416f044a2e3"
+        },
+        {
+          "toolName": "paperpilot.read_focus",
+          "receiptId": "callback:f4e61111-4880-4e2d-ad66-f7401bcd22de"
         },
         {
           "toolName": "paperpilot.focus_source",
-          "receiptId": "callback:caab0a34-b580-483d-8f0a-2ccbc1bcedc9"
+          "receiptId": "callback:624f4d8f-3b95-4cdd-be71-03e53b5cdae7"
+        },
+        {
+          "toolName": "paperpilot.read_focus",
+          "receiptId": "callback:eaf622c7-ca43-441a-8e32-cace68da7c04"
         }
       ],
       "source": "pass",
@@ -113,7 +197,7 @@
       "undoRedo": "pass"
     },
     {
-      "id": "public-non-pdf-rejected-final",
+      "id": "public-non-pdf-9dd6bd5-rejected",
       "origin": "public",
       "documentClass": "unsupported",
       "documentSha256": null,

@@ -19,8 +19,8 @@
     "liveUrl": "https://patrickjcraig.github.io/PaperPilot/webmcp/",
     "repositoryUrl": "https://github.com/patrickjcraig/PaperPilot",
     "demoVideoUrl": "",
-    "releaseCommit": "673726c0f00756bdbfa57a4c1c72ab3d61062d4a",
-    "releaseProofPath": "docs/release/PUBLIC-RELEASE-PROOF-2026-09-02.md",
+    "releaseCommit": "9dd6bd561b3fc628907e797442a252b5a8012379",
+    "releaseProofPath": "docs/release/PUBLIC-RELEASE-REFRESH-2026-09-02.md",
     "releaseEvidencePath": "docs/release/public-release-proof.json",
     "demoVideoPlanPath": "docs/DEMO-VIDEO-PLAN.md"
   },

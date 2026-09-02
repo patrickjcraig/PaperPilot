@@ -1,6 +1,6 @@
-# PaperPilot public release proof — 2026-09-02
+# Historical PaperPilot public release proof — 2026-09-02 (673726c)
 
-Status: technical release proof complete; human accessibility/access review and submission handoff remain open. This record replaces the historical two-tool proof as the current release index, without rewriting earlier evidence.
+Status: historical technical proof for source `673726c`, preserved without relabeling its receipts. The [current 9dd6bd5 refresh](PUBLIC-RELEASE-REFRESH-2026-09-02.md) is the active release index. Human accessibility/access review and submission handoff remain separate.
 
 ## Exact release and client
 
@@ -10,7 +10,7 @@ Status: technical release proof complete; human accessibility/access review and 
 - Runtime source/lock fingerprint: `d66782d3e9a1d6c723f93374b3d622268801a489337245218f17cace2c1b7ace`.
 - [Successful Pages run 33640830540](https://github.com/patrickjcraig/PaperPilot/actions/runs/33640830540) performed a clean checkout, `npm ci --ignore-scripts`, strict WebMCP typecheck, 652 module/real-PDF tests, four packaging tests and publication of `.paperpilot-pages`.
 - Client: OpenAI Codex In-app Browser WebMCP on Windows, observed 2026-09-02. Exact browser/agent build strings were unavailable; no historical version string is reused as current evidence.
-- [Machine-readable evidence](public-release-proof.json) binds this source, fingerprint, URL, client and per-paper callback runs. It is recorded evidence, not cryptographic proof of scientific truth or an automatic remote re-test.
+- [Archived machine-readable evidence](public-release-proof-673726c.json) binds this historical source, fingerprint, URL, client and per-paper callback runs. It is recorded evidence, not cryptographic proof of scientific truth or an automatic remote re-test.
 
 The live entry and both vendor script URLs carried the recorded fingerprint. Repository metadata reported public visibility, and GitHub detected the root MIT license. No authenticated app, local database or remote PDF storage was used. The earlier public Attention tab and its saved copy were preserved; new QA tabs remained unsaved.
 
