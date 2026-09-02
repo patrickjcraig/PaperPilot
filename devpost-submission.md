@@ -2,11 +2,13 @@
 
 PaperPilot
 
-### ⏳ Not submitted yet
+### ✅ Submitted to Devpost
 
-Nothing has been sent to Devpost by this drafting step. This is a local submission draft, not a published project description or a submission receipt. The authenticated event check found an existing **Untitled** pre-draft for The WebMCP Challenge (`webmcp`, event `31011`, project `1399992`) with no description or video and `submitted_at: null`. No form has been changed here.
+Verified live. Your public project page: [PaperPilot on Devpost](https://devpost.com/software/paperpilot-kjglan)
 
-The current public application is usable, with the annotation toolbar now above the PDF in deployed source `9dd6bd5`. The [public YouTube demo](https://youtu.be/EDpbN35rDfQ) is available, alongside the [150-second source MP4](docs/demo/PaperPilot-WebMCP-demo.mp4), [captions](docs/demo/PaperPilot-WebMCP-demo.srt) and [media verification](docs/demo/recording-verification.json). Public visibility and under-three-minute duration were checked in the browser, and the participant confirmed clear narration on the upload; see the [YouTube verification](docs/release/YOUTUBE-VERIFICATION-2026-09-02.md). The [current-release cross-PDF proof](docs/release/PUBLIC-RELEASE-REFRESH-2026-09-02.md) passes technical readiness 63/63. The participant's four personal form answers have been collected; private entrant/residence values are held outside tracked files. The owner approved a disclosed hackathon-only deferral of four unfinished human QA checks, which remain false. The [release-freeze plan](docs/release/HACKATHON-FREEZE-PLAN-2026-09-02.md) is prepared. Final exact-entry confirmation remains open; no external form write has occurred. The separate [publication-only writeup](docs/release/DEVPOST-PUBLIC-WRITEUP-2026-09-02.md), not this preparation worksheet, is intended for the public description.
+After the participant authorized the final entry, the official Devpost update produced project `1399992`, slug `paperpilot-kjglan`, version `2`. Submission `1153491` returned **Submitted** at `2026-09-02T13:52:21.663-04:00`. Official `get_project` readback confirmed PaperPilot in published state, its WebMCP submission timestamp, and the intended video and website. The [submission receipt](docs/release/DEVPOST-SUBMISSION-2026-09-02.md) preserves that evidence. This file remains the preparation and verification record; the approved [publication-only writeup](docs/release/DEVPOST-PUBLIC-WRITEUP-2026-09-02.md) supplies the public description.
+
+The current public application is usable, with the annotation toolbar now above the PDF in deployed source `9dd6bd5`. The [public YouTube demo](https://youtu.be/EDpbN35rDfQ) is available, alongside the [150-second source MP4](docs/demo/PaperPilot-WebMCP-demo.mp4), [captions](docs/demo/PaperPilot-WebMCP-demo.srt) and [media verification](docs/demo/recording-verification.json). Public visibility and under-three-minute duration were checked in the browser, and the participant confirmed clear narration on the upload; see the [YouTube verification](docs/release/YOUTUBE-VERIFICATION-2026-09-02.md). The [current-release cross-PDF proof](docs/release/PUBLIC-RELEASE-REFRESH-2026-09-02.md) passes technical readiness 63/63. The participant's four personal form answers were collected; private entrant/residence values remain outside tracked files. The owner approved a disclosed hackathon-only deferral of four unfinished human QA checks, which remain false. The [release-freeze plan](docs/release/HACKATHON-FREEZE-PLAN-2026-09-02.md) is prepared. The full checker now records **69/73**, with technical **63/63**, submission **6/6**, and human review **0/4**. Submission is verified; accessibility acceptance and future freeze enforcement are not inferred from it.
 
 ## One-line Summary
 
@@ -100,7 +102,7 @@ If WebMCP is unavailable, the local PDF, map, annotations, and human controls re
 
 [Open PaperPilot](https://patrickjcraig.github.io/PaperPilot/webmcp/)
 
-Use this canonical URL in the form. The current toolbar-above-PDF release is source `9dd6bd561b3fc628907e797442a252b5a8012379`, served with fingerprint `a0d5f6636b0eace96e04011526450f0942a6a797ee5d8fafda9faf2bbf8b7167` after [successful Pages run 33647998514](https://github.com/patrickjcraig/PaperPilot/actions/runs/33647998514). The [current recording evidence](docs/release/DEMO-RECORDING-2026-09-02.md) documents its real public Attention run.
+This is the website URL confirmed in the submitted entry. The current toolbar-above-PDF release is source `9dd6bd561b3fc628907e797442a252b5a8012379`, served with fingerprint `a0d5f6636b0eace96e04011526450f0942a6a797ee5d8fafda9faf2bbf8b7167` after [successful Pages run 33647998514](https://github.com/patrickjcraig/PaperPilot/actions/runs/33647998514). The [current recording evidence](docs/release/DEMO-RECORDING-2026-09-02.md) documents its real public Attention run.
 
 The [current cross-PDF release proof](docs/release/PUBLIC-RELEASE-REFRESH-2026-09-02.md) combines that same-release Attention recording with fresh public GW150914, weak-text and invalid-input checks at `9dd6bd5`. Its 36 successful receipts cover both research papers and the limited-text fixture; the earlier [673726c proof](docs/release/PUBLIC-RELEASE-PROOF-2026-09-02.md) remains archived rather than relabeled. The video and public release are matched by the recording verification. An anonymous HTTP recheck on September 2 returned the same asset fingerprint; GitHub again reported a public MIT repository.
 
@@ -134,15 +136,15 @@ The earlier [public demo rehearsal](docs/release/DEMO-REHEARSAL-2026-09-02.md) c
 
 These are a shot plan and identified existing evidence assets, not a claim that final Devpost images have been uploaded.
 
-## Submission Readiness Notes
+## Submission Verification and Retained Limitations
 
 - The current `9dd6bd5` public recording observed all six tool types in 13 native callbacks on rehearsed Attention, plus exact three-digest restoration through two Undo/two Redo actions and the locator-only whole-page figure path. It is retained as same-release evidence, not presented as a newly repeated recording.
 - The [current cross-PDF refresh](docs/release/PUBLIC-RELEASE-REFRESH-2026-09-02.md) adds 15 successful GW150914 callbacks covering all six tools and eight weak-text callbacks. It verifies exact graph/annotation Undo/Redo digests, visible source reopening, limited-text fallback, and safe foreign-source/non-PDF rejection. Attention and GW are rehearsed inputs through the shared arbitrary-PDF pipeline, not newly discovered papers. The earlier `673726c` evidence remains historical.
 - The current focused verification passed **659 tests: 655 WebMCP tests plus four packaging tests**, with a clean TypeScript check. The full application suite was not rerun for this toolbar/recording update. The older release record reports 1,371 passing tests and 63/63 technical readiness controls; those dated results are not reattributed to `9dd6bd5`. Its full readiness check remained red on human-review and submission controls.
-- Current technical readiness is **63/63** (checker exit 0), with machine-readable proof bound to `9dd6bd5` / `a0d5…` and 36 unique successful callback receipts. The evidence-validator tests pass **14/14**. This closes the source-mismatch gap using actual current-release runs; no checker or runtime rule was weakened. The supplied public YouTube link, observed under-three-minute duration and participant-confirmed explanatory audio close the three video controls. The exact release-freeze procedure is now prepared. Four human-review controls remain unverified under the owner's scoped deferral; final Devpost verification remains open.
+- Current technical readiness is **63/63** (checker exit 0), with machine-readable proof bound to `9dd6bd5` / `a0d5…` and 36 unique successful callback receipts. The evidence-validator tests pass **14/14**. This closes the source-mismatch gap using actual current-release runs; no checker or runtime rule was weakened. The supplied public YouTube link, observed under-three-minute duration and participant-confirmed explanatory audio close the three video controls. The exact release-freeze procedure is prepared. Official Devpost submission and readback complete the six submission controls. The full checker remains **69/73**, exit 1, because the four human-review controls remain unverified under the owner's scoped deferral.
 - The participant reports manual testing in **Microsoft Edge** and explicitly says no screen reader was used. Browser version, OS, individual pass/fail results, literal 200% zoom and second-machine details were not supplied; they are not inferred. Screen-reader acceptance is unverified. The [human-review record](docs/release/HUMAN-RELEASE-REVIEW-2026-09-02.md) retains the report separately from automated controls and native WebMCP evidence. No human acceptance flag is changed by this report.
 - The participant supplied all four personal answers in conversation. Entrant type and residence are retained only in ignored local form-preparation data; residence is not copied into the public repository. Learning is **Significant** and career-useful AI value is **Yes**. These answers do not attest to accessibility, video review, or release readiness. The AI-tool disclosure names observed OpenAI Codex use without inventing extra tools or model identifiers.
-- Public YouTube access, duration and explanatory audio are verified as described above. The owner approved deferring the unfinished human application checks with explicit public limitations. **Final action still required:** review the complete final text/fields and confirm the real Devpost write and submission. This does not invent missing acceptance observations, mark checklist item 12 complete, or move the project into a submitted state.
+- Public YouTube access, duration and explanatory audio are verified as described above. The owner approved the final entry and the disclosed deferral of unfinished human application checks. Official submission `1153491` and project readback verify the published entry; they do not supply missing accessibility observations or certify future freeze enforcement. The [receipt](docs/release/DEVPOST-SUBMISSION-2026-09-02.md) distinguishes human authorization from MCP verification.
 - The current official field set does not request a Codex session ID; none is collected or invented here.
 
 ## Known Limitations
@@ -153,27 +155,27 @@ Figures and equations can be located, described by the reader, and discussed wit
 
 Native tool behavior was recorded in the OpenAI Codex In-app Browser on Windows. Exact client build strings were unavailable. The participant separately reports manual testing in Microsoft Edge without a screen reader; this is not proof of native WebMCP execution in Edge. Chrome is an intended compatible environment under the event requirements, not a tested-client result supplied by the current proof. Human primary/graph accessibility acceptance, literal 200% zoom and second-machine checks remain unverified and are explicitly deferred for this hackathon entry. This is not general accessibility certification or production-release signoff.
 
-## Prepared Official Form Fields
+## Official Form Preparation Record
 
-This map uses the official field IDs and choices reported by the authenticated event check. It is a draft for review, not a submitted form. Core project title/description/video content above is separate from these custom questions.
+This map retains the official field IDs and prepared answers from the authenticated event check. It is a preparation record, not a replacement for the [verified submission receipt](docs/release/DEVPOST-SUBMISSION-2026-09-02.md). The submitted public description is the separate approved publication-only writeup; private form values remain outside tracked files.
 
-| Field ID | Official field | Draft answer / status |
+| Field ID | Official field | Recorded answer / boundary |
 | --- | --- | --- |
 | `28249` | SubmitterType — `Individual`, `Team of Individuals`, or `Organization` | **Confirmed by participant; value held outside tracked files for the official form.** |
 | `28250` | Countries | **Confirmed by participant; value held outside tracked files for the official form.** |
-| `28251` | Organization, optional | **Not applicable to the confirmed entrant type; leave blank.** |
+| `28251` | Organization, optional | **Not applicable to the confirmed entrant type.** |
 | `28252` | AppStatus — `New` or `Existing` | **Existing.** PaperPilot predates this challenge; the new work is disclosed below. |
-| `28253` | Explanation of changes to an existing app | Use the draft paragraph immediately below this table. |
+| `28253` | Explanation of changes to an existing app | Existing-app change explanation retained immediately below this table. |
 | `28254` | Live application URL | `https://patrickjcraig.github.io/PaperPilot/webmcp/` |
-| `28255` | Testing instructions, optional | Use the Testing Instructions section above; no account or credentials are required. |
+| `28255` | Testing instructions, optional | Testing Instructions section above; no account or credentials are required. |
 | `28256` | Repository URL | `https://github.com/patrickjcraig/PaperPilot` — public, MIT. |
 | `28257` | Tested clients | OpenAI Codex In-app Browser WebMCP on Windows, recorded September 2, 2026, including the current `9dd6bd5` public Attention run. Exact build strings were not exposed. Do not add Chrome without actual testing. |
 | `28258` | AI tools used | OpenAI Codex for guided planning, implementation, tests, independent reviews, and browser verification, including the WebMCP browser-agent mentor. No additional AI tool or exact model identifier is asserted. |
 | `28259` | Learning — `None`, `Moderate`, or `Significant` | **Significant.** The participant described learning a lot about agent-centric applications and WebMCP fundamentals. |
 | `28260` | Career-useful AI value — `Yes` or `No` | **Yes.** The participant expects this first experience with WebMCP/MCPs to be useful in their career. |
 
-**Draft existing-app change explanation (`28253`):**
+**Existing-app change explanation reference (`28253`):**
 
 PaperPilot already had research-discovery, project/import, and authenticated-service foundations. For The WebMCP Challenge, the work was refocused into an anonymous, paper-first learning workspace: a continuous real PDF, reader-originated spatial annotations, an automatic structural map, a Graphology/Sigma knowledge graph with a DOM outline, and six native WebMCP tools for source/graph reading, search, navigation, explanation staging, and reversible graph/annotation edits. The challenge work also added claim-level mentor provenance, immutable source anchors, revision-guarded commands, human-only Undo/Redo, opt-in exact-PDF browser recovery, and cross-PDF release evidence. The older discovery, Zotero/crawler, and service foundations are not represented as new challenge work or as the deployed backend for this public slice. Dated implementation commits and limitations are linked in the repository's change disclosure and release proof.
 
-**Before external submission:** confirm the reviewed publication-only writeup and form values for the actual Devpost update and submission. Until then, this file remains a preparation record, not a public project description or submission receipt.
+**Submission outcome:** [PaperPilot is published on Devpost](https://devpost.com/software/paperpilot-kjglan), with official submission and readback recorded in the [receipt](docs/release/DEVPOST-SUBMISSION-2026-09-02.md). Preserve the judged release under the freeze plan. The four disclosed human-review deferrals remain unverified and are not converted into passes by publication.
