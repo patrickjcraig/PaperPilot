@@ -2,7 +2,7 @@
 
 Date: 2026-09-02 (America/New_York). Guided build item 10.
 
-Status: implementation and automated verification completed; final public proof and **owner Verification Pause 3** are recorded separately below. Automated accessibility checks are not a substitute for a human assistive-technology walkthrough.
+Status: implementation, automated verification and the public native-browser smoke test passed. **Owner Verification Pause 3 remains open.** Automated accessibility checks are not a substitute for a human assistive-technology walkthrough.
 
 ## Release boundary
 
@@ -74,9 +74,32 @@ Attention v7: 15 pages, SHA-256 `bdfaa68d8984f0dc02beaca527b76f207d99b666d31d1da
 10. The original weak-text fixture retained 4/4 navigable pages and explicitly reported three limited pages (`callback:11704223-c64e-4958-abe7-7f544e65cc8a`). Page 3 rendered with **Page 3 has no usable embedded text. Use a page or figure region.** There were no browser warnings/errors.
 11. The final artifact's demo button downloaded the official 15-page PDF and admitted the exact recorded SHA-256 (`callback:def217fb-664e-425d-9599-9d10c3fd1b30`). A narrow-width panel-switch/resize sequence had exposed Sigma's own scheduled frame running after its panel became hidden. The pinned library's supported `allowInvalidContainer` setting now handles that transient state; a separate visible-container check still exposes a truthful outline fallback. A regression executes the actual installed Sigma resize implementation. Repeating 320→Evidence→640→reset→Map on the final artifact retained the graph and active outline with no new errors; the prior tab's diagnostics retained only the two pre-fix entries, identifiable by their older fingerprint/timestamp.
 
-## Final publication and remaining verification
+## Final publication
 
-Final locally verified runtime fingerprint: `a07d8f0298ea88939a3c30bca5c6593ce329ea3e395017f61e48135f8626fe90`. The exact source checkpoint, Pages run and fresh public callbacks will be recorded after publication.
+Source checkpoint: `274c7390e29dbc725e4a52e65bc0a7612aa54eb0`.
+
+Runtime fingerprint: `a07d8f0298ea88939a3c30bca5c6593ce329ea3e395017f61e48135f8626fe90`.
+
+The [release-qualified public URL](https://patrickjcraig.github.io/PaperPilot/webmcp/?release=274c739) matched that fingerprint in its app and vendor entry URLs. [Pages run 33637816522](https://github.com/patrickjcraig/PaperPilot/actions/runs/33637816522) completed successfully after a clean checkout, pinned dependency installation, strict WebMCP typecheck, all 649 module/fixture tests and all four safe/reproducible packaging tests. The existing non-blocking GitHub Action runtime-deprecation warning remains maintenance work; it was not a test or deployment failure. The repository remains public with its MIT license.
+
+The public demo button downloaded and admitted the exact recorded Attention v7 PDF. The older public saved copy was visibly preserved; no public Save or Clear control was used. All six native capabilities were invoked:
+
+| Public action | Observed result / receipt |
+| --- | --- |
+| `read_focus` | Exact 15-page document identity; `callback:f73de7e9-d451-4c0f-9166-32f959c5b28b` |
+| `read_graph` | Scaling source found; `callback:cf9cdea4-8e49-41f0-9024-4e4d416820c0` |
+| `focus_source` | Exact page-4 passage; `callback:23a3e1ce-876b-4d14-b9b8-50af86a5f705` |
+| `apply_graph` | **Why scale attention scores?** plus grounded source relation, revision 2; `callback:95b3ce4a-9aeb-4439-8f7e-22fe9613b05e` |
+| `apply_annotation` | **Why divide by the square root of the key dimension?** attached to the exact sentence, revision 3; `callback:50ad611a-042f-4a60-8d30-ca02ceedf58e` |
+| `stage_explain` | Seven separately classified claims; `callback:46bf177a-899d-41cf-83d1-c74720cbd732` |
+
+Fresh source read `callback:e368bb8d-294e-4e68-bda4-4c53ad0117b1` returned anchor `anchor:auto:idea:p4:1ozmjs2`, digest `558a968665a5c7788bde515cf7d2b97896bbd6a8872e689c1755e4b8ab8d80cd`. Human Undo/Redo advanced revisions 4/5 while reproducing all three expected semantic digests and unchanged source geometry (`callback:5ac310c1-291b-4ab4-a402-f3243441f2a5`, `callback:eca9e575-e7f9-475b-bc37-4c9cb8ad480b`).
+
+The staged note used a fresh bounded node/edge read (`callback:7c0368c6-ff94-438b-b280-8187ecba42bf`), complete source/graph coverage and response digest `116879005fe1f7fd24cc86aade68a4d380961f89e319d55ce7ac8e21e24edcf4`. The numerical example is explicitly mentor background, not a paper experiment; the exact text claim, interpretation and uncertainty remain separate. Nothing was saved or verified.
+
+Public 320/640-pixel reflow again measured 305/305 and 625/625 document/scroll widths, with zero clipped controls at 320. Keyboard Evidence navigation, hidden-panel resizing and return to Map completed with **zero browser warnings/errors** on this fresh public tab. The viewport override was reset. Final explicit guide-to-source navigation (`callback:f945d3e2-fab7-417d-807a-d2e16acb9749`) returned the actual highlighted page-4 passage. Visual inspection confirmed the PDF, question annotation, graph and mentor side by side. The public tab was kept for owner review at revision 5, explicitly **Not saved · active tab only**; disposable local QA tabs were closed.
+
+## Remaining human verification
 
 **Verification Pause 3 remains required.** The owner should inspect the deployed end-to-end flow with keyboard and their actual screen reader, including a literal 200% browser-zoom pass, source/graph navigation, region descriptions and error announcements, human Undo/Redo, Save/reopen, and cancellable Clear. Windows high-contrast/forced-colors and reduced-motion behavior still need human visual/assistive inspection. Do not describe the app as accessibility-certified or item 10 as fully owner-accepted before that review.
 
