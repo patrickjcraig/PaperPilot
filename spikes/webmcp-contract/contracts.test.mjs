@@ -366,7 +366,11 @@ test("freezes the exact six-tool registration surface and closed local schemas",
 });
 
 test("keeps page-owned authority, raw geometry, hard-delete, and human controls out of model input", async () => {
-  const propertyNames = collectSchemaPropertyNames(INPUT_SCHEMAS);
+  const schemasWithoutClaimCoverageStatus = structuredClone(INPUT_SCHEMAS);
+  const coverageSchema = schemasWithoutClaimCoverageStatus["paperpilot.stage_explain"].oneOf[0].properties.sourceCoverage.items;
+  assert.deepEqual(coverageSchema.properties.status, { type: "string", enum: ["used", "insufficient"] });
+  delete coverageSchema.properties.status;
+  const propertyNames = collectSchemaPropertyNames(schemasWithoutClaimCoverageStatus);
   for (const field of FORBIDDEN_MODEL_FIELDS) {
     assert.equal(propertyNames.has(field), false, `${field} must remain page-owned`);
   }

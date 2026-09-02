@@ -7,13 +7,19 @@
  * page-owned human decision. No helper mutates its inputs.
  */
 
+import { normalizeMentorRecord, safeExternalCitationUrl } from "./mentor-contract.mjs";
+
 const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
 const ID_PATTERN = /^[a-z][a-z0-9:_-]{2,127}$/u;
 const MAX_SAVED_EXPLANATIONS = 200;
 const MAX_TAKEAWAY_LENGTH = 1_200;
 
 /** @typedef {"quickTake" | "paperFit" | "prerequisites" | "howItWorks" | "paperEvidence" | "relatedIdeas" | "limitations"} MentorSectionKey */
-/** @typedef {"paper_evidence" | "mentor_synthesis"} MentorAuthorityKind */
+/** @typedef {"document_evidence" | "rendered_document_view" | "mentor_interpretation" | "mentor_background" | "external_source" | "uncertain" | "legacy_unclassified"} MentorAuthorityKind */
+/** @typedef {{text: string, authority: MentorAuthorityKind, anchorIds: string[], graphEntityKeys: string[], citationIds: string[]}} MentorClaim */
+/** @typedef {{key: string, kind: "source" | "node" | "edge" | "graph", label: string, available: boolean, detail: string}} MentorEvidenceLink */
+/** @typedef {{citationId: string, title: string, href: string | null, label: string}} MentorCitationLink */
+/** @typedef {MentorClaim & {key: string, authorityLabel: string, sourceLinks: MentorEvidenceLink[], graphLinks: MentorEvidenceLink[], citations: MentorCitationLink[], warnings: string[]}} MentorClaimView */
 /** @typedef {"save" | "discard"} MentorDecision */
 /** @typedef {"saved" | "discarded" | "rejected" | "no_staged_explanation"} MentorDecisionStatus */
 /** @typedef {{eventType: "explanation_saved" | "explanation_discarded", actor: "human", explanationId: string, responseDigest: string}} MentorDecisionEvent */
@@ -23,8 +29,6 @@ const MAX_TAKEAWAY_LENGTH = 1_200;
  * @typedef {object} MentorSectionDefinition
  * @property {MentorSectionKey} key
  * @property {string} label
- * @property {MentorAuthorityKind} authorityKind
- * @property {string} authorityLabel
  * @property {boolean} initiallyOpen
  */
 
@@ -33,6 +37,14 @@ const MAX_TAKEAWAY_LENGTH = 1_200;
  * @property {string} explanationId
  * @property {string} responseDigest
  * @property {Record<MentorSectionKey, string>} sections
+ * @property {Record<MentorSectionKey, MentorClaim[]>} claimSections
+ * @property {"legacy_unclassified" | "claim_level"} provenanceMode
+ * @property {string | null} expectedGraphDigest
+ * @property {string} visualObservation
+ * @property {string} visualEvidenceMode
+ * @property {Array<{anchorId: string, status: string, explanation: string}>} sourceCoverage
+ * @property {Array<{entityKey: string, role: string}>} graphCoverage
+ * @property {Array<{citationId: string, title: string, url: string}>} externalCitations
  * @property {string[]} sourceAnchorIds
  * @property {string[]} graphEntityKeys
  * @property {string | null} focusAnchorId
@@ -49,11 +61,18 @@ const MAX_TAKEAWAY_LENGTH = 1_200;
  * @property {boolean} showHumanDecisionActions
  * @property {NormalizedMentorExplanation | null} explanation
  * @property {string} quickTake
- * @property {Array<MentorSectionDefinition & {content: string}>} sections
+ * @property {MentorClaimView[]} quickTakeClaims
+ * @property {Array<MentorSectionDefinition & {content: string, claims: MentorClaimView[]}>} sections
  * @property {string[]} sourceAnchorIds
  * @property {string[]} graphEntityKeys
  * @property {number} citedSourceCount
  * @property {string} takeaway
+ * @property {MentorEvidenceLink[]} sourceLinks
+ * @property {MentorEvidenceLink[]} graphLinks
+ * @property {string[]} notices
+ * @property {{text: string, label: string, limitation: string, sourceLinks: MentorEvidenceLink[]} | null} visualDescription
+ * @property {Array<{link: MentorEvidenceLink, status: string, explanation: string}>} sourceCoverage
+ * @property {Array<{link: MentorEvidenceLink, role: string}>} graphCoverage
  */
 
 const SECTION_FALLBACKS = Object.freeze({
@@ -68,14 +87,24 @@ const SECTION_FALLBACKS = Object.freeze({
 
 /** @type {ReadonlyArray<Readonly<MentorSectionDefinition>>} */
 export const MENTOR_SECTION_DEFINITIONS = Object.freeze([
-  Object.freeze({ key: "quickTake", label: "Quick take", authorityKind: "mentor_synthesis", authorityLabel: "Mentor synthesis", initiallyOpen: true }),
-  Object.freeze({ key: "paperFit", label: "Where this fits in the paper", authorityKind: "mentor_synthesis", authorityLabel: "Mentor synthesis", initiallyOpen: false }),
-  Object.freeze({ key: "prerequisites", label: "What you need first", authorityKind: "mentor_synthesis", authorityLabel: "Mentor synthesis", initiallyOpen: false }),
-  Object.freeze({ key: "howItWorks", label: "How it works", authorityKind: "mentor_synthesis", authorityLabel: "Mentor synthesis", initiallyOpen: false }),
-  Object.freeze({ key: "paperEvidence", label: "Evidence in the paper", authorityKind: "paper_evidence", authorityLabel: "Paper evidence", initiallyOpen: true }),
-  Object.freeze({ key: "relatedIdeas", label: "Related ideas in the map", authorityKind: "mentor_synthesis", authorityLabel: "Mentor synthesis", initiallyOpen: false }),
-  Object.freeze({ key: "limitations", label: "Limits and uncertainty", authorityKind: "mentor_synthesis", authorityLabel: "Mentor synthesis", initiallyOpen: false }),
+  Object.freeze({ key: "quickTake", label: "Quick take", initiallyOpen: true }),
+  Object.freeze({ key: "paperFit", label: "Where this fits in the paper", initiallyOpen: false }),
+  Object.freeze({ key: "prerequisites", label: "What you need first", initiallyOpen: false }),
+  Object.freeze({ key: "howItWorks", label: "How it works", initiallyOpen: false }),
+  Object.freeze({ key: "paperEvidence", label: "Evidence in the paper", initiallyOpen: false }),
+  Object.freeze({ key: "relatedIdeas", label: "Related ideas in the map", initiallyOpen: false }),
+  Object.freeze({ key: "limitations", label: "Limits and uncertainty", initiallyOpen: false }),
 ]);
+
+export const MENTOR_AUTHORITY_LABELS = Object.freeze({
+  document_evidence: "Paper evidence",
+  rendered_document_view: "Rendered-page observation",
+  mentor_interpretation: "Mentor interpretation",
+  mentor_background: "Mentor background",
+  external_source: "External source · unverified",
+  uncertain: "Uncertain",
+  legacy_unclassified: "Legacy · unclassified",
+});
 
 export const MENTOR_SECTION_LABELS = Object.freeze(Object.fromEntries(
   MENTOR_SECTION_DEFINITIONS.map(({ key, label }) => [key, label]),
@@ -128,12 +157,6 @@ function currentIdSet(value) {
   return new Set([.../** @type {Iterable<unknown>} */ (value)].filter(validId));
 }
 
-/** @param {string[]} ids @param {unknown} currentIds @returns {string[]} */
-function filterCurrentIds(ids, currentIds) {
-  const current = currentIdSet(currentIds);
-  return current === null ? [...ids] : ids.filter((id) => current.has(id));
-}
-
 /** @param {unknown} value @returns {unknown[]} */
 function cloneList(value) {
   return Array.isArray(value) ? value.map((entry) => jsonClone(entry)) : [];
@@ -166,14 +189,29 @@ export function normalizeMentorExplanation(value, options = {}) {
   const saved = record.humanDecision === "saved" || hasSavedAt || Boolean(savedIds?.has(record.explanationId));
   /** @type {Record<MentorSectionKey, string>} */
   const sections = /** @type {Record<MentorSectionKey, string>} */ ({});
-  const suppliedSections = isRecord(record.sections) ? /** @type {Record<string, any>} */ (record.sections) : {};
+  const normalized = normalizeMentorRecord(record);
+  if (!normalized) return null;
+  const claimSections = /** @type {Record<MentorSectionKey, MentorClaim[]>} */ ({});
   for (const { key } of MENTOR_SECTION_DEFINITIONS) {
-    sections[key] = displayText(suppliedSections[key], SECTION_FALLBACKS[key]);
+    const claims = /** @type {MentorClaim[]} */ (normalized.sections[key]);
+    claimSections[key] = claims.length ? claims.map((claim) => ({ ...claim,
+      text: displayText(claim.text, SECTION_FALLBACKS[key]),
+      anchorIds: [...claim.anchorIds], graphEntityKeys: [...claim.graphEntityKeys], citationIds: [...claim.citationIds],
+    })) : [{ text: SECTION_FALLBACKS[key], authority: "uncertain", anchorIds: [], graphEntityKeys: [], citationIds: [] }];
+    sections[key] = claimSections[key].map(({ text }) => text).join("\n\n");
   }
   return {
     explanationId: record.explanationId,
     responseDigest: record.responseDigest,
     sections,
+    claimSections,
+    provenanceMode: normalized.provenanceMode,
+    expectedGraphDigest: validDigest(record.expectedGraphDigest) ? record.expectedGraphDigest : null,
+    sourceCoverage: normalized.sourceCoverage,
+    graphCoverage: normalized.graphCoverage,
+    externalCitations: normalized.externalCitations,
+    visualObservation: typeof record.visualObservation === "string" ? record.visualObservation : "",
+    visualEvidenceMode: typeof record.visualEvidenceMode === "string" ? record.visualEvidenceMode : "not_applicable",
     sourceAnchorIds: uniqueIds(record.sourceAnchorIds, 12),
     graphEntityKeys: uniqueIds(record.graphEntityKeys, 20),
     focusAnchorId: validId(record.focusAnchorId) ? record.focusAnchorId : null,
@@ -200,16 +238,22 @@ export function selectLatestMentorExplanation(stagedExplanations, savedExplanati
 /**
  * Create a DOM-independent representation of the mentor review card.
  *
- * `currentAnchorIds` and `currentGraphNodeKeys` filter evidence controls so a
- * restored or stale explanation cannot navigate to a foreign/missing entity.
- * The cited count preserves the staged explanation's declared source count;
- * the navigable ID arrays contain only current-workspace evidence.
+ * Preserve every declared reference for audit, but only enable references that
+ * resolve in the current workspace. Authority comes from individual blocks,
+ * never from the section heading. Legacy context links are not claim citations.
  *
  * @param {object} input
  * @param {unknown[]=} input.stagedExplanations
  * @param {unknown[]=} input.savedExplanations
  * @param {Iterable<string>=} input.currentAnchorIds
  * @param {Iterable<string>=} input.currentGraphNodeKeys
+ * @param {Iterable<string>=} input.currentGraphEdgeKeys
+ * @param {Map<string, any>=} input.currentAnchors
+ * @param {Map<string, any>=} input.currentGraphNodes
+ * @param {Map<string, any>=} input.currentGraphEdges
+ * @param {string=} input.currentPaperRef
+ * @param {string=} input.currentDocumentSha256
+ * @param {string=} input.currentGraphDigest
  * @returns {MentorReviewViewModel}
  */
 export function createMentorReviewViewModel({
@@ -217,6 +261,13 @@ export function createMentorReviewViewModel({
   savedExplanations = [],
   currentAnchorIds,
   currentGraphNodeKeys,
+  currentGraphEdgeKeys,
+  currentAnchors,
+  currentGraphNodes,
+  currentGraphEdges,
+  currentPaperRef,
+  currentDocumentSha256,
+  currentGraphDigest,
 } = {}) {
   const selected = selectLatestMentorExplanation(stagedExplanations, savedExplanations);
   const savedIds = cloneList(savedExplanations).map(explanationId).filter(validId);
@@ -234,18 +285,74 @@ export function createMentorReviewViewModel({
       graphEntityKeys: [],
       citedSourceCount: 0,
       takeaway: "",
+      quickTakeClaims: [], sourceLinks: [], graphLinks: [], notices: [], visualDescription: null,
+      sourceCoverage: [], graphCoverage: [],
     };
   }
-  const sourceAnchorIds = filterCurrentIds(explanation.sourceAnchorIds, currentAnchorIds);
-  const graphEntityKeys = filterCurrentIds(explanation.graphEntityKeys, currentGraphNodeKeys);
+  const anchorKeys = currentIdSet(currentAnchors?.keys() || currentAnchorIds);
+  const nodeKeys = currentIdSet(currentGraphNodes?.keys() || currentGraphNodeKeys);
+  const edgeKeys = currentIdSet(currentGraphEdges?.keys() || currentGraphEdgeKeys);
+  /** @param {string} key @returns {MentorEvidenceLink} */
+  const sourceLink = (key) => {
+    const anchor = currentAnchors?.get(key);
+    const available = anchorKeys?.has(key) === true
+      && (!currentPaperRef || !anchor?.paperRef || anchor.paperRef === currentPaperRef)
+      && (!currentDocumentSha256 || !anchor?.documentSha256 || anchor.documentSha256 === currentDocumentSha256);
+    const kind = anchor?.sourceKind === "exact_text" ? "Exact text" : "Paper region";
+    return { key, kind: "source", available,
+      label: available ? `${anchor?.pageLabel ? `p. ${anchor.pageLabel} · ` : ""}${kind}` : "Source incomplete",
+      detail: available ? `Open ${kind.toLowerCase()}${anchor?.pageLabel ? ` on page ${anchor.pageLabel}` : ""}` : "The cited source is not available in this paper.",
+    };
+  };
+  /** @param {string} key @returns {MentorEvidenceLink} */
+  const graphLink = (key) => {
+    const isNode = nodeKeys?.has(key) === true;
+    const isEdge = edgeKeys?.has(key) === true;
+    const record = isNode ? currentGraphNodes?.get(key) : currentGraphEdges?.get(key);
+    const available = (isNode || isEdge) && (!record?.status || record.status === "active")
+      && (!currentPaperRef || !record?.paperRef || record.paperRef === currentPaperRef);
+    const label = record?.label || record?.claim || key;
+    return { key, kind: isNode ? "node" : isEdge ? "edge" : "graph", available,
+      label: available ? `${isEdge ? "Relationship" : "Map"} · ${label}` : `Source incomplete · ${label}`,
+      detail: available ? "Open graph context and its paper source. A graph item is not proof of a claim."
+        : record?.status === "tombstoned" ? "This graph item was removed; the citation is retained for audit." : "This graph reference is not available in the current paper.",
+    };
+  };
+  /** @param {string} citationId @returns {MentorCitationLink} */
+  const citationLink = (citationId) => {
+    const citation = explanation.externalCitations.find((item) => item.citationId === citationId);
+    const href = citation ? safeExternalCitationUrl(citation.url) : null;
+    return { citationId, title: citation?.title || citationId, href,
+      label: href ? "External source · Not verified by PaperPilot" : "External source unavailable · Not verified by PaperPilot" };
+  };
+  /** @param {MentorSectionKey} sectionKey @returns {MentorClaimView[]} */
+  const claimViews = (sectionKey) => explanation.claimSections[sectionKey].map((claim, index) => {
+    const sourceLinks = claim.anchorIds.map(sourceLink);
+    const graphLinks = claim.graphEntityKeys.map(graphLink);
+    const warnings = [];
+    if (sourceLinks.some((link) => !link.available)) warnings.push("Source incomplete. This claim’s missing source remains listed below.");
+    if (graphLinks.some((link) => !link.available)) warnings.push("Graph context incomplete. A cited item is missing or has been removed.");
+    if (claim.authority === "rendered_document_view") warnings.push("Locator-only context. This is a reported observation, not verified pixel use.");
+    if (claim.authority === "mentor_background") warnings.push("Teaching context, not a statement attributed to this paper.");
+    return { ...claim, key: `${sectionKey}:${index}`, authorityLabel: MENTOR_AUTHORITY_LABELS[claim.authority],
+      sourceLinks, graphLinks, citations: claim.citationIds.map(citationLink), warnings };
+  });
+  const sourceLinks = explanation.sourceAnchorIds.map(sourceLink);
+  const graphLinks = explanation.graphEntityKeys.map(graphLink);
+  const sourceAnchorIds = sourceLinks.filter(({ available }) => available).map(({ key }) => key);
+  const graphEntityKeys = graphLinks.filter(({ available }) => available).map(({ key }) => key);
   const sections = MENTOR_SECTION_DEFINITIONS
     .filter(({ key }) => key !== "quickTake")
-    .map((definition) => ({ ...definition, content: explanation.sections[definition.key] }));
+    .map((definition) => ({ ...definition, content: explanation.sections[definition.key], claims: claimViews(definition.key) }));
   const citedSourceCount = explanation.sourceAnchorIds.length;
   const citationNoun = citedSourceCount === 1 ? "source" : "sources";
   const statusMessage = explanation.saved
     ? `Saved by the reader · ${explanation.savedAt || "this session"} · AI-generated, not scientifically verified.`
-    : `Mentor draft · AI-generated · ${citedSourceCount} cited ${citationNoun} · not saved or verified.`;
+    : `Explanation ready. Nothing was saved. AI-generated · ${citedSourceCount} cited ${citationNoun} · not scientifically verified.`;
+  const notices = [];
+  if (explanation.provenanceMode === "legacy_unclassified") notices.push("Legacy note: claims were not individually classified. Section names do not establish evidence; the links below are note-wide context only.");
+  if (currentGraphDigest && explanation.expectedGraphDigest && currentGraphDigest !== explanation.expectedGraphDigest) notices.push("The map has changed since this explanation. Its original claims are unchanged; check the current linked context.");
+  if (sourceLinks.some(({ available }) => !available)) notices.push("Source incomplete: one or more original paper sources cannot currently be opened.");
   return {
     state: explanation.saved ? "saved" : "draft",
     stateLabel: explanation.saved ? "Saved" : "Draft",
@@ -258,6 +365,14 @@ export function createMentorReviewViewModel({
     graphEntityKeys,
     citedSourceCount,
     takeaway: explanation.saved ? explanation.takeaway : "",
+    quickTakeClaims: claimViews("quickTake"), sourceLinks, graphLinks, notices,
+    sourceCoverage: explanation.sourceCoverage.map((item) => ({ link: sourceLink(item.anchorId), status: item.status, explanation: item.explanation })),
+    graphCoverage: explanation.graphCoverage.map((item) => ({ link: graphLink(item.entityKey), role: item.role })),
+    visualDescription: explanation.visualObservation ? { text: explanation.visualObservation,
+      label: "Visual description · Mentor interpretation",
+      limitation: "Uses the selected region and any reader-supplied or caption context. Locator only: PaperPilot has not verified pixel use. Separate visible observations from inferred meaning.",
+      sourceLinks: explanation.focusAnchorId ? [sourceLink(explanation.focusAnchorId)] : [],
+    } : null,
   };
 }
 
@@ -348,10 +463,13 @@ export function applyHumanMentorDecision({
     humanDecision: "saved",
     ...(trimmedTakeaway ? { takeaway: trimmedTakeaway } : {}),
   };
+  if (saved.length >= MAX_SAVED_EXPLANATIONS && !saved.some((item) => explanationId(item) === normalized.explanationId)) {
+    return unchangedDecisionResult("rejected", staged, saved, { code: "saved_note_limit" });
+  }
   const nextSaved = [
     ...saved.filter((item) => explanationId(item) !== normalized.explanationId),
     savedExplanation,
-  ].slice(-MAX_SAVED_EXPLANATIONS);
+  ];
   return {
     status: "saved",
     changed: true,

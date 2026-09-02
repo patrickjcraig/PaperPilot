@@ -8,6 +8,7 @@ import {
   captureWebmcpInput,
   createSpikeState,
   createToolSuite,
+  enqueueHumanWorkspaceAction,
   graphNodeReferencesAnchor,
   mintReaderAnchor,
   applyReaderAnnotation,
@@ -177,6 +178,7 @@ const elements = {
   saveExplanation: byId("save-explanation"),
   discardExplanation: byId("discard-explanation"),
   mentorTakeaway: byId("mentor-takeaway"),
+  goToExplanation: byId("go-to-explanation"),
   browserSaveCard: document.querySelector(".browser-save-card"),
   saveWorkspace: byId("save-workspace"),
   clearSavedWorkspace: byId("clear-saved-workspace"),
@@ -297,26 +299,107 @@ function browserStorageAdapter() {
   }
 }
 
-function sourceThreadToken(anchorId) {
-  const anchor = state?.anchors?.get(anchorId);
-  if (!anchor) return "Source unavailable";
-  const sourceIndex = [...state.anchors.keys()].sort().indexOf(anchorId) + 1;
-  return `P${anchor.pageLabel} · source ${String(Math.max(1, sourceIndex)).padStart(2, "0")}`;
+function currentMentorReview() {
+  return createMentorReviewViewModel({
+    stagedExplanations: state?.explanations,
+    savedExplanations,
+    currentAnchors: state?.anchors,
+    currentGraphNodes: state?.graph ? new Map(state.graph.mapNodes((key, attributes) => [key, attributes])) : new Map(),
+    currentGraphEdges: state?.graph ? new Map(state.graph.mapEdges((key, attributes, source, target) => [key, {
+      ...attributes, label: `${graphNodeLabel(source)} → ${graphNodeLabel(target)} · ${humanReadable(attributes.kind)}`,
+    }])) : new Map(),
+    currentPaperRef: state?.paper?.paperRef,
+    currentDocumentSha256: state?.paper?.documentSha256,
+    currentGraphDigest: state?.graphDigest,
+  });
+}
+
+async function openMentorEvidence(link) {
+  // Resolve again on activation; a saved note or stale DOM control is not
+  // authority to revive a removed item or navigate a different paper.
+  const review = currentMentorReview();
+  const current = (link.kind === "source" ? review.sourceLinks : review.graphLinks).find(({ key }) => key === link.key);
+  if (!current?.available) {
+    elements.mentorExplanationStatus.textContent = "Source incomplete. This reference is retained for audit but cannot be opened in the current paper.";
+    return false;
+  }
+  if (current.kind === "source") {
+    return navigateGraphSource(current.key, { eventType: "mentor_evidence_focused" });
+  }
+  showGraphRailView("map");
+  return current.kind === "edge" ? focusGraphEdgeEvidence(current.key) : focusGraphNodeEvidence(current.key);
+}
+
+function appendMentorEvidenceLinks(parent, links, identity) {
+  for (const link of links) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.interactionKey = `mentor:${identity}:${link.kind}:${link.key}`;
+    button.dataset.mentorReference = link.key;
+    button.textContent = link.label;
+    button.title = `${link.detail} Reference: ${link.key}`;
+    button.disabled = !link.available;
+    button.setAttribute("aria-label", `${link.label}. ${link.detail} Reference ${link.key}`);
+    button.addEventListener("click", () => void openMentorEvidence(link));
+    parent.append(button);
+  }
+}
+
+function renderMentorClaim(claim, explanationId) {
+  const article = document.createElement("article");
+  article.className = `mentor-claim is-${claim.authority.replaceAll("_", "-")}`;
+  article.dataset.interactionKey = `${explanationId}:${claim.key}`;
+  const authority = document.createElement("span");
+  authority.className = "mentor-authority";
+  authority.textContent = claim.authorityLabel;
+  const content = document.createElement("p");
+  content.className = "mentor-claim-text";
+  content.textContent = claim.text;
+  article.append(authority, content);
+  for (const warning of claim.warnings) {
+    const note = document.createElement("p");
+    note.className = "mentor-claim-note";
+    note.textContent = warning;
+    article.append(note);
+  }
+  const links = document.createElement("div");
+  links.className = "mentor-evidence-chips";
+  appendMentorEvidenceLinks(links, [...claim.sourceLinks, ...claim.graphLinks], claim.key);
+  for (const citation of claim.citations) {
+    const item = document.createElement(citation.href ? "a" : "span");
+    item.className = "mentor-external-citation";
+    item.textContent = `${citation.title} · ${citation.label}`;
+    if (citation.href) {
+      item.href = citation.href;
+      item.target = "_blank";
+      item.rel = "noopener noreferrer";
+      item.referrerPolicy = "no-referrer";
+      item.dataset.interactionKey = `mentor:${claim.key}:citation:${citation.citationId}`;
+      item.setAttribute("aria-label", `${citation.title}. Not verified by PaperPilot. Opens an external site in a new tab.`);
+    }
+    links.append(item);
+  }
+  if (links.childElementCount) article.append(links);
+  return article;
+}
+
+function goToMentorExplanation() {
+  if (!currentMentorReview().explanation) return;
+  const heading = byId("mentor-explanation-heading");
+  heading.focus({ preventScroll: true });
+  heading.scrollIntoView({ block: "nearest", behavior: prefersReducedMotion() ? "instant" : "smooth" });
 }
 
 function renderMentorExplanation() {
+  const interaction = captureWorkspaceInteraction();
   const disclosureStates = new Map([...elements.mentorExplanationBody.querySelectorAll("details[data-mentor-section-key]")]
     .map((section) => [section.dataset.mentorSectionKey, section.open]));
-  const review = createMentorReviewViewModel({
-    stagedExplanations: state?.explanations,
-    savedExplanations,
-    currentAnchorIds: state?.anchors?.keys(),
-    currentGraphNodeKeys: state?.graph?.nodes(),
-  });
+  const review = currentMentorReview();
   const explanation = review.explanation;
   elements.mentorExplanationBody.replaceChildren();
   elements.mentorExplanationState.className = "review-state is-empty";
   elements.mentorExplanationActions.hidden = true;
+  elements.goToExplanation.disabled = !explanation;
   if (!explanation) {
     const empty = document.createElement("p");
     empty.textContent = review.quickTake;
@@ -325,61 +408,78 @@ function renderMentorExplanation() {
     elements.mentorExplanationStatus.textContent = review.statusMessage;
     elements.mentorTakeaway.value = "";
     delete elements.mentorTakeaway.dataset.explanationId;
+    delete elements.mentorTakeaway.dataset.responseDigest;
+    restoreWorkspaceInteraction(interaction);
     return;
   }
 
   const saved = review.state === "saved";
   const takeawayChangedExplanation = elements.mentorTakeaway.dataset.explanationId !== explanation.explanationId;
   elements.mentorTakeaway.dataset.explanationId = explanation.explanationId;
+  elements.mentorTakeaway.dataset.responseDigest = explanation.responseDigest;
   elements.mentorExplanationState.textContent = review.stateLabel;
   elements.mentorExplanationState.className = `review-state${saved ? " is-saved" : ""}`;
-  const quickTake = document.createElement("p");
-  quickTake.className = "mentor-quick-take";
-  quickTake.textContent = review.quickTake;
-  elements.mentorExplanationBody.append(quickTake);
-
-  for (const sectionModel of review.sections) {
+  for (const notice of review.notices) {
+    const note = document.createElement("p");
+    note.className = "mentor-review-notice";
+    note.textContent = notice;
+    elements.mentorExplanationBody.append(note);
+  }
+  for (const sectionModel of [{ key: "quickTake", label: "Quick take", initiallyOpen: true, claims: review.quickTakeClaims }, ...review.sections]) {
     const section = document.createElement("details");
     section.className = "mentor-section";
     section.dataset.mentorSectionKey = `${explanation.explanationId}:${sectionModel.key}`;
     section.dataset.interactionKey = `mentor-section:${sectionModel.key}`;
     section.open = disclosureOpenState(disclosureStates, section.dataset.mentorSectionKey, sectionModel.initiallyOpen);
     const summary = document.createElement("summary");
-    summary.textContent = sectionModel.label;
-    const authority = document.createElement("span");
-    authority.className = `mentor-authority ${sectionModel.authorityKind === "paper_evidence" ? "is-paper" : "is-mentor"}`;
-    authority.textContent = sectionModel.authorityLabel;
-    const content = document.createElement("p");
-    content.textContent = sectionModel.content;
-    section.append(summary, authority, content);
+    const heading = document.createElement("h4");
+    heading.textContent = sectionModel.label;
+    summary.append(heading);
+    section.append(summary);
+    for (const claim of sectionModel.claims) section.append(renderMentorClaim(claim, explanation.explanationId));
     elements.mentorExplanationBody.append(section);
   }
-
-  const chips = document.createElement("div");
-  chips.className = "mentor-evidence-chips";
-  for (const anchorId of review.sourceAnchorIds) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.dataset.interactionKey = `mentor-source:${anchorId}`;
-    button.textContent = sourceThreadToken(anchorId);
-    button.setAttribute("aria-label", `Go to ${sourceThreadToken(anchorId)} used by this mentor note`);
-    button.addEventListener("click", async () => {
-      state.focusAnchorId = anchorId;
-      recordActivity("mentor_evidence_focused", { actor: "human", status: anchorId });
-      await ensureAnchorVisible(anchorId, { moveKeyboardFocus: true, scrollIntoView: true });
-    });
-    chips.append(button);
+  if (review.visualDescription) {
+    const visual = document.createElement("section");
+    visual.className = "mentor-visual-description";
+    const heading = document.createElement("h4");
+    heading.textContent = review.visualDescription.label;
+    const description = document.createElement("p");
+    description.textContent = review.visualDescription.text;
+    const limit = document.createElement("p");
+    limit.className = "mentor-claim-note";
+    limit.textContent = review.visualDescription.limitation;
+    const links = document.createElement("div");
+    links.className = "mentor-evidence-chips";
+    appendMentorEvidenceLinks(links, review.visualDescription.sourceLinks, "visual-description");
+    visual.append(heading, description, limit, links);
+    elements.mentorExplanationBody.append(visual);
   }
-  for (const graphKey of review.graphEntityKeys) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.dataset.interactionKey = `mentor-graph:${graphKey}`;
-    button.textContent = `Map · ${graphNodeLabel(graphKey)}`;
-    button.setAttribute("aria-label", `Select ${graphNodeLabel(graphKey)} in the knowledge graph and go to its paper evidence`);
-    button.addEventListener("click", () => focusGraphNodeEvidence(graphKey));
-    chips.append(button);
+  const coverage = document.createElement("details");
+  coverage.className = "mentor-section mentor-coverage";
+  coverage.dataset.mentorSectionKey = `${explanation.explanationId}:coverage`;
+  coverage.dataset.interactionKey = "mentor-section:coverage";
+  coverage.open = disclosureOpenState(disclosureStates, coverage.dataset.mentorSectionKey, false);
+  const summary = document.createElement("summary");
+  summary.textContent = explanation.provenanceMode === "legacy_unclassified" ? "Legacy note context · not claim citations" : "Source and graph coverage";
+  coverage.append(summary);
+  if (review.sourceCoverage.length || review.graphCoverage.length) {
+    for (const item of [...review.sourceCoverage, ...review.graphCoverage]) {
+      const row = document.createElement("div");
+      row.className = "mentor-coverage-row";
+      const description = document.createElement("p");
+      description.textContent = item.explanation ? `${humanReadable(item.status)} · ${item.explanation}` : humanReadable(item.role);
+      row.append(description);
+      appendMentorEvidenceLinks(row, [item.link], "coverage");
+      coverage.append(row);
+    }
+  } else {
+    const links = document.createElement("div");
+    links.className = "mentor-evidence-chips";
+    appendMentorEvidenceLinks(links, [...review.sourceLinks, ...review.graphLinks], "context");
+    coverage.append(links);
   }
-  if (chips.childElementCount) elements.mentorExplanationBody.append(chips);
+  elements.mentorExplanationBody.append(coverage);
 
   if (saved) {
     if (explanation.takeaway) {
@@ -388,13 +488,70 @@ function renderMentorExplanation() {
       takeaway.textContent = `My takeaway: ${review.takeaway}`;
       elements.mentorExplanationBody.append(takeaway);
     }
-    elements.mentorExplanationStatus.textContent = `Saved by the reader · ${explanation.savedAt ? new Date(explanation.savedAt).toLocaleString() : "this session"} · AI-generated, not scientifically verified.`;
+    elements.mentorExplanationStatus.textContent = review.statusMessage;
     if (takeawayChangedExplanation) elements.mentorTakeaway.value = review.takeaway;
   } else {
     elements.mentorExplanationActions.hidden = !review.showHumanDecisionActions;
     elements.mentorExplanationStatus.textContent = review.statusMessage;
     if (takeawayChangedExplanation) elements.mentorTakeaway.value = "";
   }
+  restoreWorkspaceInteraction(interaction);
+}
+
+async function decideMentorExplanation(decisionName) {
+  if (!state) return;
+  const sourceState = state;
+  const initiator = document.activeElement;
+  const intent = {
+    explanationId: elements.mentorTakeaway.dataset.explanationId,
+    responseDigest: elements.mentorTakeaway.dataset.responseDigest,
+    takeaway: elements.mentorTakeaway.value,
+  };
+  const decision = await enqueueHumanWorkspaceAction(sourceState, () => {
+    if (state !== sourceState) return { changed: false, code: "paper_changed" };
+    const current = state.explanations.at(-1);
+    if (!current || current.explanationId !== intent.explanationId || current.responseDigest !== intent.responseDigest) {
+      return { changed: false, code: "mentor_draft_changed" };
+    }
+    const result = applyHumanMentorDecision({
+      actor: "human", decision: decisionName, stagedExplanations: state.explanations, savedExplanations,
+      takeaway: intent.takeaway, savedAt: state.now(),
+    });
+    if (!result.changed) return result;
+    state.explanations = result.stagedExplanations;
+    savedExplanations = result.savedExplanations;
+    state.savedExplanations = structuredClone(savedExplanations);
+    recordHumanEvidenceEvent(result.event.eventType, {
+      explanationId: result.event.explanationId, responseDigest: result.event.responseDigest,
+    });
+    return result;
+  });
+  if (state !== sourceState) return;
+  if (!decision.changed) {
+    elements.mentorExplanationStatus.textContent = decision.code === "mentor_draft_changed"
+      ? "A newer mentor draft arrived before this action completed. Nothing was saved or discarded. Review the current draft and choose again."
+      : decision.code === "saved_note_limit"
+      ? "This paper already has 200 saved mentor notes. Nothing was removed. Your current draft remains available in this tab."
+      : decision.code === "takeaway_too_long"
+      ? "Shorten your takeaway to 1,200 characters, then save again." : "No current mentor draft could be changed. Read the current note and try again.";
+    return;
+  }
+  snapshotDirty = true;
+  renderState();
+  // This focus move follows the reader's explicit decision, never arrival.
+  if ([elements.saveExplanation, elements.discardExplanation].includes(initiator)
+    && document.activeElement === initiator
+    && elements.mentorExplanationActions.hidden) byId("mentor-explanation-heading").focus({ preventScroll: true });
+  if (decisionName === "discard") {
+    elements.mentorExplanationStatus.textContent = "Mentor draft discarded. The paper, graph, and annotations were not changed.";
+    if (snapshotEnabled) markSnapshotDirty();
+    return;
+  }
+  const result = await persistBrowserWorkspace({ enable: true, reason: "mentor note saved" });
+  if (state !== sourceState || currentMentorReview().explanation?.explanationId !== decision.event.explanationId) return;
+  elements.mentorExplanationStatus.textContent = result.status === "saved"
+    ? "Mentor note saved in this browser. Its original AI claims stay immutable and separate from your takeaway."
+    : "Mentor note is kept in this tab, but browser recovery failed. Keep this tab open.";
 }
 
 function renderBrowserSaveState() {
@@ -2261,7 +2418,7 @@ function workspaceInteractionTargets() {
   const targets = [];
   for (const region of [elements.paperStructureList, elements.criticalIdeaList, elements.graphOutline, elements.graphSelectionDetail,
     elements.annotationList, elements.graphSearchResults, elements.mentorExplanationBody, elements.workspaceRevisionList]) {
-    for (const element of region.querySelectorAll("button, summary, [tabindex]")) {
+    for (const element of region.querySelectorAll("button, summary, a[href], [tabindex]")) {
       const row = element.closest("[data-annotation-id]") || element.closest("[data-mentor-section-key]")
         || element.closest("li[data-interaction-key]") || element.closest("li[data-graph-node-key]")
         || element.closest("[data-graph-node-key]") || element.closest("[data-interaction-key]");
@@ -2406,9 +2563,9 @@ function renderState() {
     workspaceRevision: state.workspaceRevision,
     workspaceDigest: state.workspaceDigest,
     anchorCount: state.anchors.size,
-    mentorKey: JSON.stringify([state.explanations, savedExplanations].map((explanations) => explanations.map(
+    mentorKey: JSON.stringify([[state.explanations, savedExplanations].map((explanations) => explanations.map(
       ({ explanationId, responseDigest, humanDecision, savedAt, takeaway }) => [explanationId, responseDigest, humanDecision, savedAt, takeaway],
-    ))),
+    )), [...state.anchors.keys()].sort(), state.graphDigest]),
   };
   const refresh = planInteractionRefresh(lastInteractionRenderStamp, nextStamp);
   const interaction = refresh.content || refresh.mentor ? captureWorkspaceInteraction() : null;
@@ -2489,8 +2646,8 @@ function instrumentTools(rawTools) {
         markSnapshotDirty();
       }
       if (tool.name === "paperpilot.stage_explain" && result?.status === "staged") {
-        elements.mentorExplanationStatus.textContent = "Explanation ready for your review. Save or discard it; the browser agent cannot make that decision.";
-        elements.agentAnnouncement.textContent = "A source-grounded mentor explanation is ready for human review.";
+        elements.mentorExplanationStatus.textContent = "Explanation ready. Nothing was saved. Review each claim’s authority and evidence, then save or discard the note yourself.";
+        elements.agentAnnouncement.textContent = "A mentor explanation is ready. Nothing was saved. Use Go to explanation when you are ready.";
       }
       // Mutating tools already publish through state.onStateChange. Reads only
       // update their receipt/pointer, never rebuild the reader's controls.
@@ -3204,49 +3361,9 @@ function wireHumanControls() {
     renderBrowserSaveState();
   });
 
-  elements.saveExplanation.addEventListener("click", async () => {
-    const decision = applyHumanMentorDecision({
-      actor: "human",
-      decision: "save",
-      stagedExplanations: state.explanations,
-      savedExplanations,
-      takeaway: elements.mentorTakeaway.value,
-      savedAt: state.now(),
-    });
-    if (!decision.changed) return;
-    state.explanations = decision.stagedExplanations;
-    savedExplanations = decision.savedExplanations;
-    state.savedExplanations = structuredClone(savedExplanations);
-    recordHumanEvidenceEvent(decision.event.eventType, {
-      explanationId: decision.event.explanationId,
-      responseDigest: decision.event.responseDigest,
-    });
-    snapshotDirty = true;
-    renderMentorExplanation();
-    const result = await persistBrowserWorkspace({ enable: true, reason: "mentor note saved" });
-    elements.mentorExplanationStatus.textContent = result.status === "saved"
-      ? "Mentor note saved in this browser. Its source text and AI response remain distinct from your takeaway."
-      : "Mentor note is kept in this tab, but browser recovery failed. Keep this tab open.";
-  });
-
-  elements.discardExplanation.addEventListener("click", () => {
-    const decision = applyHumanMentorDecision({
-      actor: "human",
-      decision: "discard",
-      stagedExplanations: state.explanations,
-      savedExplanations,
-    });
-    if (!decision.changed) return;
-    state.explanations = decision.stagedExplanations;
-    savedExplanations = decision.savedExplanations;
-    recordHumanEvidenceEvent(decision.event.eventType, {
-      explanationId: decision.event.explanationId,
-      responseDigest: decision.event.responseDigest,
-    });
-    renderMentorExplanation();
-    elements.mentorExplanationStatus.textContent = "Mentor draft discarded. The paper, graph, and annotations were not changed.";
-    if (snapshotEnabled) markSnapshotDirty();
-  });
+  elements.goToExplanation.addEventListener("click", goToMentorExplanation);
+  elements.saveExplanation.addEventListener("click", () => void decideMentorExplanation("save"));
+  elements.discardExplanation.addEventListener("click", () => void decideMentorExplanation("discard"));
 
   const recaptureSelection = () => {
     queueMicrotask(() => captureReaderSelection({ announceFailure: false }));

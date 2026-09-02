@@ -688,7 +688,7 @@ type BrowserPaperSnapshotV3 = {
     };
     requestResults: Array<[string, { commandDigest: Sha256; result: StoredMutationReceiptV1 | null }]>;
     events: ProvenanceEventV1[];
-    savedExplanations: MentorExplanationV1[];
+    savedExplanations: SavedMentorExplanation[];
     presentation: { annotationOrder: string[] };
   };
 };
@@ -957,7 +957,7 @@ Behavior:
 
 ### `paperpilot.stage_explain`
 
-Current frozen model input:
+The preferred model input is the explicit claim-level version 2 below. The version-1 branch remains accepted for compatibility with existing clients and saved notes; it is not upgraded into per-claim provenance:
 
 ```ts
 type StageExplainInputV1 = {
@@ -980,33 +980,37 @@ type StageExplainInputV1 = {
 };
 ```
 
-The callback requires fresh focus and graph reads for the current source/revision. It revalidates after asynchronous work before staging. Plain-text section values, current issued sources/graph IDs and the actual evidence mode are mandatory. Failure or cancellation before commit leaves no new explanation or successful stage event. A valid stage is a proposal, not a saved note, semantic workspace revision or scientific verification.
+Both branches require fresh focus and graph reads for the current source/revision and revalidate after asynchronous work before staging. Failure or cancellation before commit leaves no new explanation or successful stage event. A valid stage is a proposal, not a saved note, semantic workspace revision or scientific verification. Legacy strings retain their exact wording and shared references, but every displayed statement is explicitly **Legacy · unclassified**; a section named `paperEvidence` does not confer claim authority.
 
-#### Item 9 target: per-claim mentor provenance
+#### Item 9: per-claim mentor provenance
 
-The following richer claim-block design remains the next checklist item. It is **not** accepted by item 8's frozen `stage_explain` schema and is not represented as implemented per-claim authority validation:
+`mentor-contract.mjs` defines the shared closed schema, semantic validation, and lossless presentation adapter. `contracts.mjs` registers both version branches under the same existing `paperpilot.stage_explain` tool; no seventh tool or new storage service is introduced. The seven sections remain stable, but each version-2 section contains bounded claim blocks:
 
 ```ts
-type MentorExplanationV1 = {
-  schemaVersion: 1;
-  audience: "undergraduate";
-  graphRevision: number;
-  graphDigest: Sha256;
+type StageExplainInputV2 = {
+  explanationVersion: 2;
+  focusAnchorId: string;
+  expectedWorkspaceRevision: number;
+  expectedGraphDigest: Sha256;
   sections: {
-    quickTake: ClaimBlockV1[];
-    paperFit: ClaimBlockV1[];
-    prerequisites: ClaimBlockV1[];
-    howItWorks: ClaimBlockV1[];
-    paperEvidence: ClaimBlockV1[];
-    relatedIdeas: ClaimBlockV1[];
-    limitations: ClaimBlockV1[];
+    quickTake: ClaimBlockV2[];
+    paperFit: ClaimBlockV2[];
+    prerequisites: ClaimBlockV2[];
+    howItWorks: ClaimBlockV2[];
+    paperEvidence: ClaimBlockV2[];
+    relatedIdeas: ClaimBlockV2[];
+    limitations: ClaimBlockV2[];
   };
+  sourceAnchorIds: string[]; // 1..12, includes focus
+  graphEntityKeys: string[]; // 0..20
   sourceCoverage: Array<{ anchorId: string; status: "used" | "insufficient"; explanation: string }>;
   graphCoverage: Array<{ entityKey: string; role: "explained" | "related" | "questioned" }>;
-  externalCitations: ExternalCitationV1[];
+  externalCitations: ExternalCitationV2[]; // 0..8
+  visualEvidenceMode: "not_applicable" | "client_visible_region" | "locator_only";
+  visualObservation?: string; // accessible interpretation and limits, required for visual focus
 };
 
-type ExternalCitationV1 = {
+type ExternalCitationV2 = {
   citationId: string;
   url: string;
   title: string;
@@ -1016,8 +1020,8 @@ type ExternalCitationV1 = {
   verification: "not_verified_by_paperpilot";
 };
 
-type ClaimBlockV1 = {
-  text: string;
+type ClaimBlockV2 = {
+  text: string; // 1..800 Unicode scalar values, literal text including mathematics
   authority:
     | "document_evidence" | "rendered_document_view"
     | "mentor_interpretation" | "mentor_background"
@@ -1026,21 +1030,31 @@ type ClaimBlockV1 = {
   graphEntityKeys: string[];
   citationIds: string[];
 };
+
+type SavedMentorExplanation = (StageExplainInputV1 | StageExplainInputV2) & {
+  explanationId: string;
+  responseDigest: Sha256; // canonical JSON of the exact accepted input, before human metadata
+  savedAt: string;
+  humanDecision: "saved";
+  takeaway?: string; // separate human-authored text, never merged into source or agent claims
+};
 ```
 
 Validation:
 
-- all seven sections present and bounded;
-- every issued active anchor covered once or explicitly insufficient;
-- document evidence requires exact-text anchors;
-- rendered-view observation requires visual anchors;
+- all seven sections contain 1..5 claims, at most 28 total, with the version-1 aggregate section text limits retained; the entire input stays within 32 KiB and the existing result within 48 KiB;
+- every source **declared in this explanation** is covered exactly once as used or explicitly insufficient; this is not a requirement to summarize every anchor in the paper;
+- document evidence requires exact-text/equation anchors; a source marked insufficient cannot simultaneously support a document-evidence claim;
+- rendered-view observation requires visual anchors and actual `client_visible_region` evidence from the page; the current `locator_only` client rejects that authority and instead permits clearly labeled interpretation, reader-provided description, and uncertainty;
 - mentor background cannot cite a paper anchor as its authority;
 - external-source blocks cite one or more declared citation IDs, never inherit paper-anchor authority, use only sanitized `https:` links, and remain visibly **Not verified by PaperPilot**; the public slice does not fetch or verify them;
-- graph keys must exist in the graph revision read by the response;
+- graph keys must be active in the same paper/revision **and have appeared in the latest bounded `read_graph` response**; every declared key appears in a claim and exactly one explained/related/questioned coverage entry;
 - raw HTML/unknown keys reject the complete response;
-- successful output says **Explanation ready. Nothing was saved.**
+- successful output says **Explanation ready. Nothing was saved or verified.**
 
-Explanation Save/Discard remains human UI behavior. It is separate from graph revisions.
+Claim rows have visible text authority labels, exact-source buttons, graph-node/edge buttons, and separate agent-declared external citations. Links are sanitized public HTTPS URLs without credentials or private/numeric hosts; PaperPilot neither fetches nor verifies them. Missing or removed saved references remain visible as **Source incomplete** and cannot navigate to a substitute. The seven-section view is progressively disclosed, preserves literal math, and provides a keyboard-focusable **Go to explanation** control without moving the PDF out of the center or adding a transcript.
+
+Explanation Save/Discard remains human UI behavior, separate from graph revisions and scientific verification. Browser snapshot version 3 remains stable. Newly saved version-2 notes validate their closed shape, evidence relationships, and original response digest; absent historical sources remain incomplete audit references, while resolvable foreign/incompatible sources reject. Existing version-1 notes remain readable without invented claim classifications or retroactive digest guarantees. No PDF bytes, server writes, or local database writes are added.
 
 ### `paperpilot.apply_graph`
 

@@ -20,6 +20,7 @@
     "spikes/webmcp-contract/activity-ledger.mjs",
     "spikes/webmcp-contract/graph-view-model.mjs",
     "spikes/webmcp-contract/interaction-state.mjs",
+    "spikes/webmcp-contract/mentor-contract.mjs",
     "spikes/webmcp-contract/mentor-review.mjs",
     "spikes/webmcp-contract/spatial-anchor.mjs",
     "spikes/webmcp-contract/structural-map.mjs",

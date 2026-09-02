@@ -16,7 +16,8 @@ assets.
 | `paper-analysis.mjs` | Browser-independent whole-paper indexing and explicitly unreviewed critical-idea candidates. |
 | `presentation-layout.mjs` | Presentation-only graph positions and annotation-card order; never semantic state. |
 | `browser-snapshot.mjs` | Version-3 patch-history recovery, fully validated version-2 migration, strict replay-receipt checks, and preserved version-1 saves. PDF bytes are excluded. |
-| `mentor-review.mjs` | Typed seven-section mentor view model and human-only Save/Discard decisions. |
+| `mentor-contract.mjs` | Closed, bounded claim-level schema, source/graph coverage, citation safety, authority validation, and lossless legacy projection. |
+| `mentor-review.mjs` | Typed seven-section claim/evidence view model, incomplete-reference notices, and human-only Save/Discard decisions. |
 | `webmcp-observer.mjs` | Typed callback instrumentation and page-issued provenance targeting; no model-reasoning claim. |
 | `activity-ledger.mjs` | Typed evidence-event creation, restore merge, bounds, and reader-facing formatting. |
 | `accessibility-projection.mjs` | Typed Graphology/annotation facts shared by the accessible DOM outline and cards, with layout and geometry excluded. |
@@ -81,9 +82,21 @@ independently of the complete bounded revision ledger.
 
 `stage_explain` requires fresh successful focus and graph reads at the current
 workspace revision, then rechecks focus before committing its unsaved proposal.
-Its current schema remains seven plain-text sections with proposal-level source
-and graph references. Per-claim authority/citation blocks are item 9 work, not
-an implemented wire format. Visual regions remain `locator_only` with
+Prefer `explanationVersion: 2`: all seven sections contain claim arrays with
+explicit authority and per-claim `anchorIds`, `graphEntityKeys`, and `citationIds`.
+Every declared source has one `sourceCoverage` entry (used or insufficient), and
+every graph reference has one explained/related/questioned `graphCoverage` entry.
+Only graph items returned in the latest bounded read can be cited. Each claim is
+at most 800 Unicode scalar values; limits are five claims per section, 28 total,
+12 sources, 20 graph items, eight external citations, and 32 KiB per input.
+External citations are public HTTPS links explicitly declared by the agent and
+not verified by PaperPilot; no citation fetch occurs. Legacy seven-string inputs
+remain accepted and saved notes retain exact prose, visibly **Legacy · unclassified**.
+Missing or removed saved references remain visible and non-navigable, not silently
+dropped or replaced. See the executable schemas in `mentor-contract.mjs` and
+the full versioned contract in `docs/hackathon-build/spec.md`.
+
+Visual regions remain `locator_only` with
 `pixelUseVerified: false`: a human diagnostic trial cannot establish that the
 agent consumed arbitrary PDF pixels.
 

@@ -194,6 +194,7 @@ test("packages one byte-reproducible versioned module graph without changing sou
   assert.ok(relativeFiles.includes("webmcp/browser-snapshot.mjs"));
   assert.ok(relativeFiles.includes("webmcp/graph-view-model.mjs"));
   assert.ok(relativeFiles.includes("webmcp/interaction-state.mjs"));
+  assert.ok(relativeFiles.includes("webmcp/mentor-contract.mjs"));
   assert.ok(relativeFiles.includes("webmcp/mentor-review.mjs"));
   assert.ok(relativeFiles.includes("webmcp/spatial-anchor.mjs"));
   assert.ok(relativeFiles.includes("webmcp/structural-map.mjs"));

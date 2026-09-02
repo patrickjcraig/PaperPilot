@@ -1,6 +1,7 @@
 import { validateSpatialAnchor } from "./spatial-anchor.mjs";
 import { applyWorkspacePatch, createWorkspacePatch, invertWorkspacePatch, validateWorkspacePatch } from "./workspace-patch.mjs";
 import { validateToolResult } from "./contracts.mjs";
+import { MENTOR_SECTION_KEYS, mentorPayloadFromRecord, validateMentorPayload } from "./mentor-contract.mjs";
 
 /**
  * Browser-local, opt-in persistence for the public PaperPilot vertical slice.
@@ -224,7 +225,8 @@ function buildPayload(state, { savedExplanations, savedAt, presentation }) {
   }
   if (!Array.isArray(state.events)) fail("invalid_live_state", "events is invalid.");
   const serializedExplanations = jsonClone(explanations, "savedExplanations");
-  validateSavedExplanations(serializedExplanations, state.anchors);
+  // Complete mentor validation is shared with restore below, after the global
+  // byte ceiling is checked. Invalid notes never replace an existing save.
   const serializedPresentation = validatePresentation(
     jsonClone(
       presentation ?? { annotationOrder: [...state.annotations.keys()].sort((left, right) => left.localeCompare(right)) },
@@ -669,19 +671,78 @@ async function decodeHistory(value, templateGraph, identity, path) {
   }));
 }
 
-function validateSavedExplanations(value, anchors) {
+const MENTOR_METADATA_FIELDS = ["explanationId", "responseDigest", "savedAt", "humanDecision", "takeaway"];
+const MENTOR_ID_RE = /^[a-z][a-z0-9:_-]{2,127}$/u;
+
+function validateMentorMetadata(explanation, index) {
+  const reason = "saved_explanations_invalid";
+  assertString(explanation.explanationId, reason, `Saved explanation ${index} has no valid id.`, { max: 128, pattern: MENTOR_ID_RE });
+  assertString(explanation.responseDigest, reason, `Saved explanation ${index} has no valid digest.`, { pattern: SHA256_RE });
+  if (Object.hasOwn(explanation, "savedAt")) assertString(explanation.savedAt, reason, "The saved mentor timestamp is invalid.", { max: 64 });
+  if (Object.hasOwn(explanation, "humanDecision") && explanation.humanDecision !== "saved") fail(reason, "A persisted mentor decision must be saved by the human.");
+  if (Object.hasOwn(explanation, "takeaway") && (typeof explanation.takeaway !== "string" || [...explanation.takeaway].length > 1200)) fail(reason, "The human takeaway is invalid or unbounded.");
+}
+
+function validateLegacyMentorRecord(explanation) {
+  const reason = "saved_explanations_invalid";
+  // Historical releases also retained partial seven-string notes. Preserve
+  // their exact text and declared references, but never infer claim authority
+  // or assert that their opaque responseDigest used the new digest recipe.
+  const payload = mentorPayloadFromRecord(explanation);
+  const metadata = MENTOR_METADATA_FIELDS.filter((key) => Object.hasOwn(explanation, key));
+  assertExactKeys(explanation, [...Object.keys(payload), ...metadata], reason);
+  if (Object.hasOwn(explanation, "explanationVersion") && explanation.explanationVersion !== 1) fail(reason, "The saved mentor version is unsupported.");
+  assertPlainObject(explanation.sections, reason, "A legacy mentor note must contain its original prose sections.");
+  for (const [key, section] of Object.entries(explanation.sections)) {
+    const maximum = key === "howItWorks" ? 2000 : key === "quickTake" ? 1200 : 1500;
+    if (!MENTOR_SECTION_KEYS.includes(key) || typeof section !== "string" || [...section].length > maximum) fail(reason, "A legacy mentor section is invalid or unbounded.");
+  }
+  for (const [key, maximum] of [["sourceAnchorIds", 12], ["graphEntityKeys", 20]]) {
+    if (!Object.hasOwn(explanation, key)) continue;
+    const ids = explanation[key];
+    if (!Array.isArray(ids) || ids.length > maximum || new Set(ids).size !== ids.length || ids.some((id) => typeof id !== "string" || !MENTOR_ID_RE.test(id))) fail(reason, "A legacy mentor reference is invalid or unbounded.");
+  }
+  if (Object.hasOwn(explanation, "focusAnchorId")) assertString(explanation.focusAnchorId, reason, "The legacy focus ID is invalid.", { max: 128, pattern: MENTOR_ID_RE });
+  if (Object.hasOwn(explanation, "expectedWorkspaceRevision")) assertInteger(explanation.expectedWorkspaceRevision, reason, "The legacy graph revision is invalid.", { min: 1 });
+  if (Object.hasOwn(explanation, "expectedGraphDigest")) assertString(explanation.expectedGraphDigest, reason, "The legacy graph digest is invalid.", { pattern: SHA256_RE });
+  if (Object.hasOwn(explanation, "visualEvidenceMode") && !["not_applicable", "locator_only", "client_visible_region"].includes(explanation.visualEvidenceMode)) fail(reason, "The legacy visual mode is invalid.");
+  if (Object.hasOwn(explanation, "visualObservation")) assertString(explanation.visualObservation, reason, "The legacy visual observation is invalid.", { max: 1000 });
+}
+
+async function validateSavedExplanations(value, current, identity) {
   if (!Array.isArray(value) || value.length > 200) fail("saved_explanations_invalid", "savedExplanations is invalid or unbounded.");
+  const ids = new Set();
   for (const [index, explanation] of value.entries()) {
     assertPlainObject(explanation, "saved_explanations_invalid", `Saved explanation ${index} is invalid.`);
-    assertString(explanation.explanationId, "saved_explanations_invalid", `Saved explanation ${index} has no valid id.`, { max: 128 });
-    assertString(explanation.responseDigest, "saved_explanations_invalid", `Saved explanation ${index} has no valid digest.`, { pattern: SHA256_RE });
-    if (explanation.focusAnchorId !== undefined && !anchors.has(explanation.focusAnchorId)) {
-      fail("saved_explanations_invalid", `Saved explanation ${index} references a missing focus anchor.`);
-    }
-    if (explanation.sourceAnchorIds !== undefined) {
-      if (!Array.isArray(explanation.sourceAnchorIds) || explanation.sourceAnchorIds.some((anchorId) => !anchors.has(anchorId))) {
-        fail("saved_explanations_invalid", `Saved explanation ${index} references a missing source anchor.`);
+    validateMentorMetadata(explanation, index);
+    if (ids.has(explanation.explanationId)) fail("saved_explanations_invalid", "A saved mentor ID is duplicated.");
+    ids.add(explanation.explanationId);
+    try {
+      if (explanation.explanationVersion !== 2) {
+        validateLegacyMentorRecord(explanation);
+        continue;
       }
+      const payload = mentorPayloadFromRecord(explanation);
+      const metadata = MENTOR_METADATA_FIELDS.filter((key) => Object.hasOwn(explanation, key));
+      assertExactKeys(explanation, [...Object.keys(payload), ...metadata], "saved_explanations_invalid");
+      validateMentorPayload(payload, {
+        paperRef: identity.paperRef,
+        documentSha256: identity.documentSha256,
+        resolveAnchor: (id) => current.anchors.get(id),
+        resolveGraphEntity: (key) => current.graph.hasNode(key) ? current.graph.getNodeAttributes(key)
+          : current.graph.hasEdge(key) ? current.graph.getEdgeAttributes(key) : undefined,
+        allowMissingReferences: true,
+        visualEvidenceMode: "locator_only",
+      });
+      // This public release does not retain or verify source-bound pixel use.
+      // Missing references cannot turn that capability check into an exemption.
+      if (payload.visualEvidenceMode === "client_visible_region") fail("saved_explanations_invalid", "The saved mentor note claims unsupported pixel evidence.");
+      if (payload.expectedWorkspaceRevision > current.workspaceRevision) fail("saved_explanations_invalid", "The saved mentor note names a future workspace revision.");
+      const digest = await sha256Text(canonicalJson(payload));
+      if (digest !== explanation.responseDigest) fail("saved_explanation_digest_mismatch", "A saved mentor note no longer matches its original staged response digest.");
+    } catch (error) {
+      if (error instanceof SnapshotValidationError) throw error;
+      fail("saved_explanations_invalid", "A saved mentor note failed its closed claim, citation, or source-authority contract.");
     }
   }
 }
@@ -1066,7 +1127,7 @@ async function decodeEnvelope(raw, state, expectedVersion = BROWSER_SNAPSHOT_SCH
   ) {
     fail("events_invalid", "The stored audit events are invalid or unbounded.");
   }
-  validateSavedExplanations(payload.savedExplanations, current.anchors);
+  await validateSavedExplanations(payload.savedExplanations, current, expectedIdentity);
   const presentation = validatePresentation(payload.presentation, current.annotations);
   assertJsonSafe(payload.events, "events");
   assertJsonSafe(payload.savedExplanations, "savedExplanations");
