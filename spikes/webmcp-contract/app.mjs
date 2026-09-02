@@ -5,6 +5,7 @@ import {
   TOOL_NAMES,
   SPIKE_VERSIONS,
   canonicalJson,
+  captureWebmcpInput,
   createSpikeState,
   createToolSuite,
   graphNodeReferencesAnchor,
@@ -188,6 +189,11 @@ let state;
 let tools = [];
 let suiteHandle = null;
 let registrationClosed = false;
+let cleanupRequiresReload = false;
+let registrationAttempt = null;
+let toolSessionGeneration = 0;
+let paperSessionGeneration = 0;
+let pageLeaving = false;
 let sigmaRenderer = null;
 let sigmaGraph = null;
 let visualTrialObserved = false;
@@ -464,7 +470,7 @@ async function persistBrowserWorkspace({ enable = false, reason = "manual save" 
   return snapshotSaveQueue;
 }
 
-async function restoreBrowserWorkspace() {
+async function restoreBrowserWorkspace({ isCurrent = () => true } = {}) {
   const storage = browserStorageAdapter();
   if (!storage) {
     snapshotStatusKind = "error";
@@ -473,6 +479,7 @@ async function restoreBrowserWorkspace() {
     return { status: "storage_error" };
   }
   const result = await loadBrowserSnapshot({ storage, state });
+  if (!isCurrent()) return { status: "cancelled" };
   if (result.status === "restored") {
     savedExplanations = result.savedExplanations || [];
     annotationOrder = Object.freeze(result.presentation?.annotationOrder || []);
@@ -657,15 +664,20 @@ async function ensureAnchorVisible(anchorId, {
   scrollIntoView = true,
   behavior = prefersReducedMotion() ? "auto" : "smooth",
   navigationRequest = null,
+  signal = null,
 } = {}) {
+  if (signal?.aborted) return null;
   // External source controls win immediately, even while a previous graph
   // navigation is awaiting page rendering. Passive callback markers do not.
   if ((scrollIntoView || moveKeyboardFocus) && pendingGraphNavigation !== navigationRequest) invalidateGraphNavigation();
   if (navigationRequest && !isCurrentGraphNavigation(navigationRequest)) return null;
   const sourceNavigationGeneration = graphNavigationGeneration;
-  const navigationIsCurrent = () => (!scrollIntoView && !moveKeyboardFocus)
-    || (sourceNavigationGeneration === graphNavigationGeneration
-      && (!navigationRequest || isCurrentGraphNavigation(navigationRequest)));
+  const sourceState = state;
+  const sourceViewer = paperViewer;
+  const navigationIsCurrent = () => !signal?.aborted && sourceState === state && sourceViewer === paperViewer
+    && ((!scrollIntoView && !moveKeyboardFocus)
+      || (sourceNavigationGeneration === graphNavigationGeneration
+        && (!navigationRequest || isCurrentGraphNavigation(navigationRequest))));
   const anchor = state?.anchors.get(anchorId);
   if (!anchor) return null;
   const diagnosticVisual = anchor.sourceKind === "visual_region"
@@ -786,7 +798,8 @@ function clearAgentEditHighlights() {
 }
 
 async function replayObservedTrace(trace) {
-  if (!trace) return;
+  if (!trace || pageLeaving) return;
+  const session = toolSessionGeneration;
   elements.replayAgentAction.disabled = true;
   recordActivity("callback_visual_replay_started", { actor: "human", toolName: trace.toolName });
   placeAgentCursor(
@@ -796,6 +809,7 @@ async function replayObservedTrace(trace) {
     `Replaying the observed page callback for ${trace.toolName}. No tool or mutation is running.`,
   );
   await waitForReplay(650);
+  if (pageLeaving || session !== toolSessionGeneration) return;
   const presentation = createObservedPresentation(trace, { replay: true });
   placeAgentCursor(
     trace.anchorId,
@@ -805,6 +819,7 @@ async function replayObservedTrace(trace) {
   );
   if (presentation.phase === "error") clearAgentEditHighlights();
   await waitForReplay(450);
+  if (pageLeaving || session !== toolSessionGeneration) return;
   elements.replayAgentAction.disabled = false;
   recordActivity("callback_visual_replay_completed", { actor: "human", toolName: trace.toolName, status: trace.status });
 }
@@ -1121,14 +1136,20 @@ function synchronizeGraphToolNavigation(input, result) {
   else if (result.targetType === "edge") selectGraphEdge(result.targetId);
 }
 
-async function navigateObservedPaperSource(anchor) {
+async function navigateObservedPaperSource(anchor, { signal } = {}) {
+  const sourceState = state;
+  const session = toolSessionGeneration;
+  const active = () => !pageLeaving && !signal?.aborted && state === sourceState && session === toolSessionGeneration;
+  if (!active()) throw new DOMException("The source request was cancelled.", "AbortError");
   try {
     recordActivity("navigation_callback_observed", { actor: "page", status: anchor.anchorId });
   } catch { /* Optional callback presentation does not control navigation authority. */ }
   try {
-    const destination = await ensureAnchorVisible(anchor.anchorId, { moveKeyboardFocus: false, scrollIntoView: true });
+    const destination = await ensureAnchorVisible(anchor.anchorId, { moveKeyboardFocus: false, scrollIntoView: true, signal });
+    if (!active()) throw new DOMException("The source request was cancelled.", "AbortError");
     if (!destination) throw new Error("Source destination unavailable");
   } catch {
+    if (!active()) throw new DOMException("The source request was cancelled.", "AbortError");
     throw new Error("The requested paper source could not be opened. Read the current focus and retry.");
   }
 }
@@ -2419,8 +2440,14 @@ function renderState() {
 }
 
 function instrumentTools(rawTools) {
+  const observedState = state;
+  const session = toolSessionGeneration;
+  const active = () => !pageLeaving && observedState === state && session === toolSessionGeneration
+    && !registrationAttempt?.controller.signal.aborted;
   return instrumentWebmcpTools(rawTools, {
-    async beforeExecute({ tool, input }) {
+    captureInput: captureWebmcpInput,
+    async beforeExecute({ tool, input, options }) {
+      if (!active() || options.signal?.aborted) return;
       if (tool.name === "paperpilot.focus_source") {
         invalidateGraphNavigation();
         graphToolNavigationGenerations.set(input, graphNavigationGeneration);
@@ -2429,10 +2456,16 @@ function instrumentTools(rawTools) {
       await ensureAnchorVisible(resolveObservedAnchor(state, tool.name, input, {}), {
         moveKeyboardFocus: false,
         scrollIntoView: false,
+        signal: options.signal,
       });
+      if (!active() || options.signal?.aborted) return;
       showToolRequest(tool.name, input);
     },
-    onResult({ tool, input, result }) {
+    onResult({ tool, input, result, options }) {
+      if (!active()) return;
+      const committedMutation = tool.name.startsWith("paperpilot.apply_")
+        && ["applied_reversible", "replayed"].includes(result?.status);
+      if (options.signal?.aborted && result?.code !== "request_aborted" && !committedMutation) return;
       recordActivity("page_callback_returned", {
         actor: "PaperPilot page",
         toolName: tool.name,
@@ -2463,25 +2496,33 @@ function instrumentTools(rawTools) {
       // update their receipt/pointer, never rebuild the reader's controls.
       showToolResult(tool.name, input, result);
     },
-    onError({ tool, input, error }) {
+    onError({ tool, input, error, options }) {
+      if (!active()) return;
+      const cancelled = options.signal?.aborted || error?.name === "AbortError";
       recordActivity("page_callback_threw", {
         actor: "PaperPilot page",
         toolName: tool.name,
-        status: error?.name || "error",
+        status: cancelled ? "request_aborted" : "callback_failed",
       });
-      renderLastResult({ status: "threw", name: error?.name, message: error?.message });
+      renderLastResult({ schemaVersion: 1, status: "rejected", code: cancelled ? "request_aborted" : "callback_failed", message: cancelled ? "The page request was cancelled." : "The page callback could not complete. Read the current focus and retry." });
       placeAgentCursor(
         resolveObservedAnchor(state, tool.name, input, {}),
         "error",
-        "Page callback failed",
-        `PaperPilot callback ${tool.name} failed with ${error?.name || "an error"}.`,
+        cancelled ? "Request cancelled" : "Page callback failed",
+        cancelled ? "The request was cancelled. No completed action is claimed." : `PaperPilot callback ${tool.name} could not complete. Read the current focus and retry.`,
       );
     },
   });
 }
 
 async function registerSuite({ automatic = false } = {}) {
-  if (suiteHandle || registrationClosed) return;
+  if (cleanupRequiresReload) {
+    elements.webmcpStatus.textContent = "Local review · reload required before registering tools";
+    elements.registerTools.disabled = true;
+    elements.disposeTools.disabled = true;
+    return;
+  }
+  if (suiteHandle || registrationAttempt || registrationClosed || pageLeaving || !state?.paper) return;
   const modelContext = document.modelContext;
   if (!modelContext || typeof modelContext.registerTool !== "function") {
     elements.webmcpStatus.textContent = "Local review — WebMCP was not invoked";
@@ -2496,48 +2537,103 @@ async function registerSuite({ automatic = false } = {}) {
   elements.registerTools.disabled = true;
   elements.disposeTools.disabled = true;
   recordActivity("tool_suite_registration_started", { actor: automatic ? "page" : "human" });
+  const attempt = { controller: new AbortController(), state, session: ++toolSessionGeneration };
+  registrationAttempt = attempt;
+  elements.disposeTools.disabled = false;
+  tools = instrumentTools(createToolSuite(state));
+  const current = () => !pageLeaving && registrationAttempt === attempt && state === attempt.state
+    && toolSessionGeneration === attempt.session;
 
   const observedContext = {
     async registerTool(tool, options) {
       const result = await modelContext.registerTool(tool, options);
-      recordActivity("tool_registered", { actor: "page", toolName: tool.name, status: "registered" });
+      if (current() && !attempt.controller.signal.aborted) recordActivity("tool_registered", { actor: "page", toolName: tool.name, status: "registered" });
       return result;
     },
   };
 
   try {
-    suiteHandle = await mountToolSuite(observedContext, tools, {
-      onDispose({ reason, registrations }) {
-        recordActivity("tool_suite_disposed", {
+    const handle = await mountToolSuite(observedContext, tools, {
+      signal: attempt.controller.signal,
+      onDispose({ reason, registrations, requiresReload = false }) {
+        // This is a page-lifetime native cleanup requirement, even after the
+        // paper/session which initiated the registration has been replaced.
+        cleanupRequiresReload ||= requiresReload;
+        if (current()) recordActivity("tool_suite_disposed", {
           actor: reason === "manual" ? "human" : "page",
           status: `${reason} · ${registrations.length} registrations`,
         });
       },
     });
+    if (!current() || attempt.controller.signal.aborted) {
+      handle.dispose("stale_session");
+      return;
+    }
+    suiteHandle = handle;
     elements.webmcpStatus.textContent = `Registered ${suiteHandle.registrations.length} / ${TOOL_NAMES.length}`;
     elements.disposeTools.disabled = false;
     recordActivity("tool_suite_registered", { actor: "page", status: "ready" });
   } catch (error) {
-    registrationClosed = true;
-    elements.webmcpStatus.textContent = "Registration failed · reload required";
-    elements.registerTools.disabled = true;
+    cleanupRequiresReload ||= error?.requiresReload === true;
+    if (!current()) return;
+    attempt.controller.abort("registration_failed");
+    registrationAttempt = null;
+    registrationClosed = cleanupRequiresReload;
+    elements.webmcpStatus.textContent = registrationClosed
+      ? "Tool registration failed · reload required for cleanup"
+      : "Tool registration failed · retry available";
+    elements.registerTools.disabled = registrationClosed;
     elements.disposeTools.disabled = true;
     recordActivity("tool_suite_registration_failed", {
       actor: "page",
-      status: error?.name || "error",
+      status: registrationClosed ? "reload_required" : "registration_failed",
     });
-    renderLastResult({ status: "registration_failed", name: error?.name, message: error?.message });
+    renderLastResult({ schemaVersion: 1, status: "registration_failed", message: registrationClosed
+      ? "Registration was interrupted while the client was still processing it. Your paper remains available; reload before registering again."
+      : "The full tool suite could not be registered. The partial suite was cancelled; retry registration." });
   }
 }
 
 function disposeSuite(reason = "manual") {
-  if (!suiteHandle) return;
-  suiteHandle.dispose(reason);
+  if (!suiteHandle && !registrationAttempt) return;
+  const attempt = registrationAttempt;
+  attempt?.controller.abort(reason);
+  const cleanup = suiteHandle?.dispose(reason);
+  cleanupRequiresReload ||= cleanup?.requiresReload === true;
   suiteHandle = null;
+  registrationAttempt = null;
+  toolSessionGeneration += 1;
+  invalidateGraphNavigation();
   registrationClosed = true;
+  clearAgentEditHighlights();
+  elements.replayAgentAction.disabled = true;
   elements.webmcpStatus.textContent = "Disposed · reload before re-registering";
   elements.registerTools.disabled = true;
   elements.disposeTools.disabled = true;
+}
+
+function replacePaperToolSession() {
+  disposeSuite("paper_replaced");
+  registrationClosed = cleanupRequiresReload;
+  toolSessionGeneration += 1;
+}
+
+function closePaperToolSession() {
+  if (pageLeaving) return;
+  pageLeaving = true;
+  disposeSuite("page_unload");
+  toolSessionGeneration += 1;
+  invalidateGraphNavigation();
+  disposeSigma();
+  paperViewer?.destroy();
+}
+
+function recordVisualTrialAssessment() {
+  if (!visualKeyRevealed || !state || pageLeaving) return;
+  elements.confirmVisualProof.disabled = true;
+  elements.visualKey.textContent = "Human trial assessment recorded. It does not verify pixel use or enable visual understanding for this paper. Evidence mode remains locator_only.";
+  recordActivity("visual_trial_human_assessment", { actor: "human", status: "locator_only · pixel use not verified" });
+  renderState();
 }
 
 function randomIndex(maximum) {
@@ -3319,27 +3415,24 @@ function wireHumanControls() {
   elements.humanUndo.addEventListener("click", () => void performHumanHistoryAction("undo"));
   elements.humanRedo.addEventListener("click", () => void performHumanHistoryAction("redo"));
 
-  elements.confirmVisualProof.addEventListener("click", () => {
-    if (!visualKeyRevealed || state.visualEvidenceMode === "client_visible_region") return;
-    state.visualEvidenceMode = "client_visible_region";
-    elements.confirmVisualProof.disabled = true;
-    recordActivity("visual_proof_promoted", { actor: "human", status: "client_visible_region" });
-    renderState();
-  });
-
-  window.addEventListener("beforeunload", () => {
-    if (suiteHandle) disposeSuite("page_unload");
-    disposeSigma();
-    paperViewer?.destroy();
-  });
+  elements.confirmVisualProof.textContent = "Record human trial assessment (not pixel proof)";
+  elements.confirmVisualProof.addEventListener("click", recordVisualTrialAssessment);
 }
 
 async function boot({ pdfFile = null } = {}) {
+  if (pageLeaving) return;
+  replacePaperToolSession();
+  const paperSession = ++paperSessionGeneration;
+  const current = () => !pageLeaving && paperSessionGeneration === paperSession;
+  lastObservedTrace = null;
+  visualTrialObserved = false;
+  visualKeyRevealed = false;
   paperStructuralMap = null;
   paperAnalysis = null;
   criticalIdeaByNodeKey.clear();
   renderToolList();
   await renderContractManifest();
+  if (!current()) return;
   renderActivity();
   elements.registerTools.disabled = true;
   elements.disposeTools.disabled = true;
@@ -3357,17 +3450,19 @@ async function boot({ pdfFile = null } = {}) {
 
   elements.webmcpStatus.textContent = "Waiting for verified paper";
   let verifiedTextAnchor = null;
-  paperViewer = await initializePaperPdfViewer({
+  const initializedViewer = await initializePaperPdfViewer({
     pdfFile,
     title: pdfFile ? paperTitleFromFilename(pdfFile.name) : undefined,
     filename: pdfFile?.name,
     contentType: pdfFile?.type || undefined,
     sourceAnchor: pdfFile ? null : undefined,
     onStatus({ kind, message }) {
+      if (!current()) return;
       elements.pdfLoading.textContent = message;
       if (kind === "ready") elements.pdfLoading.hidden = true;
     },
     onError(error) {
+      if (!current()) return;
       elements.pdfLoading.hidden = false;
       elements.pdfLoading.textContent = pdfFile
         ? `${error.message} Choose a valid PDF and try again.`
@@ -3375,10 +3470,12 @@ async function boot({ pdfFile = null } = {}) {
       elements.webmcpStatus.textContent = "Not registered · PDF verification failed";
     },
     onAnchorResolved(anchor) {
+      if (!current()) return;
       verifiedTextAnchor = anchor;
       elements.pdfSourceStatus.textContent = `Exact page 1 sentence verified from the PDF.js text layer · ${anchor.rects.length} live text rectangles.`;
     },
     onPageChange({ pageNumber, pageCount }) {
+      if (!current()) return;
       const activeSurface = document.querySelector(`.pdf-page-surface[data-page-number="${pageNumber}"]`) || (pageNumber === 1 ? elements.pdfPageSurface : null);
       for (const surface of document.querySelectorAll(".pdf-page-surface")) {
         surface.classList.toggle("is-active-page", surface === activeSurface);
@@ -3387,6 +3484,8 @@ async function boot({ pdfFile = null } = {}) {
       elements.pdfActivePageDescription.textContent = `Page ${pageNumber} is centered`;
     },
   });
+  if (!current()) { initializedViewer.destroy(); return; }
+  paperViewer = initializedViewer;
   const exactAnchor = paperViewer.exactTextAnchor || verifiedTextAnchor;
   if (!paperViewer.documentFacts?.integrityVerified || (!pdfFile && !exactAnchor)) {
     throw new Error(
@@ -3426,6 +3525,7 @@ async function boot({ pdfFile = null } = {}) {
     recordActivity("paper_text_index_started", { actor: "page", status: `${paperViewer.documentFacts.pageCount} pages` });
     documentText = await paperViewer.extractDocumentText({
       onProgress({ indexedPages, pageCount, pageNumber }) {
+        if (!current()) return;
         setAnalysisProgress(indexedPages, pageCount, `${indexedPages} of ${pageCount} pages read`);
         elements.paperAnalysisStatus.textContent = `Reading ${indexedPages} / ${pageCount} pages`;
         if (indexedPages === 1 || indexedPages === pageCount || indexedPages % 5 === 0) {
@@ -3433,6 +3533,7 @@ async function boot({ pdfFile = null } = {}) {
         }
       },
     });
+    if (!current()) return;
     recordActivity("paper_text_index_completed", {
       actor: "page",
       status: `${documentText.exactCandidatePages} text pages · ${documentText.visualOnlyPages} visual-only · ${documentText.failedPages} failed`,
@@ -3456,6 +3557,7 @@ async function boot({ pdfFile = null } = {}) {
     setAnalysisProgress(0, groundedAutomaticMap.contract.candidates.length, `0 of ${groundedAutomaticMap.contract.candidates.length} candidates grounded`);
     elements.paperAnalysisStatus.textContent = `Grounding 0 / ${groundedAutomaticMap.contract.candidates.length} candidates`;
   } catch (error) {
+    if (!current()) return;
     const pageCount = paperFacts.pageCount;
     if (!paperStructuralMap) {
       const structuralPages = documentText?.pages || paperViewer.getStructuralPageRecords();
@@ -3523,7 +3625,7 @@ async function boot({ pdfFile = null } = {}) {
   criticalIdeaByNodeKey.clear();
   for (const candidate of paperAnalysis.candidates) criticalIdeaByNodeKey.set(candidate.key, candidate);
 
-  state = await createSpikeState(MultiDirectedGraph, {
+  const initializedState = await createSpikeState(MultiDirectedGraph, {
     visualEvidenceMode: "locator_only",
     paper: {
       paperRef: paperFacts.paperRef,
@@ -3543,15 +3645,20 @@ async function boot({ pdfFile = null } = {}) {
       pageRotation: exactAnchor.viewport.rotation,
     } : null,
     onEvent(event) {
+      if (!current()) return;
       activity.push(event);
       renderActivity();
     },
     onNavigate: navigateObservedPaperSource,
     onStateChange() {
+      if (!current()) return;
       renderState();
     },
   });
-  const restoredWorkspace = await restoreBrowserWorkspace();
+  if (!current()) return;
+  state = initializedState;
+  const restoredWorkspace = await restoreBrowserWorkspace({ isCurrent: current });
+  if (!current()) return;
   if (restoredWorkspace.status === "restored") {
     // Existing browser preferences stay intact. Reset layout opts into the new seed.
     state.graph.forEachNode((key, attributes) => {
@@ -3599,7 +3706,6 @@ async function boot({ pdfFile = null } = {}) {
   } else {
     elements.paperAnalysisSummary.textContent = `The paper structure is available, but PaperPilot found no reliable text for idea suggestions. ${textLimitedPages} pages had limited or failed text.`;
   }
-  tools = instrumentTools(createToolSuite(state));
   elements.primarySourceButton.dataset.focusAnchor = state.focusAnchorId;
   elements.primarySourceButton.disabled = !state.anchors.has(state.focusAnchorId);
   elements.primarySourceButton.textContent = state.anchors.get(state.focusAnchorId)?.sourceKind === "exact_text"
@@ -3607,6 +3713,7 @@ async function boot({ pdfFile = null } = {}) {
     : "Go to current page source";
   wireHumanControls();
   await setupVisualTrial();
+  if (!current()) return;
   renderState();
   if (restoredWorkspace.status === "restored" && state.anchors.has(state.focusAnchorId)) {
     try {
@@ -3615,7 +3722,9 @@ async function boot({ pdfFile = null } = {}) {
         scrollIntoView: true,
         behavior: "auto",
       });
+      if (!current()) return;
     } catch {
+      if (!current()) return;
       elements.pdfSourceStatus.textContent = "Your workspace was restored, but the saved source could not be brought into view. Use the page locator or a source link to continue.";
       recordActivity("restored_source_navigation_failed", { actor: "page", status: "source_unavailable" });
     }
@@ -3637,12 +3746,14 @@ function reportInitializationFailure(error) {
 }
 
 async function beginWithPaper(pdfFile = null) {
+  if (pageLeaving) return;
   elements.workspace.inert = false;
   document.body.classList.remove("is-waiting-for-paper");
   elements.skipLink.href = "#contract-workspace";
   elements.skipLink.textContent = "Skip to PaperPilot workspace";
   try {
     await boot({ pdfFile });
+    if (pageLeaving) return;
     if (pdfFile) {
       elements.paperSourceGateStatus.textContent = `${pdfFile.name} is active in this tab.`;
       elements.paperFileInput.disabled = true;
@@ -3650,6 +3761,7 @@ async function beginWithPaper(pdfFile = null) {
       elements.paperSourceGate.hidden = true;
     }
   } catch (error) {
+    if (pageLeaving) return;
     reportInitializationFailure(error);
     if (pdfFile) {
       paperViewer?.destroy();
@@ -3667,6 +3779,8 @@ async function beginWithPaper(pdfFile = null) {
 }
 
 const startupParameters = new URLSearchParams(globalThis.location.search);
+window.addEventListener("beforeunload", closePaperToolSession);
+window.addEventListener("pagehide", closePaperToolSession);
 const forceUploadMode = startupParameters.has("upload");
 const localFixtureMode = !forceUploadMode
   && startupParameters.has("fixture")

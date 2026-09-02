@@ -134,7 +134,7 @@ test("real tool reads need no content refresh and state changes render before th
 
 test("composition uses one state-change render and keeps arrangement separate from source navigation", async () => {
   const source = await readFile(new URL("./app.mjs", import.meta.url), "utf8");
-  const resultHook = source.slice(source.indexOf("    onResult({ tool, input, result })"), source.indexOf("    onError({ tool, input, error })"));
+  const resultHook = source.slice(source.indexOf("    onResult({ tool, input, result, options })"), source.indexOf("    onError({ tool, input, error, options })"));
   assert.ok(resultHook.includes("showToolResult"));
   assert.doesNotMatch(resultHook, /renderState\(/u);
   for (const name of ["renderGraphOutline", "renderGraphSearch"]) {

@@ -5,7 +5,7 @@ import vm from "node:vm";
 import { MultiDirectedGraph } from "graphology";
 import ts from "typescript";
 
-import { createSpikeState, createToolSuite, graphNodeReferencesAnchor } from "./contracts.mjs";
+import { captureWebmcpInput, createSpikeState, createToolSuite, graphNodeReferencesAnchor } from "./contracts.mjs";
 import { projectGraphView } from "./graph-view-model.mjs";
 import { annotationAnchorId, instrumentWebmcpTools, resolveObservedAnchor } from "./webmcp-observer.mjs";
 
@@ -62,13 +62,14 @@ function navigationHarness(state = basicState(), { actualEnsure = false } = {}) 
     return { anchorId };
   };
   const context = vm.createContext({
+    toolSessionGeneration: 0, registrationAttempt: null, pageLeaving: false, DOMException,
     state, selectedGraphNodeKey: null, selectedGraphEdgeKey: null,
     graphNavigationGeneration: 0, pendingGraphNavigation: null, graphToolNavigationGenerations: new WeakMap(),
     lastGraphFocusAnchorId: state.focusAnchorId,
     graphVisibleNodeKeys: new Set(projectGraphView(state.graph).visibleNodeKeys),
     graphVisibleEdgeKeys: new Set(projectGraphView(state.graph).visibleEdgeKeys),
     linkedFocusNodeKeys: new Set(), linkedFocusEdgeKeys: new Set(),
-    graphNodeReferencesAnchor, annotationAnchorId, instrumentWebmcpTools, resolveObservedAnchor,
+    captureWebmcpInput, graphNodeReferencesAnchor, annotationAnchorId, instrumentWebmcpTools, resolveObservedAnchor,
     humanReadable: (value) => value.replaceAll("_", " "),
     elements: { graphLayoutStatus: new ElementStub(), paperStage: new ElementStub(), visualRegionA: new ElementStub() },
     document: { createElement: () => new ElementStub() },

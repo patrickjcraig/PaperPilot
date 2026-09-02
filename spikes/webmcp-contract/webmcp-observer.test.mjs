@@ -5,7 +5,7 @@ import { runInNewContext } from "node:vm";
 
 import { MultiDirectedGraph } from "graphology";
 
-import { createSpikeState, createToolSuite } from "./contracts.mjs";
+import { captureWebmcpInput, createSpikeState, createToolSuite } from "./contracts.mjs";
 
 import {
   TOOL_PRESENTATION_COPY,
@@ -28,6 +28,61 @@ function fixtureState() {
     ]),
   };
 }
+
+test("observer captures immutable input before awaiting a request marker", async () => {
+  let release, entered;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const seen = [];
+  const [tool] = instrumentWebmcpTools([{ name: "paperpilot.read_graph", async execute(input) { seen.push(input); return { status: "ready" }; } }], {
+    captureInput: captureWebmcpInput,
+    async beforeExecute({ input }) { entered = input; await gate; },
+    onResult({ input }) { seen.push(input); },
+  });
+  const caller = { query: "original", nested: { label: "original" } };
+  const pending = tool.execute(caller);
+  caller.query = "changed";
+  caller.nested.label = "changed";
+  assert.equal(entered.query, "original");
+  assert.equal(Object.isFrozen(entered.nested), true);
+  release();
+  await pending;
+  assert.equal(seen.length, 2);
+  assert.equal(seen[0], entered);
+  assert.equal(seen[1], entered);
+  assert.equal(seen[0].nested.label, "original");
+});
+
+test("malformed and oversized input cannot reach observer hooks or invoke accessors", async () => {
+  const state = await createSpikeState(MultiDirectedGraph);
+  let getterCalls = 0, observations = 0;
+  const input = Object.defineProperty({}, "operations", { enumerable: true, get() { getterCalls += 1; return []; } });
+  const [tool] = instrumentWebmcpTools(createToolSuite(state).filter(({ name }) => name === "paperpilot.read_graph"), {
+    captureInput: captureWebmcpInput,
+    beforeExecute() { observations += 1; }, onResult() { observations += 1; }, onError() { observations += 1; },
+  });
+  for (const invalid of [input, { query: "x".repeat(33 * 1024) }]) {
+    const result = await tool.execute(invalid);
+    assert.equal(result.status, "rejected");
+  }
+  assert.equal(getterCalls, 0);
+  assert.equal(observations, 0);
+});
+
+test("aborting a stalled pre-execution marker promptly reaches bounded cancellation without executing a read", async () => {
+  const state = await createSpikeState(MultiDirectedGraph);
+  const controller = new AbortController();
+  const beforeEvents = state.events.length;
+  const [tool] = instrumentWebmcpTools(createToolSuite(state).filter(({ name }) => name === "paperpilot.read_focus"), {
+    captureInput: captureWebmcpInput,
+    beforeExecute() { return new Promise(() => {}); },
+  });
+  const pending = tool.execute({}, { signal: controller.signal });
+  controller.abort();
+  const result = await Promise.race([pending, new Promise((resolve) => setTimeout(() => resolve({ status: "timed_out" }), 200))]);
+  assert.equal(result.status, "rejected");
+  assert.equal(result.code, "request_aborted");
+  assert.equal(state.events.length, beforeEvents);
+});
 
 test("resolves only page-issued source anchors for every mutation family", () => {
   const state = fixtureState();
@@ -114,6 +169,30 @@ test("rolled-back, rejected, and unconfirmed mutation results never receive succ
   }
 });
 
+test("failed and cancelled reads, navigation, and staging never receive successful action copy", () => {
+  for (const toolName of ["paperpilot.read_focus", "paperpilot.read_graph", "paperpilot.focus_source", "paperpilot.stage_explain"]) {
+    for (const status of ["not_found", "no_active_paper", "no_active_focus", "not_navigable", "stale", "navigation_failed", "returned"]) {
+      const trace = createObservedTrace({ state: fixtureState(), toolName, result: { status } });
+      const result = createObservedPresentation(trace);
+      assert.equal(result.phase, "error", `${toolName}: ${status}`);
+      assert.equal(result.flashAnnotation, false);
+      assert.match(result.label, /not completed/);
+    }
+    const cancelled = createObservedPresentation(createObservedTrace({ state: fixtureState(), toolName,
+      result: { status: "rejected", code: "request_aborted" } }));
+    assert.match(cancelled.label, /cancelled/);
+    assert.equal(cancelled.phase, "error");
+  }
+});
+
+test("malformed untrusted source hints cannot break presentation of a rejected callback", () => {
+  for (const input of [null, [], { operations: 42 }, { operations: [null, "bad", { node: { sourceAnchorIds: 7 } }] }, { sourceAnchorIds: "not an array" }]) {
+    for (const toolName of Object.keys(TOOL_PRESENTATION_COPY)) {
+      assert.doesNotThrow(() => createObservedTrace({ state: fixtureState(), toolName, input, result: { status: "rejected" } }));
+    }
+  }
+});
+
 test("only a fresh applied annotation receipt permits an edit flash and visual replay preserves the observed outcome", () => {
   const traceFor = (toolName, status) => createObservedTrace({ state: fixtureState(), toolName, result: { status } });
   const annotation = traceFor("paperpilot.apply_annotation", "applied_reversible");
@@ -146,6 +225,8 @@ test("the app result and replay helpers show rollback errors and remove leftover
   const activity = [];
   const context = {
     state: fixtureState(),
+    toolSessionGeneration: 1,
+    pageLeaving: false,
     createObservedTrace,
     createObservedPresentation,
     lastObservedTrace: null,

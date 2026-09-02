@@ -34,8 +34,8 @@ edits, agent annotations, reader selection creation/removal, and human Undo/Redo
 `state.revisions` is an append-only ledger of deeply frozen canonical patches;
 the Undo and Redo stacks retain original revision records, not full before/after
 workspace snapshots. Temporary clones isolate a transaction and allow rollback,
-but are not retained as history. These are implementation notes, not a claim that
-the item or a deployed release has completed verification.
+but are not retained as history. Item 7's verified release is recorded in
+`docs/release/WORKSPACE-REDUCER-ACCEPTANCE-2026-09-01.md`.
 
 - A patch operation is exactly `{ op, key, before, after }`, with explicit `null`
   for an absent endpoint. `put_node`, `put_edge`, and `put_annotation` retain exact
@@ -58,6 +58,40 @@ the item or a deployed release has completed verification.
   revisions, replay receipts, and events together. Success activity is published
   only after required projection succeeds. Optional observer/storage failure does
   not misreport an actually committed edit as rejected.
+
+## Document-scoped WebMCP lifecycle
+
+The six closed input/result schemas in `contracts.mjs` are the executable wire
+contract. Registration and execution have separate AbortSignal lifetimes. A
+suite becomes callable only after all six registrations succeed; disposing it
+closes retained callbacks immediately and aborts native registrations. A settled
+registration failure permits an explicit retry; manual Dispose asks for reload.
+Cancellation while a native registration is
+still pending locks further registration until a page reload, including after
+switching PDFs, so old and new same-name registrations cannot overlap.
+
+Input is synchronously captured as bounded, detached plain JSON before observer
+hooks or queue waits. Accessors, executable objects, cyclic/sparse structures,
+foreign paper identities, unsafe fields and over-budget data are rejected. The
+document queue checks cancellation on entry and before commit. Failed required
+projections roll back; cancellation or optional observer failure after a real
+commit cannot relabel the edit as rejected. Read results must validate before
+success receipts are published. Recent activity retains at most 500 events,
+independently of the complete bounded revision ledger.
+
+`stage_explain` requires fresh successful focus and graph reads at the current
+workspace revision, then rechecks focus before committing its unsaved proposal.
+Its current schema remains seven plain-text sections with proposal-level source
+and graph references. Per-claim authority/citation blocks are item 9 work, not
+an implemented wire format. Visual regions remain `locator_only` with
+`pixelUseVerified: false`: a human diagnostic trial cannot establish that the
+agent consumed arbitrary PDF pixels.
+
+Regression coverage includes `webmcp-boundary.test.mjs`,
+`webmcp-lifecycle.test.mjs`, `webmcp-app-lifecycle.test.mjs` and
+`webmcp-observer.test.mjs`. The app tests execute extracted production handlers,
+including late registration, disposal during mount, paper replacement, queued
+cancellation, stale callbacks and truthful post-commit activity.
 
 ## Browser-local recovery
 

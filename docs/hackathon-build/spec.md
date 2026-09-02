@@ -825,19 +825,22 @@ The right rail exposes Map, Annotations, and Evidence tabs with roving keyboard 
 
 ## WebMCP Tool Contracts
 
-The initial suite contains six short stable tool names. Gate 0 tests exact named-client registration, schema/result budgets, repeated-call behavior, abort semantics, and autonomous use. If six independent tools prove unreliable, combine schemas without removing the six capabilities.
+The suite contains six short stable tool names. The executable `INPUT_SCHEMAS` and `RESULT_SCHEMAS` in `spikes/webmcp-contract/contracts.mjs` are the authoritative, recursively closed wire contracts. The native browser registers those definitions directly; TypeScript sketches below explain their semantics rather than adding accepted fields. Gate 0 tested the six registrations; item 8 closes integration and failure behavior against the shared reducer. No consolidation is currently needed.
+
+The current [WebMCP draft](https://webmachinelearning.github.io/webmcp/) and [imperative API explainer](https://github.com/webmachinelearning/webmcp/blob/main/README.md), checked 2026-09-02, use `document.modelContext.registerTool(tool, { signal })` for registration and `execute(input, { signal })` for invocation cancellation. Registration abort and invocation abort are distinct lifetimes. PaperPilot additionally guards retained callbacks and every pre-commit asynchronous boundary; it does not assume unregistering alone stops already-running application code. No speculative name-based `unregisterTool` compatibility path is required.
 
 ### Common boundary
 
 - Register in the authenticated/top-level public Reader only after hydration.
-- Use one `AbortController`; partial registration aborts/disposes all tools.
+- Use one suite `AbortController` plus the current document/registration-attempt signal; partial registration aborts/disposes all owned tools. Guard callbacks until the complete suite is ready and after disposal. Combine invocation cancellation with that suite lifetime.
+- A settled registration failure permits explicit retry after owned cleanup. If cancellation interrupts a still-pending native registration, retain a page-lifetime reload-required lock even across paper replacement; never overlap same-name generations. Manual Dispose asks for reload and leaves the local paper readable. No automatic reload may discard unsaved work.
 - Keep tool names stable while trusted refs update for the current paper/focus/graph.
-- With no active PDF, return a local structured `no_active_paper` result and create no false callback event.
-- Validate unknown keys, strings, arrays, IDs, counts, and result bytes.
+- With no active PDF, register no tools and preserve the local intake UI. Retained disposed handles fail closed without exposing the former document. Do not synthesize a content-read event for a callback that never ran.
+- Detach bounded plain JSON before queueing; reject accessors, custom prototypes, cyclic/non-JSON values, unknown keys, malformed strings/arrays/IDs, and count/byte overflow. The six callbacks share the serialized workspace queue. Validate bounded results before publishing read/navigation/stage success or committing mutation success.
 - Paper text, annotation labels, graph labels, and citations are untrusted content, never instructions.
 - Use `textContent`/safe DOM construction for all returned strings.
 - Tool results never contain PDF bytes, localStorage inventory, another paper, another tab, credentials, hidden prompts, or private reasoning.
-- Exact release ceilings: 32 KiB canonical UTF-8 JSON input, 48 KiB UTF-8 serialized result, 50 operations per mutation batch, 600 active/tombstoned graph nodes, 1,200 graph edges, 800 annotations, 200 workspace revisions, 500 provenance events, 100 nodes/200 edges/40 anchor summaries per `read_graph` result, and a 4 MiB browser snapshot. The 48 KiB result ceiling preserves 8,255 bytes of headroom below the 57,407-byte result delivered intact by the named client during the 2026-08-30 contract spike. Strings use field-specific limits and no free-text field exceeds 4,096 Unicode scalar values. Closed parsing rejects unknown keys rather than trimming them.
+- Exact release ceilings: 32 KiB canonical UTF-8 JSON input, 48 KiB UTF-8 serialized result, 50 operations per mutation batch, 600 active/tombstoned graph nodes, 1,200 graph edges, 800 annotations, 200 workspace revisions, 500 recent provenance events, 100 nodes/200 edges per `read_graph` result, and a 4 MiB browser snapshot. The current graph result carries source-anchor references rather than a separate anchor-summary array. The 48 KiB result ceiling preserves 8,255 bytes of headroom below the 57,407-byte result delivered intact by the named client during the 2026-08-30 contract spike. Strings use field-specific limits and no free-text field exceeds 4,096 Unicode scalar values. Closed parsing rejects unknown keys rather than trimming them. Recent-event retention never compacts the canonical revision ledger.
 - Every tool has a closed discriminated result union containing `schemaVersion`, `status`, and a structured safe error code. Gate 0 freezes the compiled JSON Schemas with `additionalProperties: false` at every object level and verifies the byte/count ceilings in the target client.
 
 ### `paperpilot.read_focus`
@@ -853,8 +856,15 @@ Input:
 Output:
 
 ```ts
+type ToolRejectedResultV1 = {
+  schemaVersion: 1;
+  status: "rejected" | "rolled_back";
+  code: string;
+  message: string;
+};
+
 type ReadFocusResultV1 =
-  | { schemaVersion: 1; status: "no_active_focus"; paperRef: string }
+  | ToolRejectedResultV1
   | {
       schemaVersion: 1;
       status: "ready";
@@ -882,6 +892,7 @@ type ReadFocusResultV1 =
         workspaceRevision: number;
         workspaceDigest: Sha256;
         graphDigest: Sha256;
+        annotationDigest: Sha256;
         relatedNodeKeys: string[];
         relatedEdgeKeys: string[];
       };
@@ -893,7 +904,7 @@ type ReadFocusResultV1 =
     };
 ```
 
-The accepted exact quote is returned completely; the UI and callback share one limit. No `.slice()` truncation after freeze is allowed. A visual anchor exposes a stable, semantically named visible PDF region plus geometry/caption metadata, not image bytes. `client_visible_region` and any pixel-use claim are allowed only after the named-client controlled region A/B spike proves the client actually distinguishes visible pixels; otherwise the evidence mode is `locator_only` and the product must not claim visual understanding.
+The accepted exact quote is returned completely; the UI and callback share one limit. No `.slice()` truncation after freeze is allowed. A visual anchor exposes a stable, semantically named visible PDF region plus geometry/caption metadata, not image bytes. The current public release remains `locator_only` with `pixelUseVerified: false`. A diagnostic answer or human confirmation cannot promote all paper regions to pixel-verified authority. Any future `client_visible_region` claim requires separate named-client, source-bound evidence; it is not established by this checkpoint.
 
 ### `paperpilot.read_graph`
 
@@ -921,18 +932,17 @@ Rules:
 - `node` returns a bounded radius around one issued node.
 - Server/page caps the result and sets `truncated: true` plus guidance; it never claims completeness after truncation.
 
-Closed output is `no_active_paper`, `invalid_request`, `not_found`, or `ready`. `ready` includes current workspace revision/digest, graph and annotation sub-digests, coverage ledger, bounded canonical semantic attributes, source-anchor summaries, `truncated`, continuation guidance, and a callback receipt. Layout fields are omitted. No result exceeds 100 nodes, 200 edges, 40 anchor summaries, or the frozen 48 KiB serialized UTF-8 ceiling.
+Current closed output is `ready` or the shared `rejected` error with a safe code. `ready` includes current workspace revision/digest, graph and annotation sub-digests, coverage ledger, bounded canonical semantic attributes with source-anchor references, `truncated`, continuation guidance, and a callback receipt. Resolve an issued source through `focus_source` and `read_focus` for its exact anchor details. Layout fields are omitted. No result exceeds 100 nodes, 200 edges, or the frozen 48 KiB serialized UTF-8 ceiling. Byte limiting removes complete edge/node records, marks `truncated`, and asks for a narrower read; it never slices a source, label, or claim. A still-invalid result is rejected before publishing successful read activity.
 
 ### `paperpilot.focus_source`
 
 Input:
 
 ```ts
-type FocusSourceInputV1 =
-  | { target: "anchor"; anchorId: string }
-  | { target: "node"; nodeKey: string }
-  | { target: "edge"; edgeKey: string }
-  | { target: "section"; nodeKey: string };
+type FocusSourceInputV1 = {
+  targetType: "anchor" | "node" | "edge" | "section";
+  targetId: string; // exact current-paper issued key
+};
 ```
 
 Behavior:
@@ -942,12 +952,39 @@ Behavior:
 - Move the central PDF, apply a temporary visible focus mark, synchronize graph/annotation selection, and announce the page/source.
 - Record `source_focused` only after navigation completes.
 - Return `focused`, the target, anchor/page, alternative count, and callback receipt.
-- Closed result statuses are `focused`, `not_found`, `not_navigable`, `stale`, and `navigation_failed`; errors contain safe codes and no foreign-paper existence detail.
+- The current wire contract returns `focused` on success or the shared closed `rejected` error with a safe code. Errors do not disclose foreign-paper existence. A rejected or cancelled request must not be described as successful navigation.
 - This is UI navigation, not a semantic or PDF mutation.
 
 ### `paperpilot.stage_explain`
 
-Model input:
+Current frozen model input:
+
+```ts
+type StageExplainInputV1 = {
+  focusAnchorId: string;
+  expectedWorkspaceRevision: number;
+  expectedGraphDigest: Sha256;
+  sections: {
+    quickTake: string;       // 1..1200 Unicode scalar values
+    paperFit: string;        // 1..1500
+    prerequisites: string;   // 1..1500
+    howItWorks: string;      // 1..2000
+    paperEvidence: string;   // 1..1500
+    relatedIdeas: string;    // 1..1500
+    limitations: string;     // 1..1500
+  };
+  sourceAnchorIds: string[]; // 1..12, includes focus
+  graphEntityKeys: string[]; // 0..20
+  visualEvidenceMode: "not_applicable" | "client_visible_region" | "locator_only";
+  visualObservation?: string; // 1..1000; required for a visual-region focus
+};
+```
+
+The callback requires fresh focus and graph reads for the current source/revision. It revalidates after asynchronous work before staging. Plain-text section values, current issued sources/graph IDs and the actual evidence mode are mandatory. Failure or cancellation before commit leaves no new explanation or successful stage event. A valid stage is a proposal, not a saved note, semantic workspace revision or scientific verification.
+
+#### Item 9 target: per-claim mentor provenance
+
+The following richer claim-block design remains the next checklist item. It is **not** accepted by item 8's frozen `stage_explain` schema and is not represented as implemented per-claim authority validation:
 
 ```ts
 type MentorExplanationV1 = {
@@ -1011,7 +1048,6 @@ Input:
 
 ```ts
 type ApplyGraphInputV1 = {
-  schemaVersion: 1;
   idempotencyKey: string;
   baseWorkspaceRevision: number;
   baseWorkspaceDigest: Sha256;
@@ -1026,22 +1062,24 @@ Trusted adapter supplies current `paperRef`, durable operation ID, callback rece
 Output:
 
 ```ts
-type ApplyGraphResultV1 = {
+type ApplyGraphResultV1 = ToolRejectedResultV1 | {
   schemaVersion: 1;
-  status: "applied_reversible" | "conflict" | "rolled_back";
+  status: "applied_reversible" | "replayed";
+  replayed: boolean;
+  idempotencyKey: string;
   callbackReceiptId: string;
   operationId: string;
-  revisionId?: string;
+  revisionId: string;
   fromRevision: number;
-  toRevision?: number;
+  toRevision: number;
   beforeWorkspaceDigest: Sha256;
-  afterWorkspaceDigest?: Sha256;
+  afterWorkspaceDigest: Sha256;
   beforeGraphDigest: Sha256;
-  afterGraphDigest?: Sha256;
+  afterGraphDigest: Sha256;
   affected: { created: string[]; updated: string[]; tombstoned: string[]; restored: string[] };
-  undoAvailable: boolean;
+  inverseRetained: true;
+  undoAvailable: true;
   message: string;
-  currentRevision?: number;
 };
 ```
 
@@ -1062,7 +1100,6 @@ Input:
 
 ```ts
 type ApplyAnnotationInputV1 = {
-  schemaVersion: 1;
   idempotencyKey: string;
   baseWorkspaceRevision: number;
   baseWorkspaceDigest: Sha256;
@@ -1313,7 +1350,7 @@ CSS may place Mentor visually left. Each region has a heading and skip link.
 | Selection too large | Select a smaller passage | No silent truncation |
 | Geometry reconciliation mismatch | Rendered-region authority | No exact-text promotion |
 | WebMCP absent | Local Reader/map usable | No native event/style |
-| Partial registration | Tool registration failed + Retry | Abort/dispose all tools |
+| Partial registration | Retry after settled failure; reload required if interrupted while native registration is pending | Abort owned signal, close old callbacks, retain page-lifetime cleanup lock when required |
 | No active focus | Structured `no_active_focus` | No source callback event with content |
 | Unknown/foreign graph key | Not found in this paper | No information leak/mutation |
 | Grounding missing | Grounding required | No paper-grounded entity created |

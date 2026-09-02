@@ -14,7 +14,28 @@
 /** @typedef {{ tool: ExecutableTool, input: Record<string, any>, options: Record<string, any> }} BeforeContext */
 /** @typedef {BeforeContext & { result: any }} ResultContext */
 /** @typedef {BeforeContext & { error: unknown }} ErrorContext */
-/** @typedef {{ beforeExecute?(context: BeforeContext): void | Promise<void>, onResult?(context: ResultContext): void | Promise<void>, onError?(context: ErrorContext): void | Promise<void> }} ToolObservationHooks */
+/** @typedef {{ captureInput?(input: Record<string, any>): Record<string, any>, beforeExecute?(context: BeforeContext): void | Promise<void>, onResult?(context: ResultContext): void | Promise<void>, onError?(context: ErrorContext): void | Promise<void> }} ToolObservationHooks */
+
+/**
+ * A request indicator is optional; a cancelled request must not be held hostage
+ * by its PDF rendering. Only the pre-execution observation is raced. The real
+ * callback then sees the aborted signal and owns its authoritative result.
+ * @param {() => void | Promise<void> | undefined} observe
+ * @param {AbortSignal | undefined} signal
+ * @returns {Promise<void>}
+ */
+function waitForRequestObservation(observe, signal) {
+  if (signal?.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const finish = () => {
+      signal?.removeEventListener("abort", finish);
+      resolve();
+    };
+    signal?.addEventListener("abort", finish, { once: true });
+    try { Promise.resolve(observe()).then(finish, finish); }
+    catch { finish(); }
+  });
+}
 
 export const TOOL_PRESENTATION_COPY = Object.freeze({
   "paperpilot.read_focus": { action: "Focus request reached page", complete: "Focus returned" },
@@ -46,6 +67,8 @@ export function annotationAnchorId(annotation) {
  * @returns {string | null}
  */
 export function resolveObservedAnchor(state, toolName, input = {}, result = {}) {
+  input = input && typeof input === "object" && !Array.isArray(input) ? input : {};
+  result = result && typeof result === "object" && !Array.isArray(result) ? result : {};
   /** @param {unknown} candidate @returns {string | null} */
   const issued = (candidate) => typeof candidate === "string" && state.anchors.has(candidate) ? candidate : null;
   const fallback = issued(state.focusAnchorId);
@@ -53,22 +76,24 @@ export function resolveObservedAnchor(state, toolName, input = {}, result = {}) 
   if (toolName === "paperpilot.focus_source") return issued(result?.anchorId) || fallback;
   if (toolName === "paperpilot.stage_explain") {
     return issued(input.focusAnchorId)
-      || input.sourceAnchorIds?.map(issued).find(Boolean)
+      || (Array.isArray(input.sourceAnchorIds) ? input.sourceAnchorIds.map(issued).find(Boolean) : null)
       || fallback;
   }
   if (toolName === "paperpilot.apply_annotation") {
-    for (const operation of /** @type {ToolOperation[]} */ (input.operations || [])) {
+    for (const operation of /** @type {ToolOperation[]} */ (Array.isArray(input.operations) ? input.operations : [])) {
+      if (!operation || typeof operation !== "object") continue;
       if (operation.anchorId && state.anchors.has(operation.anchorId)) return operation.anchorId;
       const anchorId = annotationAnchorId(state.annotations.get(String(operation.annotationId || "")));
       if (issued(anchorId)) return anchorId;
     }
   }
   if (toolName === "paperpilot.apply_graph") {
-    for (const operation of /** @type {ToolOperation[]} */ (input.operations || [])) {
+    for (const operation of /** @type {ToolOperation[]} */ (Array.isArray(input.operations) ? input.operations : [])) {
+      if (!operation || typeof operation !== "object") continue;
       const sourceAnchorIds = operation.node?.sourceAnchorIds
         || operation.edge?.sourceAnchorIds
         || operation.set?.sourceAnchorIds;
-      const issuedAnchor = sourceAnchorIds?.find((anchorId) => state.anchors.has(anchorId));
+      const issuedAnchor = Array.isArray(sourceAnchorIds) ? sourceAnchorIds.find((anchorId) => state.anchors.has(anchorId)) : null;
       if (issuedAnchor) return issuedAnchor;
     }
   }
@@ -118,12 +143,20 @@ export function createObservedPresentation(trace, { replay = false } = {}) {
     || { complete: "Page callback returned" };
   const mutation = trace.toolName === "paperpilot.apply_graph" || trace.toolName === "paperpilot.apply_annotation";
   const applied = mutation && trace.status === "applied_reversible" && !trace.replayed;
+  const expectedStatus = {
+    "paperpilot.read_focus": "ready", "paperpilot.read_graph": "ready",
+    "paperpilot.focus_source": "focused", "paperpilot.stage_explain": "staged",
+  }[trace.toolName];
   const readableStatus = String(trace.status).replaceAll("_", " ");
   /** @type {"error" | "complete"} */
   let phase = "complete";
   let label;
   let announcement;
-  if (trace.status === "rolled_back") {
+  if (trace.code === "request_aborted" || trace.status === "aborted" || trace.status === "cancelled") {
+    phase = "error";
+    label = "Request cancelled · no completed action";
+    announcement = `PaperPilot cancelled ${trace.toolName} before it completed. No completed read, navigation, explanation, or revision is claimed.`;
+  } else if (trace.status === "rolled_back") {
     phase = "error";
     label = "Change rolled back · no revision kept";
     announcement = `PaperPilot rolled back ${trace.toolName}. The prior workspace was restored; no annotation or graph revision from this callback remains applied.`;
@@ -135,6 +168,10 @@ export function createObservedPresentation(trace, { replay = false } = {}) {
     phase = "error";
     label = `No applied revision receipt · ${readableStatus}`;
     announcement = `PaperPilot returned ${trace.status} from ${trace.toolName}. This is not an applied mutation receipt; no edit is being shown.`;
+  } else if (!mutation && (!expectedStatus || trace.status !== expectedStatus)) {
+    phase = "error";
+    label = `Request not completed · ${readableStatus}`;
+    announcement = `PaperPilot returned ${trace.status} from ${trace.toolName}. The requested action did not complete; no successful source read, navigation, or explanation is claimed.`;
   } else {
     label = trace.replayed ? "Idempotent replay · no new revision" : `${copy.complete} · ${readableStatus}`;
     announcement = `PaperPilot returned ${trace.status} from ${trace.toolName} at page ${trace.pageLabel}. This confirms a page callback, not private model reasoning.`;
@@ -168,12 +205,16 @@ export function instrumentWebmcpTools(rawTools, hooks = {}) {
     return {
       ...tool,
       async execute(input = {}, options = {}) {
-        const before = { tool, input, options };
-        try {
-          await hooks.beforeExecute?.(before);
-        } catch {
-          // A missing visual request indicator does not change tool authority.
+        if (hooks.captureInput) {
+          try { input = hooks.captureInput(input); }
+          catch {
+            // Do not inspect malformed input, accessors, or oversized payloads
+            // in UI hooks. The original boundary supplies the safe rejection.
+            return tool.execute(input, options);
+          }
         }
+        const before = { tool, input, options };
+        await waitForRequestObservation(() => hooks.beforeExecute?.(before), options.signal);
         let result;
         try {
           result = await tool.execute(input, options);
