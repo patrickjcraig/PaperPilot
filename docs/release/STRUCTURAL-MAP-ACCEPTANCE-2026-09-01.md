@@ -2,7 +2,7 @@
 
 Date: 2026-09-01, America/New_York. Browser callbacks continued into 2026-09-02 UTC.
 
-Status: local checklist-item-5 acceptance passed. Publication and fresh public checks are recorded below after deployment. This is an incremental release, not a declaration that checklist items 6–12 are complete.
+Status: checklist-item-5 acceptance passed, deployed, and checked through real public WebMCP callbacks. This is an incremental release, not a declaration that checklist items 6–12 are complete.
 
 ## Scope and boundaries
 
@@ -86,4 +86,25 @@ The Pages builder captures authored source and lockfile identity and applies one
 
 ## Publication record
 
-Pending the checkpoint commit, successful Pages workflow and fresh public smoke test. Until those are recorded, the local receipts above are not public-deployment proof.
+- Public URL: https://patrickjcraig.github.io/PaperPilot/webmcp/
+- Deployed source commit: `60c0bdd2b02572922aaf59ba418ec8dc67228cd5`.
+- Successful clean-install Pages workflow: https://github.com/patrickjcraig/PaperPilot/actions/runs/33581656558 ; deployment completed `2026-09-02T02:02:36Z`.
+- Public content fingerprint observed in the actual entry module URL: `f01075d4d4c20f5cec52294f0c1379f0c567d2dc12130d320757ead0fdf66038`.
+- The public native demo control fetched the exact Attention v7 paper, registered all six tools and produced 15/15 navigable pages plus 10 structural ranges. The older-save preservation notice was also observed on the public origin; the old copy was not read through browser automation, changed, or deleted.
+
+Fresh public receipts, distinct from the local evidence above:
+
+| Capability | Public receipt / outcome |
+| --- | --- |
+| `read_focus` | `callback:339d588f-40cc-4d32-a8ea-dddd888fffa9` |
+| `read_graph` | `callback:593622ae-5a41-48b8-8376-f8a3fb957da4`; 15 pages covered, 10 structural ranges |
+| `focus_source` on generated section | `callback:00023e70-2c6b-44b3-8ad6-4a648b174aca`; exact page-4 range |
+| `focus_source` on semantic source | `callback:9af7d2a2-abbe-4664-8e60-dc6393598366`; exact page-4 scaling anchor |
+| `apply_graph` | `callback:fed5b721-5a81-4fb7-9f00-fbda2931d5ab`; new grounded method node and sourced relation, revision 1→2 |
+| `apply_annotation` | `callback:b0ce682f-822b-49d2-8571-081bb64ee65b`; exact-source in-app note, revision 2→3 |
+| Human Undo/Redo | Annotation and workspace digests returned exactly to the before/after values; revision advanced to 5 |
+| `stage_explain` | `callback:cafc869c-1385-4d64-8115-22769ef8da7f`; source-linked undergraduate mentor draft, not saved or verified |
+
+The final public tab shows page 4, the agent-created note, the staged mentor explanation and the map. All six capability types were genuinely invoked. Fresh warning/error logs were empty. Public test edits remain in that tab only; no public browser-save action was taken. The full final-release cross-PDF/human-accessibility/video matrix remains open under items 10–12.
+
+CI reported one non-blocking maintenance warning: several pinned GitHub Actions target deprecated Node 20 and the runner executed them with Node 24. The job completed successfully; action-version refresh is follow-up maintenance, not silently claimed fixed here.
