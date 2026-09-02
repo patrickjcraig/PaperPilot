@@ -151,8 +151,9 @@ h4 { margin: 3px 0 0; font-size: 16px; }
 .pdf-selection-anchor > .annotation-chip { position: absolute; left: 0; bottom: calc(100% + 3px); width: max-content; max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; box-shadow: 2px 2px 0 rgba(20, 33, 61, .12); }
 .pdf-selection-anchor.is-page-region > .annotation-chip { top: 7px; right: 7px; bottom: auto; left: auto; max-width: calc(100% - 14px); }
 .pdf-selection-anchor.pdf-automatic-map-anchor > .annotation-chip { padding: 4px 7px; color: #463aa4; background: rgba(239, 236, 255, .94); }
-.reader-annotation-composer { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(180px, .9fr) minmax(150px, .55fr) auto; gap: 12px; align-items: end; margin-top: 12px; padding: 14px; border: 1px solid var(--ink); border-radius: 10px; background: #f3fbf8; }
-.annotation-composer-intro { align-self: center; }
+.reader-annotation-composer { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, .65fr) auto; gap: 8px 10px; align-items: end; margin: 0 0 12px; padding: 10px; border: 1px solid var(--ink); border-radius: 10px; background: #f3fbf8; }
+.reader-annotation-composer > * { min-width: 0; }
+.annotation-composer-intro { grid-column: 1 / -1; align-self: center; }
 .annotation-composer-intro h3 { margin: 3px 0 4px; }
 .annotation-composer-intro p:not(.source-kicker),
 .annotation-composer-boundary { margin: 0; color: var(--ink-soft); font-size: 11px; line-height: 1.45; }
@@ -488,12 +489,6 @@ body:not(.is-waiting-for-paper) .status-grid strong { font-size: 11px; }
 .annotation-boundary { font-size: 11px; }
 .annotation-layout-status { font-size: 10px; }
 #graph-evidence-panel > #activity-list { max-height: none; padding-left: 18px; }
-
-@media (max-width: 1500px) {
-  .reader-annotation-composer { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
-  .annotation-composer-intro,
-  .annotation-composer-boundary { grid-column: 1 / -1; }
-}
 
 @media (max-width: 1240px) {
   .workspace { grid-template-columns: minmax(250px, .7fr) minmax(540px, 1.45fr); grid-template-areas: "mentor paper" "rail paper"; }

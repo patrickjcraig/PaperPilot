@@ -271,6 +271,75 @@ test("static controls associate errors, limits and keyboard instructions with di
   assert.match(html, /human trial assessment is not proof of pixel use/u);
 });
 
+function readerMarkup() {
+  const markup = html.match(/<article class="paper-panel"[\s\S]*?<\/article>/u)?.[0];
+  assert.ok(markup, "The centered paper remains a semantic article.");
+  const tree = ts.createSourceFile("reader.tsx", markup, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  assert.equal(tree.parseDiagnostics.length, 0);
+  const article = tree.statements[0].expression;
+  const opening = (element) => ts.isJsxElement(element) ? element.openingElement : element;
+  const attribute = (element, name) => opening(element).attributes.properties
+    .find((property) => ts.isJsxAttribute(property) && property.name.getText(tree) === name)?.initializer?.text;
+  const children = (element) => ts.isJsxElement(element)
+    ? element.children.filter((child) => ts.isJsxElement(child) || ts.isJsxSelfClosingElement(child)) : [];
+  const descendants = (element) => children(element).flatMap((child) => [child, ...descendants(child)]);
+  const elements = descendants(article);
+  const byId = (id) => elements.find((element) => attribute(element, "id") === id);
+  return { article, attribute, children, descendants, byId, opening, tree };
+}
+
+test("the complete annotation form precedes the PDF box in the centered reader DOM", () => {
+  const { article, attribute, children, descendants, byId } = readerMarkup();
+  const form = byId("reader-annotation-form"), stage = byId("paper-stage"), viewer = byId("pdf-viewer");
+  const sections = children(article);
+  assert.ok(sections.includes(form), "The form belongs to the paper panel, outside the PDF box.");
+  assert.ok(sections.indexOf(form) < sections.indexOf(stage), "The whole form must come before the PDF box, not just be visually reordered.");
+  assert.ok(descendants(stage).includes(viewer), "The continuous viewer stays inside its original PDF box.");
+  assert.equal(descendants(stage).includes(form), false);
+  assert.equal(attribute(viewer, "tabindex"), "0");
+  assert.equal(attribute(viewer, "role"), "region");
+  assert.equal(attribute(viewer, "aria-label"), "Scientific paper PDF viewer");
+  assert.ok(html.indexOf('class="paper-panel"') < html.indexOf('class="activity-panel"'));
+  assert.match(css, /\.workspace\s*\{[^}]*grid-template-areas:\s*"mentor paper rail"/u);
+});
+
+test("the relocated form retains one set of controls, their keyboard order and local status associations", () => {
+  const { attribute, descendants, byId, opening, tree } = readerMarkup();
+  const form = byId("reader-annotation-form");
+  const controls = descendants(form).filter((element) => ["button", "input", "select", "textarea"].includes(opening(element).tagName.getText(tree)));
+  const expected = ["use-text-selection", "begin-region-selection", "select-whole-page", "cancel-region-selection",
+    "reader-annotation-label", "reader-node-kind", "create-reader-annotation", "reader-region-description"];
+  assert.deepEqual(controls.map((element) => attribute(element, "id")), expected);
+  const formIds = new Set(descendants(form).map((element) => attribute(element, "id")).filter(Boolean));
+  assert.ok(formIds.has(attribute(form, "aria-labelledby")));
+  for (const control of controls) {
+    const id = attribute(control, "id");
+    assert.equal([...html.matchAll(new RegExp(`id="${id}"`, "gu"))].length, 1, `${id} remains uniquely wired.`);
+    assert.equal(attribute(control, "tabindex"), undefined, `${id} uses natural keyboard order.`);
+    for (const description of (attribute(control, "aria-describedby") || "").split(/\s+/u).filter(Boolean)) {
+      assert.ok(formIds.has(description), `${id} retains its ${description} association inside the form.`);
+    }
+  }
+  assert.equal(attribute(byId("create-reader-annotation"), "type"), "submit");
+  assert.equal(attribute(byId("reader-annotation-error"), "role"), "alert");
+  assert.equal(attribute(byId("reader-selection-status"), "aria-live"), "polite");
+  assert.ok(opening(byId("region-description-field")).attributes.properties.some((property) => property.name?.getText(tree) === "hidden"));
+});
+
+test("the compact annotation toolbar keeps wrapping controls and a natural single-column mobile fallback", () => {
+  const formRule = css.match(/\.reader-annotation-composer\s*\{([^}]*)\}/u)?.[1] || "";
+  assert.match(formRule, /grid-template-columns:\s*minmax\(0, 1fr\) minmax\(0, \.65fr\) auto/u);
+  assert.match(formRule, /margin:\s*0 0 12px/u);
+  assert.doesNotMatch(formRule, /\b(?:height|position|order):/u, "The toolbar must not clip or visually reorder keyboard content.");
+  assert.match(css, /\.reader-annotation-composer > \*\s*\{\s*min-width:\s*0/u);
+  assert.match(css, /\.annotation-source-mode\s*\{[^}]*flex-wrap:\s*wrap/u);
+  const mobile = css.slice(css.indexOf("@media (max-width: 700px)"), css.indexOf("@media (prefers-reduced-motion: reduce)"));
+  assert.match(mobile, /\.reader-annotation-composer,[^{]*\{\s*grid-template-columns:\s*1fr/u);
+  assert.match(mobile, /\.reader-annotation-composer > \*,[^{]*\{\s*grid-column:\s*1/u);
+  assert.match(mobile, /\.annotation-source-mode button\s*\{[^}]*max-width:\s*100%[^}]*white-space:\s*normal/u);
+  assert.match(mobile, /\.pdf-scrollport\s*\{[^}]*min-height:\s*480px/u, "The continuous paper retains its reading space.");
+});
+
 test("reflow and forced-color rules retain readable audit records and explicit error distinctions", () => {
   assert.match(css, /\.annotation-source-mode\s*\{\s*min-width:\s*0;/u);
   assert.match(css, /\.annotation-source-mode span\s*\{[^}]*flex-basis:\s*100%[^}]*overflow-wrap:\s*anywhere/u);

@@ -74,6 +74,45 @@
               <p>The publication stays centered as one continuous paper. Provenance marks bind to its real selectable text.</p>
           </header>
 
+          <form id="reader-annotation-form" class="reader-annotation-composer" aria-labelledby="reader-annotation-heading">
+            <div class="annotation-composer-intro">
+              <p class="source-kicker">Reader → annotation → graph</p>
+              <h3 id="reader-annotation-heading">Turn a passage or region into an idea</h3>
+              <p id="reader-selection-status" role="status" aria-live="polite" aria-atomic="true">Select text on a PDF page, or start a region lens for a figure, equation, or visual detail.</p>
+              <p id="reader-annotation-error" class="reader-annotation-error" role="alert" aria-atomic="true"></p>
+            </div>
+            <div class="annotation-source-mode" role="group" aria-label="Choose annotation source">
+              <button id="use-text-selection" type="button" aria-pressed="true" aria-describedby="reader-selection-status reader-annotation-error region-keyboard-help">Highlight text</button>
+              <button id="begin-region-selection" type="button" aria-pressed="false" aria-describedby="reader-selection-status reader-annotation-error region-keyboard-help">Mark a region</button>
+              <button id="select-whole-page" type="button" aria-describedby="reader-selection-status reader-annotation-error region-keyboard-help">Use whole page</button>
+              <button id="cancel-region-selection" type="button" aria-describedby="reader-selection-status">Cancel selection</button>
+              <span id="region-keyboard-help">Region lens: use Arrow keys to move and Shift + Arrow keys to resize, or drag on a page. Enter confirms; Escape returns to the control that opened it. If keyboard text selection is unavailable, use Mark a region or Use whole page.</span>
+            </div>
+            <label>
+              Idea label
+              <input id="reader-annotation-label" name="label" type="text" maxlength="120" required aria-describedby="reader-annotation-error" placeholder="e.g. Attention removes recurrence" />
+            </label>
+            <label>
+              Node type
+              <select id="reader-node-kind" name="nodeKind">
+                <option value="concept">Concept</option>
+                <option value="main_idea">Main idea</option>
+                <option value="term">Term</option>
+                <option value="method">Method</option>
+                <option value="result">Result</option>
+                <option value="prerequisite">Prerequisite</option>
+                <option value="equation">Equation</option>
+                <option value="figure">Figure</option>
+              </select>
+            </label>
+            <button id="create-reader-annotation" type="submit" aria-describedby="reader-selection-status reader-annotation-error">Add highlight to the graph</button>
+            <label id="region-description-field" class="region-description-field" hidden>
+              Screen-reader description of this region
+              <textarea id="reader-region-description" name="regionDescription" maxlength="600" rows="3" aria-describedby="reader-selection-status reader-annotation-error" placeholder="Describe what is visibly present and why this region matters."></textarea>
+            </label>
+            <p class="annotation-composer-boundary">PaperPilot mints and binds PDF-space geometry to this document. The graph records the result as reader-authored; WebMCP can search and revise the issued node, but it cannot invent source coordinates.</p>
+          </form>
+
           <div id="paper-stage" class="paper-stage">
             <div class="pdf-toolbar" aria-label="PDF viewer controls">
               <div class="pdf-identity">
@@ -119,45 +158,6 @@
               <button id="primary-source-button" type="button" data-focus-anchor="" disabled>Go to current source</button>
               <div id="paper-annotation-summary" class="source-annotation-overlay" role="list" aria-label="Annotations bound to the exact paper passage"></div>
             </div>
-
-            <form id="reader-annotation-form" class="reader-annotation-composer" aria-labelledby="reader-annotation-heading">
-              <div class="annotation-composer-intro">
-                <p class="source-kicker">Reader → annotation → graph</p>
-                <h3 id="reader-annotation-heading">Turn a passage or region into an idea</h3>
-                <p id="reader-selection-status" role="status" aria-live="polite" aria-atomic="true">Select text on a PDF page, or start a region lens for a figure, equation, or visual detail.</p>
-                <p id="reader-annotation-error" class="reader-annotation-error" role="alert" aria-atomic="true"></p>
-              </div>
-              <div class="annotation-source-mode" role="group" aria-label="Choose annotation source">
-                <button id="use-text-selection" type="button" aria-pressed="true" aria-describedby="reader-selection-status reader-annotation-error region-keyboard-help">Highlight text</button>
-                <button id="begin-region-selection" type="button" aria-pressed="false" aria-describedby="reader-selection-status reader-annotation-error region-keyboard-help">Mark a region</button>
-                <button id="select-whole-page" type="button" aria-describedby="reader-selection-status reader-annotation-error region-keyboard-help">Use whole page</button>
-                <button id="cancel-region-selection" type="button" aria-describedby="reader-selection-status">Cancel selection</button>
-                <span id="region-keyboard-help">Region lens: use Arrow keys to move and Shift + Arrow keys to resize, or drag on a page. Enter confirms; Escape returns to the control that opened it. If keyboard text selection is unavailable, use Mark a region or Use whole page.</span>
-              </div>
-              <label>
-                Idea label
-                <input id="reader-annotation-label" name="label" type="text" maxlength="120" required aria-describedby="reader-annotation-error" placeholder="e.g. Attention removes recurrence" />
-              </label>
-              <label>
-                Node type
-                <select id="reader-node-kind" name="nodeKind">
-                  <option value="concept">Concept</option>
-                  <option value="main_idea">Main idea</option>
-                  <option value="term">Term</option>
-                  <option value="method">Method</option>
-                  <option value="result">Result</option>
-                  <option value="prerequisite">Prerequisite</option>
-                  <option value="equation">Equation</option>
-                  <option value="figure">Figure</option>
-                </select>
-              </label>
-              <button id="create-reader-annotation" type="submit" aria-describedby="reader-selection-status reader-annotation-error">Add highlight to the graph</button>
-              <label id="region-description-field" class="region-description-field" hidden>
-                Screen-reader description of this region
-                <textarea id="reader-region-description" name="regionDescription" maxlength="600" rows="3" aria-describedby="reader-selection-status reader-annotation-error" placeholder="Describe what is visibly present and why this region matters."></textarea>
-              </label>
-              <p class="annotation-composer-boundary">PaperPilot mints and binds PDF-space geometry to this document. The graph records the result as reader-authored; WebMCP can search and revise the issued node, but it cannot invent source coordinates.</p>
-            </form>
 
             <details class="visual-diagnostic" aria-labelledby="visual-heading">
               <summary>Controlled visual evidence diagnostic — separate from the paper</summary>
