@@ -8,6 +8,7 @@
  */
 
 export const PAPER_ANALYSIS_VERSION = 1;
+export const PAPER_ANALYSIS_LIMITS = Object.freeze({ pages: 200, linesPerPage: 20_000, charactersPerPage: 200_000, documentCharacters: 2_000_000 });
 
 export const SYSTEM_CANDIDATE_AUTHORITY = "system_derived_candidate";
 
@@ -198,6 +199,7 @@ function normalizedPageRecord(page, orderIndex) {
   }
   const lines = rawLinesForPage(page);
   const text = normalizePaperText(page.text ?? lines.map((line) => line.text).join(" "));
+  if (text.length > PAPER_ANALYSIS_LIMITS.charactersPerPage) throw new RangeError("Normalized page text exceeds the analysis budget.");
   const explicitHeadings = Array.isArray(page.headings)
     ? page.headings.map(lineText).filter(Boolean)
     : [];
@@ -216,7 +218,25 @@ function normalizedPageRecord(page, orderIndex) {
 
 function normalizePages(pages) {
   if (!Array.isArray(pages)) throw new TypeError("PDF pages must be an ordered array.");
+  if (pages.length > PAPER_ANALYSIS_LIMITS.pages) throw new RangeError("Paper analysis exceeds the 200-page browser-local limit.");
+  let documentCharacters = 0;
+  for (const page of pages) {
+    const lines = Array.isArray(page?.lines) ? page.lines : [];
+    const headings = Array.isArray(page?.headings) ? page.headings : [];
+    if (lines.length > PAPER_ANALYSIS_LIMITS.linesPerPage || headings.length > PAPER_ANALYSIS_LIMITS.linesPerPage) throw new RangeError("Paper analysis exceeds the per-page line limit.");
+    let lineCharacters = 0;
+    for (const line of [...lines, ...headings]) {
+      const text = typeof line === "string" ? line : line?.text ?? line?.str ?? line?.value ?? "";
+      if (typeof text !== "string") throw new TypeError("Paper analysis text must be a plain string.");
+      lineCharacters += text.length;
+    }
+    if (page?.text !== undefined && typeof page.text !== "string") throw new TypeError("Paper analysis text must be a plain string.");
+    const characters = Math.max(page?.text?.length || 0, lineCharacters);
+    documentCharacters += characters;
+    if (characters > PAPER_ANALYSIS_LIMITS.charactersPerPage || documentCharacters > PAPER_ANALYSIS_LIMITS.documentCharacters) throw new RangeError("Paper analysis exceeds its bounded extracted-text budget.");
+  }
   const records = pages.map(normalizedPageRecord);
+  if (records.reduce((sum, page) => sum + page.text.length, 0) > PAPER_ANALYSIS_LIMITS.documentCharacters) throw new RangeError("Normalized document text exceeds the analysis budget.");
   const seen = new Set();
   let previous = -1;
   for (const page of records) {
@@ -598,7 +618,8 @@ function conciseLabel(text, topicLabel = null) {
 
 function candidateSegments(pages, pageHeadings, repeatedHeaders) {
   const termCounts = documentTermCounts(pages, repeatedHeaders);
-  const maxTermCount = Math.max(1, ...termCounts.values());
+  let maxTermCount = 1;
+  for (const count of termCounts.values()) maxTermCount = Math.max(maxTermCount, count);
   const segments = [];
   let referencesStarted = false;
 

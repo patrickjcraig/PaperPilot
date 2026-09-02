@@ -5,6 +5,7 @@ import test from "node:test";
 import {
   CRITICAL_IDEA_NODE_KINDS,
   PAPER_ANALYSIS_CLAIM_BOUNDARY,
+  PAPER_ANALYSIS_LIMITS,
   SYSTEM_CANDIDATE_AUTHORITY,
   analyzePaperPages,
   classifyCriticalIdea,
@@ -369,4 +370,29 @@ test("invalid page ordering and duplicate page identity fail closed", () => {
     () => analyzePaperPages([{ pageIndex: 0, text: "First." }, { pageIndex: 0, text: "Duplicate." }]),
     /Duplicate PDF pageIndex/u,
   );
+});
+
+test("analysis rejects oversized page, line, and decoded-text inputs before candidate work", () => {
+  assert.equal(PAPER_ANALYSIS_LIMITS.pages, 200);
+  assert.throws(() => analyzePaperPages(Array.from({ length: 201 }, (_, pageIndex) => ({ pageIndex, text: "" }))), /200-page/u);
+  assert.throws(() => analyzePaperPages([{ pageIndex: 0, lines: Array.from({ length: 20_001 }, () => "x") }]), /line limit/u);
+  assert.throws(() => analyzePaperPages([{ pageIndex: 0, text: "x".repeat(200_001) }]), /extracted-text budget/u);
+  assert.throws(() => analyzePaperPages(Array.from({ length: 11 }, (_, pageIndex) => ({ pageIndex, text: "x".repeat(200_000) }))), /extracted-text budget/u);
+  assert.throws(() => analyzePaperPages([{ pageIndex: 0, text: "ﷺ".repeat(20_000) }]), /Normalized page text/u);
+  assert.throws(() => analyzePaperPages(Array.from({ length: 11 }, (_, pageIndex) => ({ pageIndex, text: "ﷺ ".repeat(10_000) }))), /Normalized document text/u);
+  assert.throws(() => analyzePaperPages([{ pageIndex: 0, text: { toString() { throw new Error("must not coerce"); } } }]), /plain string/u);
+});
+
+test("large bounded term vocabularies do not overflow JavaScript argument limits", () => {
+  const token = (index) => {
+    let value = index, result = "term";
+    for (let place = 0; place < 4; place += 1) { result += String.fromCharCode(97 + value % 26); value = Math.floor(value / 26); }
+    return result;
+  };
+  const pages = Array.from({ length: 8 }, (_, pageIndex) => ({ pageIndex,
+    text: Array.from({ length: 18_000 }, (_, index) => token(pageIndex * 18_000 + index)).join(" "),
+  }));
+  const result = analyzePaperPages(pages);
+  assert.equal(result.pageCount, 8);
+  assert.ok(result.candidates.length <= 18);
 });

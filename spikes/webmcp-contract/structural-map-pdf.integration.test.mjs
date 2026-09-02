@@ -25,6 +25,7 @@ const assetPaths = {
 };
 const viewerSource = await readFile(new URL("./pdf-viewer.mjs", import.meta.url), "utf8");
 const nodeViewerSource = viewerSource
+  .replace('from "./pdf-intake.mjs"', `from ${JSON.stringify(new URL("./pdf-intake.mjs", import.meta.url).href)}`)
   .replace('from "../vendor/pdfjs/pdf.min.mjs";', `from ${JSON.stringify(pdfjsModuleUrl)};`)
   .replace(/const PDFJS_ASSET_URLS = Object\.freeze\(\{[\s\S]*?\}\);/u, `const PDFJS_ASSET_URLS = Object.freeze(${JSON.stringify(assetPaths)});`);
 assert.notEqual(nodeViewerSource, viewerSource, "Node integration must resolve the real pinned PDF.js package.");

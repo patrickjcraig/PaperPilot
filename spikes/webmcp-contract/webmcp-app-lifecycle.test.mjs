@@ -22,7 +22,7 @@ async function harness(modelContext = { registerTool() {} }) {
   } });
   const context = vm.createContext({
     state, tools: [], suiteHandle: null, registrationAttempt: null, registrationClosed: false, cleanupRequiresReload: false,
-    toolSessionGeneration: 0, paperSessionGeneration: 0, pageLeaving: false,
+    toolSessionGeneration: 0, paperSessionGeneration: 0, pageLeaving: false, paperLoadController: null, demoLoadController: null,
     visualKeyRevealed: true, visualTrialObserved: false, graphNavigationGeneration: 0,
     graphToolNavigationGenerations: new WeakMap(), elements, document: { modelContext },
     AbortController, DOMException, captureWebmcpInput, createToolSuite, mountToolSuite, TOOL_NAMES,
@@ -202,6 +202,10 @@ test("navigation cancellation rejects after its PDF await without a successful o
 test("pagehide/beforeunload close the same idempotent session even while native registration is pending", async () => {
   const gate = deferred();
   const h = await harness({ registerTool() { return gate.promise; } });
+  const paperController = new AbortController();
+  const demoController = new AbortController();
+  h.context.paperLoadController = paperController;
+  h.context.demoLoadController = demoController;
   const pending = h.context.registerSuite();
   await flush();
   h.context.closePaperToolSession();
@@ -210,6 +214,9 @@ test("pagehide/beforeunload close the same idempotent session even while native 
   await pending;
   gate.resolve();
   assert.equal(h.context.pageLeaving, true);
+  assert.equal(paperController.signal.aborted, true);
+  assert.equal(demoController.signal.aborted, true);
+  assert.equal(h.context.demoLoadController, null);
   assert.equal(h.context.toolSessionGeneration, generation);
   assert.equal(h.events.some(({ type }) => type === "tool_suite_registered"), false);
   assert.match(source, /addEventListener\("pagehide", closePaperToolSession\)/u);

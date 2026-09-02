@@ -17,6 +17,12 @@
   </head>
   <body class="is-waiting-for-paper">
     <a id="skip-link" class="skip-link" href="#paper-source-gate">Skip to paper intake</a>
+    <nav id="workspace-skip-links" aria-label="Workspace shortcuts" hidden>
+      <a class="skip-link" href="#paper-heading" data-workspace-skip="paper">Skip to paper</a>
+      <a class="skip-link" href="#activity-heading" data-workspace-skip="mentor">Skip to mentor</a>
+      <a class="skip-link" href="#graph-heading" data-workspace-skip="graph">Skip to knowledge graph</a>
+      <a class="skip-link" href="#evidence-heading" data-workspace-skip="evidence">Skip to evidence</a>
+    </nav>
     <header class="topbar">
       <div>
         <p class="eyebrow">PaperPilot · WebMCP research mentor</p>
@@ -32,17 +38,18 @@
         <p>
           PaperPilot reads this file only in this tab, fingerprints the exact bytes, and builds a page-by-page
           structural map. It may then suggest unreviewed ideas grounded in the paper. Nothing is uploaded or written back into the PDF.
+          PDFs can be up to 25 MiB and 200 pages.
         </p>
       </div>
       <div class="paper-start-actions">
-        <button id="load-attention-demo" class="attention-demo-button" type="button">
+        <button id="load-attention-demo" class="attention-demo-button" type="button" aria-describedby="paper-source-gate-status">
           <span>Open the live demo</span>
           <strong>Attention Is All You Need</strong>
           <small>Official arXiv v7 · fetched only when you choose it</small>
         </button>
         <label class="paper-file-picker" for="paper-file-input">
           <span>Or choose your own PDF</span>
-          <input id="paper-file-input" type="file" accept="application/pdf,.pdf" />
+          <input id="paper-file-input" type="file" accept="application/pdf,.pdf" aria-describedby="paper-source-gate-status" />
         </label>
       </div>
       <p id="paper-source-gate-status" role="status" aria-live="polite">Waiting for a PDF from this device.</p>
@@ -62,7 +69,7 @@
           <header class="panel-heading">
             <div>
               <p class="eyebrow">Continuous evidence reader</p>
-              <h2 id="paper-heading">Upload a paper to begin</h2>
+              <h2 id="paper-heading" tabindex="-1">Upload a paper to begin</h2>
             </div>
               <p>The publication stays centered as one continuous paper. Provenance marks bind to its real selectable text.</p>
           </header>
@@ -75,7 +82,7 @@
               </div>
               <div class="pdf-controls">
                 <label for="pdf-page-number">Jump to page</label>
-                <input id="pdf-page-number" type="number" min="1" max="1" value="1" inputmode="numeric" />
+                <input id="pdf-page-number" type="number" min="1" max="1" value="1" inputmode="numeric" aria-describedby="pdf-active-page-description pdf-status" />
                 <span>of <strong id="pdf-page-count">1</strong></span>
                 <span id="pdf-active-page-description" class="pdf-active-page">Page 1 is centered</span>
                 <span class="pdf-control-divider" aria-hidden="true"></span>
@@ -117,18 +124,19 @@
               <div class="annotation-composer-intro">
                 <p class="source-kicker">Reader → annotation → graph</p>
                 <h3 id="reader-annotation-heading">Turn a passage or region into an idea</h3>
-                <p id="reader-selection-status" role="status" aria-live="polite">Select text on a PDF page, or start a region lens for a figure, equation, or visual detail.</p>
+                <p id="reader-selection-status" role="status" aria-live="polite" aria-atomic="true">Select text on a PDF page, or start a region lens for a figure, equation, or visual detail.</p>
+                <p id="reader-annotation-error" class="reader-annotation-error" role="alert" aria-atomic="true"></p>
               </div>
               <div class="annotation-source-mode" role="group" aria-label="Choose annotation source">
-                <button id="use-text-selection" type="button" aria-pressed="true" aria-describedby="reader-selection-status">Highlight text</button>
-                <button id="begin-region-selection" type="button" aria-pressed="false" aria-describedby="reader-selection-status region-keyboard-help">Mark a region</button>
-                <button id="select-whole-page" type="button" aria-describedby="reader-selection-status region-keyboard-help">Use whole page</button>
+                <button id="use-text-selection" type="button" aria-pressed="true" aria-describedby="reader-selection-status reader-annotation-error region-keyboard-help">Highlight text</button>
+                <button id="begin-region-selection" type="button" aria-pressed="false" aria-describedby="reader-selection-status reader-annotation-error region-keyboard-help">Mark a region</button>
+                <button id="select-whole-page" type="button" aria-describedby="reader-selection-status reader-annotation-error region-keyboard-help">Use whole page</button>
                 <button id="cancel-region-selection" type="button" aria-describedby="reader-selection-status">Cancel selection</button>
-                <span id="region-keyboard-help">Region lens: drag on a page, or use Arrow keys to move and Shift + Arrow keys to resize. Enter confirms; Escape cancels.</span>
+                <span id="region-keyboard-help">Region lens: use Arrow keys to move and Shift + Arrow keys to resize, or drag on a page. Enter confirms; Escape returns to the control that opened it. If keyboard text selection is unavailable, use Mark a region or Use whole page.</span>
               </div>
               <label>
                 Idea label
-                <input id="reader-annotation-label" name="label" type="text" maxlength="120" required placeholder="e.g. Attention removes recurrence" />
+                <input id="reader-annotation-label" name="label" type="text" maxlength="120" required aria-describedby="reader-annotation-error" placeholder="e.g. Attention removes recurrence" />
               </label>
               <label>
                 Node type
@@ -143,10 +151,10 @@
                   <option value="figure">Figure</option>
                 </select>
               </label>
-              <button id="create-reader-annotation" type="submit">Add highlight to the graph</button>
+              <button id="create-reader-annotation" type="submit" aria-describedby="reader-selection-status reader-annotation-error">Add highlight to the graph</button>
               <label id="region-description-field" class="region-description-field" hidden>
                 Screen-reader description of this region
-                <textarea id="reader-region-description" name="regionDescription" maxlength="600" rows="3" placeholder="Describe what is visibly present and why this region matters."></textarea>
+                <textarea id="reader-region-description" name="regionDescription" maxlength="600" rows="3" aria-describedby="reader-selection-status reader-annotation-error" placeholder="Describe what is visibly present and why this region matters."></textarea>
               </label>
               <p class="annotation-composer-boundary">PaperPilot mints and binds PDF-space geometry to this document. The graph records the result as reader-authored; WebMCP can search and revise the issued node, but it cannot invent source coordinates.</p>
             </form>
@@ -184,7 +192,7 @@
               <p id="visual-key" class="sealed" aria-live="polite">Key sealed. Ask the client to read one visual region before revealing it.</p>
               <div class="visual-proof-controls">
                 <button id="confirm-visual-proof" type="button" disabled>
-                  Mark controlled pixel-use proof passed
+                  Record human trial assessment (not pixel proof)
                 </button>
                 <span id="visual-mode">Evidence mode: locator_only</span>
               </div>
@@ -205,7 +213,7 @@
         <aside class="activity-panel" aria-labelledby="activity-heading">
           <header>
             <p class="eyebrow">Research mentor</p>
-            <h2 id="activity-heading">Explain what I’m reading</h2>
+            <h2 id="activity-heading" tabindex="-1">Explain what I’m reading</h2>
           </header>
           <section class="mentor-explanation" aria-labelledby="mentor-explanation-heading">
             <div class="mentor-explanation-heading">
@@ -235,10 +243,12 @@
               <p>The PDF bytes stay out of storage. PaperPilot saves only this paper’s fingerprint, graph, in-app annotations, layout, Undo/Redo history, and mentor notes in this browser.</p>
             </div>
             <div class="browser-save-actions">
-              <button id="save-workspace" type="button">Save in this browser</button>
-              <button id="clear-saved-workspace" type="button" disabled>Clear saved copy</button>
+              <button id="save-workspace" type="button" aria-describedby="browser-save-status">Save in this browser</button>
+              <button id="clear-saved-workspace" type="button" aria-describedby="browser-save-status browser-clear-warning" disabled>Clear saved copies</button>
+              <button id="cancel-clear-saved-workspace" type="button" aria-describedby="browser-clear-warning" hidden>Cancel clear</button>
             </div>
-            <p id="browser-save-status" role="status" aria-live="polite">Not saved · active tab only</p>
+            <p id="browser-clear-warning" class="browser-clear-warning" role="status" aria-live="polite" aria-atomic="true" hidden></p>
+            <p id="browser-save-status" role="status" aria-live="polite" aria-atomic="true">Not saved · active tab only</p>
           </section>
           <section class="agent-action-card" aria-labelledby="agent-action-heading">
             <div class="agent-action-title">
@@ -406,7 +416,7 @@
               <ul id="annotation-list" tabindex="-1"><li>Loading annotations…</li></ul>
             </section>
             <section id="graph-evidence-panel" role="tabpanel" aria-labelledby="graph-evidence-tab" tabindex="0" hidden>
-              <h3>Evidence trail</h3>
+              <h3 id="evidence-heading" tabindex="-1">Evidence trail</h3>
               <p class="annotation-boundary">Observed actions, not hidden reasoning. A source link or digest does not verify a scientific claim.</p>
               <ol id="activity-list" tabindex="0" aria-label="Observed WebMCP callback receipts"></ol>
               <details><summary>Registered tool surface</summary><ol id="tool-list"></ol></details>
@@ -416,7 +426,7 @@
                   <div><dt>Schema set SHA-256</dt><dd><code id="schema-set-hash">Computing…</code></dd></div>
                   <div><dt>Input / result ceilings</dt><dd id="byte-ceilings">32 KiB / 48 KiB</dd></div>
                   <div><dt>Runtime pins</dt><dd id="runtime-pins">Loading…</dd></div>
-                  <div><dt>Visual evidence</dt><dd>locator_only until a controlled human-reviewed A/B pass</dd></div>
+                  <div><dt>Visual evidence</dt><dd>locator_only · human trial assessment is not proof of pixel use</dd></div>
                 </dl>
               </details>
               <details><summary>Last structured result</summary><pre id="last-result">No callback observed yet.</pre></details>

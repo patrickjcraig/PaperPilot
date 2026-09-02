@@ -5,6 +5,7 @@ import {
   getDocument,
   version as pdfjsVersion,
 } from "../vendor/pdfjs/pdf.min.mjs";
+import { readBoundedPdfResponse as readPdfResponseBytes } from "./pdf-intake.mjs";
 
 const PDFJS_ASSET_URLS = Object.freeze({
   worker: new URL("../vendor/pdfjs/pdf.worker.min.mjs", import.meta.url).href,
@@ -22,9 +23,17 @@ const DEFAULT_MAX_ZOOM = 3;
 const MAX_DEVICE_PIXEL_RATIO = 2;
 const DEFAULT_PAGE_GAP = 24;
 const DEFAULT_RENDER_RADIUS = 2;
-const DEFAULT_MAX_SELECTION_CHARACTERS = 4_000;
-const DEFAULT_MAX_PDF_BYTES = 64 * 1024 * 1024;
-const DEFAULT_MAX_PDF_PAGES = 300;
+export const PDF_RELEASE_LIMITS = Object.freeze({
+  maxBytes: 25 * 1024 * 1024, maxPages: 200,
+  maxSelectionScalars: 1_200, maxSelectionBytes: 8 * 1024,
+  maxCanvasPixels: 8_000_000, maxCanvasDimension: 8_192, maxPageDimension: 14_400,
+  maxPageTextItems: 20_000, maxPageTextCharacters: 200_000,
+  maxDocumentTextItems: 250_000, maxDocumentTextCharacters: 2_000_000,
+  maxRenderRadius: 2, pageLoadBatch: 4,
+});
+const DEFAULT_MAX_SELECTION_CHARACTERS = PDF_RELEASE_LIMITS.maxSelectionScalars;
+const DEFAULT_MAX_PDF_BYTES = PDF_RELEASE_LIMITS.maxBytes;
+const DEFAULT_MAX_PDF_PAGES = PDF_RELEASE_LIMITS.maxPages;
 
 export const ATTENTION_PDF = Object.freeze({
   title: "Attention Is All You Need",
@@ -72,6 +81,125 @@ export class PaperPdfError extends Error {
     this.name = "PaperPdfError";
     this.code = code;
   }
+}
+
+const PDF_ERROR_MESSAGES = Object.freeze({
+  PDF_LOAD_ABORTED: "PDF loading was cancelled. No replacement document was opened.",
+  PDF_TOO_LARGE: "The selected PDF exceeds the 25 MiB browser-local limit. Choose a smaller PDF.",
+  PDF_EMPTY: "The selected PDF is empty.",
+  PDF_SIGNATURE_MISMATCH: "The selected file does not begin with a PDF signature.",
+  PDF_ENCRYPTED: "Password-protected or encrypted PDFs are not supported. Choose an unencrypted PDF.",
+  PDF_INVALID: "The PDF is corrupt or unsupported and could not be opened.",
+  PDF_PAGE_LIMIT_EXCEEDED: "The PDF exceeds the 200-page browser-local limit. Choose a shorter PDF.",
+  PDF_PAGE_GEOMETRY_LIMIT: "A PDF page exceeds the supported page-dimension limit. This document cannot be opened safely.",
+  PDF_PAGE_COUNT_INVALID: "The PDF has an invalid page count.",
+  PDF_PAGE_COUNT_MISMATCH: "The PDF page count does not match the expected document.",
+  PDF_SHA256_MISMATCH: "The PDF bytes do not match the expected document fingerprint.",
+  PDF_BYTE_LENGTH_MISMATCH: "The PDF size does not match the expected document.",
+  PDF_FETCH_FAILED: "The selected PDF could not be loaded. Try opening a local PDF instead.",
+  PDF_SOURCE_UNAVAILABLE: "The expected exact source could not be located in this PDF.",
+  PDF_SOURCE_MATCH_COUNT: "The exact source was missing or ambiguous in the rendered PDF text.",
+  PDF_CANVAS_UNAVAILABLE: "The browser could not create a PDF canvas. Try reopening the document.",
+  PDF_VIEWER_FAILED: "The selected PDF could not be rendered. Choose a valid PDF and try again.",
+});
+
+/** Never disclose PDF parser messages, filenames, paths, URLs, or stack traces. */
+export function safePdfError(error) {
+  const parserCode = error?.name === "PasswordException" ? "PDF_ENCRYPTED"
+    : ["InvalidPDFException", "FormatError"].includes(error?.name) ? "PDF_INVALID"
+      : ["AbortError", "AbortException"].includes(error?.name) ? "PDF_LOAD_ABORTED" : "PDF_VIEWER_FAILED";
+  const code = error instanceof PaperPdfError && Object.hasOwn(PDF_ERROR_MESSAGES, error.code) ? error.code : parserCode;
+  return new PaperPdfError(code, PDF_ERROR_MESSAGES[code]);
+}
+
+function assertPdfNotAborted(signal) {
+  if (signal?.aborted) throw new PaperPdfError("PDF_LOAD_ABORTED", PDF_ERROR_MESSAGES.PDF_LOAD_ABORTED);
+}
+
+/** Stream only an explicitly selected response; never allocate an unbounded body. */
+export async function readBoundedPdfResponse(response, { maxBytes = PDF_RELEASE_LIMITS.maxBytes, signal } = {}) {
+  const limit = Number.isSafeInteger(maxBytes) && maxBytes > 0 ? Math.min(maxBytes, PDF_RELEASE_LIMITS.maxBytes) : PDF_RELEASE_LIMITS.maxBytes;
+  try {
+    return await readPdfResponseBytes(response, { maxBytes: limit, signal });
+  } catch (error) {
+    const code = error?.code === "intake_cancelled" ? "PDF_LOAD_ABORTED"
+      : error?.code === "demo_size_limit" ? "PDF_TOO_LARGE"
+        : error?.code === "demo_empty" ? "PDF_EMPTY" : "PDF_FETCH_FAILED";
+    throw new PaperPdfError(code, PDF_ERROR_MESSAGES[code]);
+  }
+}
+
+/** Bound backing-store allocation without changing CSS/text/anchor coordinates. */
+export function calculatePdfCanvasAllocation(viewport, devicePixelRatio = 1) {
+  const width = Number(viewport?.width), height = Number(viewport?.height);
+  if (![width, height].every((value) => Number.isFinite(value) && value > 0 && value <= PDF_RELEASE_LIMITS.maxPageDimension * DEFAULT_MAX_ZOOM)) {
+    throw new PaperPdfError("PDF_PAGE_GEOMETRY_LIMIT", PDF_ERROR_MESSAGES.PDF_PAGE_GEOMETRY_LIMIT);
+  }
+  const ratio = clamp(Number(devicePixelRatio) || 1, 1, MAX_DEVICE_PIXEL_RATIO);
+  const scale = Math.min(ratio, Math.sqrt(PDF_RELEASE_LIMITS.maxCanvasPixels / (width * height)),
+    PDF_RELEASE_LIMITS.maxCanvasDimension / width, PDF_RELEASE_LIMITS.maxCanvasDimension / height);
+  const pixelWidth = Math.max(1, Math.floor(width * scale));
+  const pixelHeight = Math.max(1, Math.floor(height * scale));
+  return Object.freeze({ width: pixelWidth, height: pixelHeight, scaleX: pixelWidth / width, scaleY: pixelHeight / height, limited: scale < ratio });
+}
+
+/** Reject rather than clip an over-limit embedded text stream. */
+export function assertPdfTextContentWithinLimits(textContent) {
+  const items = textContent?.items;
+  if (!Array.isArray(items) || items.length > PDF_RELEASE_LIMITS.maxPageTextItems) throw new PaperPdfError("PDF_TEXT_LIMIT_EXCEEDED", "This page exceeds the selectable-text item limit; use its rendered region instead.");
+  let textCharacters = 0;
+  for (const item of items) {
+    if (typeof item?.str === "string") textCharacters += item.str.length;
+    if (textCharacters > PDF_RELEASE_LIMITS.maxPageTextCharacters) throw new PaperPdfError("PDF_TEXT_LIMIT_EXCEEDED", "This page exceeds the selectable-text size limit; use its rendered region instead.");
+  }
+  return Object.freeze({ itemCount: items.length, textCharacters });
+}
+
+/** The viewer and minted anchor share one scalar/UTF-8 selection ceiling. */
+export function assertPdfSelectionWithinLimits(text, requestedMaximum = PDF_RELEASE_LIMITS.maxSelectionScalars) {
+  const maximum = clamp(asPositiveInteger(requestedMaximum, PDF_RELEASE_LIMITS.maxSelectionScalars), 1, PDF_RELEASE_LIMITS.maxSelectionScalars);
+  const scalarCount = [...text].length;
+  const utf8Bytes = new TextEncoder().encode(text).byteLength;
+  if (scalarCount > maximum || utf8Bytes > PDF_RELEASE_LIMITS.maxSelectionBytes) {
+    throw new PaperPdfError("PDF_SELECTION_TOO_LARGE", `The selection exceeds ${maximum} Unicode characters or 8 KiB of text. Select a shorter passage.`);
+  }
+  return Object.freeze({ scalarCount, utf8Bytes });
+}
+
+/** Avoid dispatching all admitted pages to the worker concurrently. */
+export async function loadBoundedPdfPageProxies(pdfDocument, { signal, assertCurrent = () => {} } = {}) {
+  const pageCount = assertPdfPageCountWithinLimit(pdfDocument.numPages);
+  const pages = [];
+  for (let start = 0; start < pageCount; start += PDF_RELEASE_LIMITS.pageLoadBatch) {
+    assertPdfNotAborted(signal); assertCurrent();
+    const batch = await Promise.all(Array.from({ length: Math.min(PDF_RELEASE_LIMITS.pageLoadBatch, pageCount - start) }, (_, index) => pdfDocument.getPage(start + index + 1)));
+    assertPdfNotAborted(signal); assertCurrent();
+    pages.push(...batch);
+  }
+  return pages;
+}
+
+/** Release owned DOM/buffers before awaiting worker shutdown, never a later page's DOM. */
+export async function releasePdfViewerResources({ pageRecords, anchorOverlays, cleanupCallbacks, loadingTask }) {
+  const attempt = (action) => { try { action(); } catch { /* Continue releasing independent resources. */ } };
+  for (const cleanup of cleanupCallbacks.splice(0)) attempt(cleanup);
+  for (const overlay of anchorOverlays.values()) { attempt(() => overlay.svg?.remove()); attempt(() => overlay.target?.remove()); }
+  anchorOverlays.clear();
+  for (const record of pageRecords.values()) {
+    record.generation += 1;
+    attempt(() => record.renderTask?.cancel?.());
+    attempt(() => record.textLayer?.cancel?.());
+    attempt(() => record.textLayerElement.replaceChildren());
+    attempt(() => record.textLimitationElement?.remove());
+    attempt(() => record.annotationOverlay.replaceChildren());
+    attempt(() => { record.canvas.width = 1; record.canvas.height = 1; });
+    attempt(() => record.pdfPage?.cleanup?.());
+    if (record.pageNumber !== 1) attempt(() => record.surface.remove());
+    record.textContentPromise = null;
+    record.renderTask = null; record.textLayer = null; record.renderPromise = null;
+  }
+  pageRecords.clear();
+  try { await loadingTask?.destroy?.(); } catch { /* Cancelled loading tasks may reject during shutdown. */ }
 }
 
 class StalePdfRenderError extends Error {
@@ -146,7 +274,7 @@ export function clampPdfPageNumber(value, pageCount, fallback = 1) {
 
 export function assertPdfPageCountWithinLimit(pageCount, maxPdfPages = DEFAULT_MAX_PDF_PAGES) {
   const count = Number(pageCount);
-  const maximum = Number(maxPdfPages);
+  const maximum = Math.min(Number(maxPdfPages), DEFAULT_MAX_PDF_PAGES);
   if (!Number.isInteger(count) || count < 1) {
     throw new PaperPdfError("PDF_PAGE_COUNT_INVALID", "PDF.js returned an invalid page count.");
   }
@@ -339,13 +467,14 @@ async function bytesFromPdfInput(value) {
  * or publisher-integrity claim.
  */
 export async function preparePdfDocumentSource(options = {}) {
+  assertPdfNotAborted(options.signal);
   const descriptor = options.documentSource || {};
   const input = descriptor.bytes ?? descriptor.file ?? options.pdfBytes ?? options.pdfFile;
   if (input === undefined || input === null) return null;
 
-  const declaredSize = Number(descriptor.byteLength ?? input?.size);
+  const declaredSize = Number(descriptor.byteLength ?? input?.size ?? input?.byteLength);
   const maxBytes = Number.isInteger(options.maxPdfBytes) && options.maxPdfBytes > 0
-    ? options.maxPdfBytes
+    ? Math.min(options.maxPdfBytes, DEFAULT_MAX_PDF_BYTES)
     : DEFAULT_MAX_PDF_BYTES;
   if (Number.isFinite(declaredSize) && declaredSize > maxBytes) {
     throw new PaperPdfError(
@@ -355,6 +484,7 @@ export async function preparePdfDocumentSource(options = {}) {
   }
 
   const bytes = await bytesFromPdfInput(input);
+  assertPdfNotAborted(options.signal);
   if (bytes.byteLength === 0 || bytes.byteLength > maxBytes) {
     throw new PaperPdfError(
       bytes.byteLength === 0 ? "PDF_EMPTY" : "PDF_TOO_LARGE",
@@ -368,11 +498,12 @@ export async function preparePdfDocumentSource(options = {}) {
   }
 
   const sha256 = await sha256Hex(bytes);
+  assertPdfNotAborted(options.signal);
   const expectedSha256 = descriptor.expectedSha256 ?? options.expectedSha256;
   if (expectedSha256 !== undefined && String(expectedSha256).toLowerCase() !== sha256) {
     throw new PaperPdfError(
       "PDF_SHA256_MISMATCH",
-      `The selected PDF SHA-256 is ${sha256}; expected ${String(expectedSha256).toLowerCase()}.`,
+      PDF_ERROR_MESSAGES.PDF_SHA256_MISMATCH,
     );
   }
   const expectedByteLength = descriptor.expectedByteLength ?? options.expectedByteLength;
@@ -986,6 +1117,7 @@ export function buildPdfPageTextRecord({
   pageViewBox = viewport?.viewBox,
   pageRotation = viewport?.rotation ?? 0,
 } = {}) {
+  assertPdfTextContentWithinLimits({ items: textItems });
   const safePageIndex = Number(pageIndex);
   if (!Number.isInteger(safePageIndex) || safePageIndex < 0) {
     throw new PaperPdfError("PDF_TEXT_INDEX_INVALID", "A nonnegative PDF page index is required.");
@@ -1033,9 +1165,12 @@ export function buildPdfPageTextRecord({
     currentLine = null;
   };
 
+  let normalizedCharacters = 0;
   for (const [sourceItemIndex, item] of textItems.entries()) {
     if (!item || typeof item !== "object" || typeof item.str !== "string") continue;
     const itemText = item.str.normalize("NFKC");
+    normalizedCharacters += itemText.length;
+    if (normalizedCharacters > PDF_RELEASE_LIMITS.maxPageTextCharacters) throw new PaperPdfError("PDF_TEXT_LIMIT_EXCEEDED", "Normalized page text exceeds the text index limit; use its rendered region instead.");
     const itemBounds = pdfTextItemNormalizedBounds(item, viewport);
     const itemFlow = pdfTextItemFlow(item, viewport);
     if (currentLine && shouldStartNewTextLine(currentLine, itemBounds)) flushLine();
@@ -1090,6 +1225,7 @@ function freezeOutlineResult(value) {
 
 function boundedOutlineTitle(value) {
   return String(value ?? "")
+    .slice(0, 320)
     .normalize("NFKC")
     .replace(/[\u0000-\u001f\u007f-\u009f]/gu, " ")
     .replace(/\s+/gu, " ")
@@ -1109,7 +1245,8 @@ function boundedOutlineTitle(value) {
  *   getPageIndex?: (reference: unknown) => Promise<number>,
  * }} pdfDocument
  */
-export async function resolvePdfOutline(pdfDocument) {
+export async function resolvePdfOutline(pdfDocument, { signal } = {}) {
+  assertPdfNotAborted(signal);
   const pageCount = Number(pdfDocument?.numPages);
   if (!Number.isInteger(pageCount) || pageCount < 1 || typeof pdfDocument?.getOutline !== "function") {
     return freezeOutlineResult({
@@ -1124,16 +1261,18 @@ export async function resolvePdfOutline(pdfDocument) {
   let outline;
   try {
     outline = await pdfDocument.getOutline();
-  } catch (error) {
+  } catch {
+    assertPdfNotAborted(signal);
     return freezeOutlineResult({
       status: "failed",
       itemCount: 0,
       resolvedCount: 0,
       unresolvedCount: 0,
-      limitation: error?.name || "outline_read_failed",
+      limitation: "outline_read_failed",
       entries: [],
     });
   }
+  assertPdfNotAborted(signal);
   if (!Array.isArray(outline) || outline.length === 0) {
     return freezeOutlineResult({
       status: "absent",
@@ -1147,7 +1286,8 @@ export async function resolvePdfOutline(pdfDocument) {
   const flat = [];
   const visit = (items, depth) => {
     for (const item of items || []) {
-      if (!item || typeof item !== "object" || flat.length >= 512) continue;
+      if (flat.length >= 512) break;
+      if (!item || typeof item !== "object") continue;
       flat.push({ item, depth, order: flat.length });
       if (Array.isArray(item.items) && depth < 12) visit(item.items, depth + 1);
     }
@@ -1157,6 +1297,7 @@ export async function resolvePdfOutline(pdfDocument) {
   const entries = [];
   let unresolvedCount = 0;
   for (const { item, depth, order } of flat) {
+    assertPdfNotAborted(signal);
     const title = boundedOutlineTitle(item.title);
     if (!title || item.dest === undefined || item.dest === null) {
       unresolvedCount += 1;
@@ -1175,11 +1316,13 @@ export async function resolvePdfOutline(pdfDocument) {
         : typeof pdfDocument.getPageIndex === "function"
           ? Number(await pdfDocument.getPageIndex(pageReference))
           : Number.NaN;
+      assertPdfNotAborted(signal);
       if (!Number.isInteger(pageIndex) || pageIndex < 0 || pageIndex >= pageCount) {
         throw new Error("Outline destination is outside the active PDF.");
       }
       entries.push({ title, pageIndex, depth, order });
     } catch {
+      assertPdfNotAborted(signal);
       unresolvedCount += 1;
     }
   }
@@ -1289,7 +1432,9 @@ function isExpectedCancellation(error) {
     || error instanceof RenderingCancelledException
     || error?.name === "RenderingCancelledException"
     || error?.name === "AbortException"
-    || error?.name === "AbortError";
+    || error?.name === "AbortError"
+    || error?.code === "PDF_LOAD_ABORTED"
+    || error?.code === "PDF_TEXT_INDEX_ABORTED";
 }
 
 /**
@@ -1459,41 +1604,41 @@ export async function initializePaperPdfViewer(options = {}) {
     documentTextIndex: null,
     documentTextPromise: null,
     regionSelection: null,
+    regionGeneration: 0,
+    selectionGeneration: 0,
   };
   const minZoom = Number.isFinite(options.minZoom) ? options.minZoom : DEFAULT_MIN_ZOOM;
-  const maxZoom = Number.isFinite(options.maxZoom) ? options.maxZoom : DEFAULT_MAX_ZOOM;
+  const maxZoom = Number.isFinite(options.maxZoom) ? Math.min(options.maxZoom, DEFAULT_MAX_ZOOM) : DEFAULT_MAX_ZOOM;
   const zoomStep = Number.isFinite(options.zoomStep) ? options.zoomStep : DEFAULT_ZOOM_STEP;
   const horizontalPadding = Number.isFinite(options.horizontalPadding)
     ? Math.max(0, Number(options.horizontalPadding))
     : null;
   const pageGap = Number.isFinite(options.pageGap) ? Math.max(0, options.pageGap) : DEFAULT_PAGE_GAP;
   const renderRadius = Number.isInteger(options.renderRadius)
-    ? Math.max(0, options.renderRadius)
+    ? clamp(options.renderRadius, 0, PDF_RELEASE_LIMITS.maxRenderRadius)
     : DEFAULT_RENDER_RADIUS;
   const maxSelectionCharacters = Number.isInteger(options.maxSelectionCharacters)
-    ? Math.max(1, options.maxSelectionCharacters)
+    ? clamp(options.maxSelectionCharacters, 1, DEFAULT_MAX_SELECTION_CHARACTERS)
     : DEFAULT_MAX_SELECTION_CHARACTERS;
   const maxPdfPages = Number.isInteger(options.maxPdfPages) && options.maxPdfPages > 0
-    ? options.maxPdfPages
+    ? Math.min(options.maxPdfPages, DEFAULT_MAX_PDF_PAGES)
     : DEFAULT_MAX_PDF_PAGES;
 
   const emitStatus = (kind, message, details = {}) => {
     viewer.dataset.pdfState = kind;
     if (controls.status) controls.status.textContent = message;
-    options.onStatus?.({ kind, message, ...details });
+    try { options.onStatus?.({ kind, message, ...details }); } catch { /* Presentation observers do not own PDF lifecycle. */ }
   };
 
   const fail = (error) => {
-    const wrapped = error instanceof PaperPdfError
-      ? error
-      : new PaperPdfError("PDF_VIEWER_FAILED", error?.message || "The selected paper could not be rendered.", { cause: error });
+    const wrapped = safePdfError(error);
     const alreadyFailed = state.failed;
     state.failed = true;
     viewer.dataset.pdfState = "error";
     viewer.setAttribute("aria-busy", "false");
     if (anchorTarget) anchorTarget.hidden = true;
     emitStatus("error", wrapped.message, { code: wrapped.code });
-    if (!alreadyFailed) options.onError?.(wrapped);
+    if (!alreadyFailed) { try { options.onError?.(wrapped); } catch { /* Preserve the actual safe failure. */ } }
     return wrapped;
   };
 
@@ -1504,8 +1649,8 @@ export async function initializePaperPdfViewer(options = {}) {
   };
 
   const safelyHandle = (action) => {
-    Promise.resolve().then(action).catch((error) => {
-      if (!isExpectedCancellation(error) && !state.failed) fail(error);
+    Promise.resolve().then(() => { if (!state.destroyed) return action(); }).catch((error) => {
+      if (!isExpectedCancellation(error) && !state.failed && !state.destroyed) fail(error);
     });
   };
 
@@ -1536,6 +1681,10 @@ export async function initializePaperPdfViewer(options = {}) {
   };
 
   const createPageRecord = (pageNumber, pdfPage) => {
+    const baseViewport = pdfPage.getViewport({ scale: 1 });
+    if (![baseViewport.width, baseViewport.height].every((value) => Number.isFinite(value) && value > 0 && value <= PDF_RELEASE_LIMITS.maxPageDimension)) {
+      throw new PaperPdfError("PDF_PAGE_GEOMETRY_LIMIT", PDF_ERROR_MESSAGES.PDF_PAGE_GEOMETRY_LIMIT);
+    }
     let surface;
     let canvas;
     let textLayerElement;
@@ -1572,7 +1721,6 @@ export async function initializePaperPdfViewer(options = {}) {
       lineHeight: "1.4", pointerEvents: "none",
     });
     surface.append(textLimitationElement);
-    const baseViewport = pdfPage.getViewport({ scale: 1 });
     const record = {
       pageNumber,
       pageIndex: pageNumber - 1,
@@ -1744,11 +1892,14 @@ export async function initializePaperPdfViewer(options = {}) {
   };
 
   const loadPageTextContent = (record) => {
+    if (record.textContentError) return Promise.reject(record.textContentError);
     if (record.textContentPromise) return record.textContentPromise;
     record.textContentPromise = record.pdfPage
       .getTextContent({ includeMarkedContent: true })
+      .then((textContent) => { assertPdfTextContentWithinLimits(textContent); return textContent; })
       .catch((error) => {
         record.textContentPromise = null;
+        if (error?.code === "PDF_TEXT_LIMIT_EXCEEDED") record.textContentError = error;
         throw error;
       });
     return record.textContentPromise;
@@ -1807,9 +1958,10 @@ export async function initializePaperPdfViewer(options = {}) {
       }
       assertLivePageRender(record, generation, zoomGeneration, scale);
       const viewport = applyPageDimensions(record, scale);
-      const devicePixelRatio = clamp(globalThis.devicePixelRatio || 1, 1, MAX_DEVICE_PIXEL_RATIO);
-      record.canvas.width = Math.max(1, Math.ceil(viewport.width * devicePixelRatio));
-      record.canvas.height = Math.max(1, Math.ceil(viewport.height * devicePixelRatio));
+      const allocation = calculatePdfCanvasAllocation(viewport, globalThis.devicePixelRatio || 1);
+      record.canvas.width = allocation.width;
+      record.canvas.height = allocation.height;
+      record.surface.dataset.canvasResolution = allocation.limited ? "bounded" : "native";
       record.canvas.setAttribute("aria-label", `Rendered page ${record.pageNumber} of ${state.pdfDocument.numPages}`);
       record.textLayerElement.replaceChildren();
 
@@ -1824,9 +1976,10 @@ export async function initializePaperPdfViewer(options = {}) {
           record.renderTask = record.pdfPage.render({
             canvasContext,
             viewport,
-            transform: devicePixelRatio === 1
+            annotationMode: 1,
+            transform: allocation.scaleX === 1 && allocation.scaleY === 1
               ? undefined
-              : [devicePixelRatio, 0, 0, devicePixelRatio, 0, 0],
+              : [allocation.scaleX, 0, 0, allocation.scaleY, 0, 0],
           });
           await record.renderTask.promise;
         },
@@ -2213,6 +2366,8 @@ export async function initializePaperPdfViewer(options = {}) {
     maxCharacters = maxSelectionCharacters,
     clearSelection = false,
   } = {}) => {
+    const selectionGeneration = ++state.selectionGeneration;
+    if (state.destroyed || state.failed) throw new PaperPdfError("PDF_SELECTION_STALE", "The PDF is no longer active.");
     if (!selection || selection.rangeCount !== 1 || selection.isCollapsed) {
       throw new PaperPdfError("PDF_SELECTION_EMPTY", "Select a nonempty passage inside one rendered PDF page.");
     }
@@ -2239,18 +2394,11 @@ export async function initializePaperPdfViewer(options = {}) {
       throw new PaperPdfError("PDF_SELECTION_DETACHED", "The selection must be wholly inside one mounted PDF text layer.");
     }
     const exactText = normalizePdfText(range.toString());
-    const safeMaximum = Math.max(1, asPositiveInteger(maxCharacters, maxSelectionCharacters));
     if (!exactText) {
       range.detach?.();
       throw new PaperPdfError("PDF_SELECTION_EMPTY", "The PDF selection contains no readable text.");
     }
-    if (exactText.length > safeMaximum) {
-      range.detach?.();
-      throw new PaperPdfError(
-        "PDF_SELECTION_TOO_LARGE",
-        `The selection has ${exactText.length} characters; the limit is ${safeMaximum}.`,
-      );
-    }
+    try { assertPdfSelectionWithinLimits(exactText, maxCharacters); } catch (error) { range.detach?.(); throw error; }
     const clientRects = mergeClientRectsByLine(uniqueVisibleClientRects(range));
     const pageRect = record.surface.getBoundingClientRect();
     const rects = normalizeClientRects(clientRects, pageRect);
@@ -2291,6 +2439,7 @@ export async function initializePaperPdfViewer(options = {}) {
     if (
       state.destroyed
       || state.failed
+      || selectionGeneration !== state.selectionGeneration
       || !record.surface.isConnected
       || record.generation !== capturedGeneration
       || record.renderedScale === null
@@ -2393,6 +2542,7 @@ export async function initializePaperPdfViewer(options = {}) {
   };
 
   const cancelRegionSelection = ({ notify = true } = {}) => {
+    state.regionGeneration += 1;
     const selection = state.regionSelection;
     if (!selection) return false;
     state.regionSelection = null;
@@ -2415,9 +2565,13 @@ export async function initializePaperPdfViewer(options = {}) {
     if (!state.pdfDocument || state.destroyed || state.failed) {
       throw new PaperPdfError("PDF_VIEWER_UNAVAILABLE", "The verified PDF viewer is not available.");
     }
-    if (state.regionSelection) cancelRegionSelection({ notify: false });
+    cancelRegionSelection({ notify: false });
+    const regionGeneration = state.regionGeneration;
     const targetPage = resolveStrictPageNumber({ pageNumber });
     await showPage(targetPage, { behavior: "auto", block: "center" });
+    if (state.destroyed || state.failed || regionGeneration !== state.regionGeneration || !pageRecords.get(targetPage)?.viewport) {
+      throw new PaperPdfError("PDF_REGION_SELECTION_STALE", "The requested PDF region was cancelled or superseded.");
+    }
     const bounds = normalizeDraggedRegion(
       { x: Number(initialBounds.x), y: Number(initialBounds.y) },
       { x: Number(initialBounds.x) + Number(initialBounds.width), y: Number(initialBounds.y) + Number(initialBounds.height) },
@@ -2448,6 +2602,8 @@ export async function initializePaperPdfViewer(options = {}) {
       throw new PaperPdfError("PDF_REGION_SELECTION_STALE", "The selected page changed before its region could be frozen.");
     }
     const normalizedBounds = Object.freeze([{ ...selection.bounds }]);
+    const capturedGeneration = record.generation;
+    const capturedViewport = record.viewport;
     const pageViewBox = freezePdfPageViewBox(record.viewport.viewBox || record.baseViewport.viewBox);
     const pdfQuads = Object.freeze([pdfQuadFromNormalizedRegion(selection.bounds, record.viewport)]);
     const rendererRecipe = Object.freeze({
@@ -2468,7 +2624,9 @@ export async function initializePaperPdfViewer(options = {}) {
       rendererRecipe,
     });
     const regionDigest = await sha256Hex(new TextEncoder().encode(regionPayload));
-    if (state.destroyed || state.failed || state.regionSelection !== selection || !record.surface.isConnected) {
+    if (state.destroyed || state.failed || state.regionSelection !== selection || !record.surface.isConnected
+      || record.generation !== capturedGeneration || record.viewport !== capturedViewport
+      || JSON.stringify(selection.bounds) !== JSON.stringify(normalizedBounds[0])) {
       throw new PaperPdfError("PDF_REGION_SELECTION_STALE", "The selected page changed before its region could be frozen.");
     }
     return Object.freeze({
@@ -2642,6 +2800,7 @@ export async function initializePaperPdfViewer(options = {}) {
   };
 
   const extractDocumentText = async ({ onProgress, signal } = {}) => {
+    assertPdfNotAborted(signal);
     if (!state.documentFacts?.integrityVerified || !state.pdfDocument || state.destroyed || state.failed) {
       throw new PaperPdfError(
         "PDF_TEXT_INDEX_UNAVAILABLE",
@@ -2649,14 +2808,22 @@ export async function initializePaperPdfViewer(options = {}) {
       );
     }
     if (state.documentTextIndex) return state.documentTextIndex;
-    if (state.documentTextPromise) return state.documentTextPromise;
+    if (state.documentTextPromise) {
+      const result = await state.documentTextPromise;
+      assertPdfNotAborted(signal);
+      return result;
+    }
 
     state.documentTextPromise = (async () => {
       const pages = [];
       let exactCandidatePages = 0;
       let visualOnlyPages = 0;
       let failedPages = 0;
-      const outline = await resolvePdfOutline(state.pdfDocument);
+      let documentTextCharacters = 0;
+      let normalizedDocumentCharacters = 0;
+      let documentTextItems = 0;
+      const outline = await resolvePdfOutline(state.pdfDocument, { signal: abortController.signal });
+      assertPdfNotAborted(signal); assertPdfNotAborted(abortController.signal);
       const records = [...pageRecords.values()].sort((left, right) => left.pageNumber - right.pageNumber);
       for (const record of records) {
         if (signal?.aborted || abortController.signal.aborted || state.destroyed) {
@@ -2665,6 +2832,15 @@ export async function initializePaperPdfViewer(options = {}) {
         let pageRecord;
         try {
           const textContent = await loadPageTextContent(record);
+          assertPdfNotAborted(signal); assertPdfNotAborted(abortController.signal);
+          const textSize = assertPdfTextContentWithinLimits(textContent);
+          if (documentTextCharacters + textSize.textCharacters > PDF_RELEASE_LIMITS.maxDocumentTextCharacters
+            || documentTextItems + textSize.itemCount > PDF_RELEASE_LIMITS.maxDocumentTextItems) {
+            record.textContentPromise = null;
+            throw new PaperPdfError("PDF_TEXT_LIMIT_EXCEEDED", "Whole-paper indexing reached its resource limit; this page remains a visual source.");
+          }
+          documentTextCharacters += textSize.textCharacters;
+          documentTextItems += textSize.itemCount;
           pageRecord = buildPdfPageTextRecord({
             pageIndex: record.pageIndex,
             pageLabel: String(record.pageNumber),
@@ -2673,6 +2849,11 @@ export async function initializePaperPdfViewer(options = {}) {
             pageViewBox: record.baseViewport.viewBox,
             pageRotation: record.baseViewport.rotation,
           });
+          if (normalizedDocumentCharacters + pageRecord.text.length > PDF_RELEASE_LIMITS.maxDocumentTextCharacters) {
+            record.textContentPromise = null;
+            throw new PaperPdfError("PDF_TEXT_LIMIT_EXCEEDED", "Normalized whole-paper text reached its resource limit; this page remains a visual source.");
+          }
+          normalizedDocumentCharacters += pageRecord.text.length;
           if (pageRecord.textCapability === "exact_candidate") exactCandidatePages += 1;
           else visualOnlyPages += 1;
         } catch (error) {
@@ -2690,7 +2871,7 @@ export async function initializePaperPdfViewer(options = {}) {
             textCapability: "visual_only",
             text: "",
             lines: Object.freeze([]),
-            limitation: error?.name || "text_extraction_failed",
+            limitation: error?.code === "PDF_TEXT_LIMIT_EXCEEDED" ? "text_resource_limit" : "text_extraction_failed",
           });
         }
         pages.push(pageRecord);
@@ -2703,6 +2884,7 @@ export async function initializePaperPdfViewer(options = {}) {
         });
         onProgress?.(progress);
         options.onTextIndexProgress?.(progress);
+        assertPdfNotAborted(signal); assertPdfNotAborted(abortController.signal);
       }
 
       const status = failedPages === records.length
@@ -2722,6 +2904,7 @@ export async function initializePaperPdfViewer(options = {}) {
         outline,
         pages: Object.freeze(pages),
       });
+      assertPdfNotAborted(signal); assertPdfNotAborted(abortController.signal);
       state.documentTextIndex = snapshot;
       emitReadyStatus();
       return snapshot;
@@ -2735,31 +2918,29 @@ export async function initializePaperPdfViewer(options = {}) {
     }
   };
 
-  const destroy = async () => {
+  const destroy = async ({ preserveError = false } = {}) => {
     if (state.destroyed) return;
     if (state.regionSelection) cancelRegionSelection({ notify: false });
     state.destroyed = true;
+    state.selectionGeneration += 1;
+    state.regionGeneration += 1;
     state.zoomGeneration += 1;
     abortController.abort();
     if (state.resizeFrame !== null) cancelAnimationFrame(state.resizeFrame);
     if (state.scrollFrame !== null) cancelAnimationFrame(state.scrollFrame);
-    for (const record of pageRecords.values()) {
-      record.generation += 1;
-      record.renderTask?.cancel?.();
-      record.textLayer?.cancel?.();
-    }
-    for (const cleanup of cleanupCallbacks.splice(0)) cleanup();
-    try {
-      await state.loadingTask?.destroy?.();
-    } catch {
-      // PDF.js can reject a cancelled loading task; the viewer is already closed.
-    }
-    for (const record of pageRecords.values()) {
-      if (record.pageNumber !== 1) record.surface.remove();
-    }
-    viewer.dataset.pdfState = "destroyed";
+    const loadingTask = state.loadingTask;
+    state.loadingTask = null; state.pdfDocument = null;
+    state.documentTextIndex = null; state.documentTextPromise = null; state.anchorGeometry = null;
+    if (!preserveError) viewer.dataset.pdfState = "destroyed";
     viewer.setAttribute("aria-busy", "false");
+    await releasePdfViewerResources({ pageRecords, anchorOverlays, cleanupCallbacks, loadingTask });
   };
+
+  if (options.signal) {
+    const abort = () => { void destroy(); };
+    options.signal.addEventListener("abort", abort, { once: true });
+    cleanupCallbacks.push(() => options.signal.removeEventListener("abort", abort));
+  }
 
   listen(controls.previousPage, "click", () => safelyHandle(() => showPage(state.currentPage - 1)));
   listen(controls.nextPage, "click", () => safelyHandle(() => showPage(state.currentPage + 1)));
@@ -2788,6 +2969,7 @@ export async function initializePaperPdfViewer(options = {}) {
       : "Verifying the exact 15-page arXiv PDF…",
   );
   try {
+    assertPdfNotAborted(options.signal); assertPdfNotAborted(abortController.signal);
     let source = suppliedDocument;
     if (!source) {
       const response = await fetch(ATTENTION_PDF.localUrl, {
@@ -2803,7 +2985,8 @@ export async function initializePaperPdfViewer(options = {}) {
         );
       }
       const preparedFixture = await preparePdfDocumentSource({
-        pdfBytes: await response.arrayBuffer(),
+        pdfBytes: await readBoundedPdfResponse(response, { maxBytes: ATTENTION_PDF.byteLength, signal: abortController.signal }),
+        signal: abortController.signal,
         filename: ATTENTION_PDF.filename,
         title: ATTENTION_PDF.title,
         contentType: response.headers.get("content-type") || "application/pdf",
@@ -2815,16 +2998,21 @@ export async function initializePaperPdfViewer(options = {}) {
       source = Object.freeze({ ...preparedFixture, paperRef: "paper:arxiv:1706_03762v7" });
     }
 
+    assertPdfNotAborted(abortController.signal);
     state.loadingTask = getDocument({
       data: source.bytes.slice(),
       isEvalSupported: false,
+      enableXfa: false,
+      canvasMaxAreaInBytes: PDF_RELEASE_LIMITS.maxCanvasPixels * 4,
       useWorkerFetch: false,
       standardFontDataUrl: PDFJS_ASSET_URLS.standardFonts,
       cMapUrl: PDFJS_ASSET_URLS.cmaps,
       cMapPacked: true,
       wasmUrl: PDFJS_ASSET_URLS.wasm,
     });
-    state.pdfDocument = await state.loadingTask.promise;
+    const loadedDocument = await state.loadingTask.promise;
+    assertPdfNotAborted(abortController.signal);
+    state.pdfDocument = loadedDocument;
     assertPdfPageCountWithinLimit(state.pdfDocument.numPages, maxPdfPages);
     if (source.expectedPageCount !== null && state.pdfDocument.numPages !== source.expectedPageCount) {
       throw new PaperPdfError(
@@ -2839,9 +3027,8 @@ export async function initializePaperPdfViewer(options = {}) {
       );
     }
     state.currentPage = clampPdfPageNumber(state.currentPage, state.pdfDocument.numPages);
-    const pages = await Promise.all(
-      Array.from({ length: state.pdfDocument.numPages }, (_, index) => state.pdfDocument.getPage(index + 1)),
-    );
+    const pages = await loadBoundedPdfPageProxies(state.pdfDocument, { signal: abortController.signal });
+    assertPdfNotAborted(abortController.signal);
     for (const [index, pdfPage] of pages.entries()) createPageRecord(index + 1, pdfPage);
     if (state.zoomMode === "fit-width") state.scale = calculateFitWidthScale(state.currentPage);
     else {
@@ -2871,6 +3058,7 @@ export async function initializePaperPdfViewer(options = {}) {
 
     const firstRenderedPage = fixedSourceAnchor?.pageNumber ?? state.currentPage;
     await renderPage(pageRecords.get(firstRenderedPage), { announce: true });
+    assertPdfNotAborted(abortController.signal);
     if (fixedSourceAnchor && !state.anchorGeometry) {
       throw new PaperPdfError(
         "PDF_SOURCE_UNAVAILABLE",
@@ -2879,6 +3067,7 @@ export async function initializePaperPdfViewer(options = {}) {
     }
     if (state.currentPage !== firstRenderedPage) {
       await renderPage(pageRecords.get(state.currentPage), { announce: true });
+      assertPdfNotAborted(abortController.signal);
       scrollToPageRecord(pageRecords.get(state.currentPage), { behavior: "auto", block: "start" });
     }
     state.ready = true;
@@ -2902,9 +3091,13 @@ export async function initializePaperPdfViewer(options = {}) {
       cleanupCallbacks.push(() => resizeObserver.disconnect());
     }
   } catch (error) {
-    if (state.destroyed && error?.name === "AbortError") throw error;
-    if (state.failed && error instanceof PaperPdfError) throw error;
-    throw fail(error);
+    if (state.destroyed || abortController.signal.aborted || options.signal?.aborted || isExpectedCancellation(error)) {
+      await destroy();
+      throw new PaperPdfError("PDF_LOAD_ABORTED", PDF_ERROR_MESSAGES.PDF_LOAD_ABORTED);
+    }
+    const wrapped = fail(error);
+    await destroy({ preserveError: true });
+    throw wrapped;
   }
 
   const api = {
@@ -2920,10 +3113,10 @@ export async function initializePaperPdfViewer(options = {}) {
     },
     getAnchorTarget,
     getPageSurface(pageNumber) {
-      return pageRecords.get(clampPdfPageNumber(pageNumber, state.pdfDocument.numPages, state.currentPage))?.surface || null;
+      return pageRecords.get(clampPdfPageNumber(pageNumber, state.pdfDocument?.numPages, state.currentPage))?.surface || null;
     },
     getPageAnnotationOverlay(pageNumber) {
-      return pageRecords.get(clampPdfPageNumber(pageNumber, state.pdfDocument.numPages, state.currentPage))?.annotationOverlay || null;
+      return pageRecords.get(clampPdfPageNumber(pageNumber, state.pdfDocument?.numPages, state.currentPage))?.annotationOverlay || null;
     },
     getStructuralPageRecords() {
       return Object.freeze([...pageRecords.values()]
@@ -2954,6 +3147,6 @@ export async function initializePaperPdfViewer(options = {}) {
     fitWidth,
     destroy,
   };
-  options.onReady?.(api);
+  try { options.onReady?.(api); } catch { /* Optional observer does not invalidate the ready reader. */ }
   return Object.freeze(api);
 }

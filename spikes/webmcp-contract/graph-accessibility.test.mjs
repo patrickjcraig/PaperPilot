@@ -318,6 +318,8 @@ function graphRendererHarness({ reducedMotion = false, constructorMode = "ready"
   elements.graphOutlineDetails.append(elements.graphOutline);
   elements.graphCanvasShell = element("div", "graph-canvas-shell", elements.graphVisualWorkspace);
   elements.sigmaContainer = element("div", "sigma-container", elements.graphCanvasShell);
+  elements.sigmaContainer.offsetWidth = 320;
+  elements.sigmaContainer.offsetHeight = 240;
   elements.graphVisualFallback = element("p", "graph-visual-fallback", elements.graphCanvasShell);
   elements.graphVisualFallback.hidden = true;
   elements.rendererStatus = element("span", "renderer-status");
@@ -384,6 +386,83 @@ for (const constructorMode of ["missing", "throws"]) {
     assert.equal(JSON.stringify(state.graph.export()), canonicalBefore);
   });
 }
+
+test("visible disconnected or zero-size graph containers use the complete outline, not a false renderer-ready state", () => {
+  for (const unavailable of ["disconnected", "width", "height"]) {
+    const { context, state, elements, instances, events } = graphRendererHarness();
+    const rows = [...elements.graphOutline.children];
+    const canonicalBefore = JSON.stringify(state.graph.export());
+    context.renderSigma();
+    const renderer = instances[0];
+    if (unavailable === "disconnected") {
+      const parent = elements.sigmaContainer.parentElement;
+      parent.children = parent.children.filter((child) => child !== elements.sigmaContainer);
+      elements.sigmaContainer.parentElement = null;
+    } else elements.sigmaContainer[unavailable === "width" ? "offsetWidth" : "offsetHeight"] = 0;
+    context.renderSigma();
+    assert.equal(renderer.killed, true);
+    assert.equal(context.sigmaRenderer, null);
+    assert.equal(instances.length, 1, "An unavailable visible container must not mount a nominal 1px renderer.");
+    assert.equal(elements.rendererStatus.textContent, "Outline fallback · no drawing area");
+    assert.match(elements.graphVisualFallback.textContent, /complete outline/u);
+    assert.equal(elements.graphVisualFallback.hidden, false);
+    assert.equal(elements.graphOutlineDetails.open, true);
+    assert.deepEqual(elements.graphOutline.children, rows);
+    assert.equal(JSON.stringify(state.graph.export()), canonicalBefore);
+    assert.equal(events.filter(({ eventType }) => eventType === "sigma_renderer_ready").length, 1);
+  }
+});
+
+test("production Sigma settings let the pinned library resize an intentionally hidden tab and recover its original renderer", async () => {
+  // Execute the shipped 3.0.3 resize implementation, not a hand-written
+  // approximation of the option that fixes Sigma's own scheduled resize frame.
+  const metadata = JSON.parse(await readFile(new URL("../../node_modules/sigma/package.json", import.meta.url), "utf8"));
+  assert.equal(metadata.version, "3.0.3");
+  const sigmaSource = await readFile(new URL("../../node_modules/sigma/dist/sigma.esm.js", import.meta.url), "utf8");
+  const parsedSigma = ts.createSourceFile("sigma.esm.js", sigmaSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  let resizeBody;
+  const findResize = (node) => {
+    if (ts.isObjectLiteralExpression(node)) {
+      const key = node.properties.find((entry) => ts.isPropertyAssignment(entry) && entry.name.getText(parsedSigma) === "key");
+      const value = node.properties.find((entry) => ts.isPropertyAssignment(entry) && entry.name.getText(parsedSigma) === "value");
+      if (key && ts.isStringLiteral(key.initializer) && key.initializer.text === "resize"
+        && value && ts.isFunctionExpression(value.initializer) && value.initializer.name?.text === "resize") resizeBody = value.initializer.getText(parsedSigma);
+    }
+    ts.forEachChild(node, findResize);
+  };
+  findResize(parsedSigma);
+  assert.ok(resizeBody, "Pinned official resize method must remain inspectable.");
+  const resize = vm.runInNewContext(`(${resizeBody})`, { getPixelRatio: () => 1 });
+  const { context, state, elements, instances, events } = graphRendererHarness();
+  const rows = [...elements.graphOutline.children];
+  const canonicalBefore = JSON.stringify(state.graph.export());
+  context.renderSigma();
+  const renderer = instances[0];
+  const cameraBefore = renderer.getCamera().getState();
+  Object.assign(renderer, { width: 320, height: 240, elements: {}, canvasContexts: {}, webGLContexts: {}, emit() {} });
+  renderer.refresh = () => resize.call(renderer);
+  assert.equal(renderer.getSettings().allowInvalidContainer, true);
+  context.activeRailView = "evidence";
+  elements.sigmaContainer.offsetWidth = 0;
+  elements.sigmaContainer.offsetHeight = 0;
+  context.renderSigma();
+  assert.equal(context.sigmaRenderer, renderer, "Intentionally hidden Evidence retains the renderer and camera.");
+  assert.throws(() => resize.call({ ...renderer, settings: { ...renderer.settings, allowInvalidContainer: false } }), /Container has no width/u,
+    "Control demonstrates the exact native resize failure before the fix.");
+  await Promise.resolve().then(() => renderer.refresh());
+  assert.equal(renderer.width, 1); assert.equal(renderer.height, 1);
+  for (const width of [640, 320]) {
+    elements.sigmaContainer.offsetWidth = width; elements.sigmaContainer.offsetHeight = 240;
+    context.activeRailView = "map"; context.renderSigma();
+    assert.equal(context.sigmaRenderer, renderer); assert.equal(renderer.width, width); assert.equal(renderer.height, 240);
+    assert.deepEqual(renderer.getCamera().getState(), cameraBefore);
+    assert.equal(elements.graphVisualFallback.hidden, true);
+  }
+  assert.equal(instances.length, 1);
+  assert.deepEqual(elements.graphOutline.children, rows);
+  assert.equal(JSON.stringify(state.graph.export()), canonicalBefore);
+  assert.equal(events.some(({ eventType }) => /failed|fallback/u.test(eventType)), false);
+});
 
 test("actual renderSigma disables both zoom animations for reduced motion", () => {
   for (const reducedMotion of [true, false]) {

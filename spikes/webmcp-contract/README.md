@@ -13,6 +13,7 @@ assets.
 | `contracts.mjs` | Canonical document, anchor, graph, annotation, command, revision, digest, Undo/Redo, and six-tool registration contracts. |
 | `workspace-patch.mjs` | Pure, closed canonical record patches, exact inverse/conflict checks, immutable source/structure guards, and independent Graphology/Map replay. Never a model-input format. |
 | `pdf-viewer.mjs` | PDF.js lifecycle, continuous pages, text indexes, viewport/PDF transforms, page-owned selection geometry, and overlay targets. |
+| `pdf-intake.mjs` | Bounded streamed PDF intake, cancellation, and sanitized download failures; no agent/network authority of its own. |
 | `paper-analysis.mjs` | Browser-independent whole-paper indexing and explicitly unreviewed critical-idea candidates. |
 | `presentation-layout.mjs` | Presentation-only graph positions and annotation-card order; never semantic state. |
 | `browser-snapshot.mjs` | Version-3 patch-history recovery, fully validated version-2 migration, strict replay-receipt checks, and preserved version-1 saves. PDF bytes are excluded. |
@@ -124,6 +125,17 @@ reasons. The original version-2 bytes remain untouched; a later save writes a
 separate version-3 copy. Candidate-only version-1 saves remain preserved without
 hydration or overwrite.
 
+Save and restore are bound to the active document/session and canonical transaction
+queue. Late work cannot save or hydrate another paper, and an older completion
+cannot mark newer edits saved. Quota/validation failures preserve live work and
+the previous valid stored copy while visibly reporting that current work is unsaved.
+
+Explicit, twice-confirmed **Clear saved copy** removes only the current PDF's
+known v1/v2/v3 keys, with legacy keys removed before v3. Pending autosaves are
+cancelled, other papers and unknown future keys are untouched, and partial
+storage failure is reported. The active paper remains open and can be saved again.
+Load/migration/Save alone never delete the older versions.
+
 Reuploading identical bytes under a new filename refreshes the trusted paper-root
 display title after validation and recomputes affected digest endpoints. Old-basis
 success receipts become `{ commandDigest, result: null }` tombstones. The old
@@ -137,6 +149,19 @@ The reducer and recovery behavior are covered by `workspace-patch.test.mjs`,
 `workspace-reducer.test.mjs`, `contracts.test.mjs`, and
 `browser-snapshot.test.mjs`. Release proof and checklist verification remain
 separate gates.
+
+## Release hardening boundaries
+
+The published intake limit is **25 MiB and 200 pages**. Canvas backing stores are
+bounded without moving text or source geometry; page and whole-document text
+indexes have separate resource ceilings and honest visual-only fallback. The
+explicit Attention demo downloads a pinned v7 URL and checks its recorded size
+and SHA-256 before opening. The public package never includes a paper PDF.
+
+Keyboard region creation, exact-opener Cancel/Escape, direct region skip links,
+associated error messages, reversible edits, and save/clear failures have focused
+production-handler tests. These tests do not substitute for a human NVDA and
+literal browser-chrome 200% zoom walkthrough at guided Verification Pause 3.
 
 ## Reproduce the Pages artifact
 

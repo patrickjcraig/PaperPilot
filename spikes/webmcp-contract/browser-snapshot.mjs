@@ -313,20 +313,53 @@ function storageFailure(error) {
   };
 }
 
-export async function saveBrowserSnapshot({ storage, state, savedExplanations, presentation, now } = {}) {
+function snapshotOperationGuard(state, isCurrent) {
+  const paper = state?.paper;
+  const paperRef = paper?.paperRef;
+  const documentSha256 = paper?.documentSha256;
+  const pageCount = paper?.pageCount;
+  const graph = state?.graph;
+  const anchors = state?.anchors;
+  const annotations = state?.annotations;
+  const savedExplanations = state?.savedExplanations;
+  const revision = state?.workspaceRevision;
+  const workspaceDigest = state?.workspaceDigest;
+  const graphDigest = state?.graphDigest;
+  const annotationDigest = state?.annotationDigest;
+  const focusAnchorId = state?.focusAnchorId;
+  return () => {
+    try {
+      return state?.paper === paper && paper?.paperRef === paperRef && paper?.documentSha256 === documentSha256
+        && paper?.pageCount === pageCount && state?.graph === graph && state?.anchors === anchors
+        && state?.annotations === annotations && state?.savedExplanations === savedExplanations
+        && state?.workspaceRevision === revision && state?.workspaceDigest === workspaceDigest
+        && state?.graphDigest === graphDigest && state?.annotationDigest === annotationDigest
+        && state?.focusAnchorId === focusAnchorId
+        && (isCurrent === undefined || isCurrent() === true);
+    } catch { return false; }
+  };
+}
+
+export async function saveBrowserSnapshot({ storage, state, savedExplanations, presentation, now, isCurrent } = {}) {
   validateStorage(storage);
+  const current = snapshotOperationGuard(state, isCurrent);
+  if (!current()) return { status: "cancelled", reason: "superseded" };
   let identity;
   let envelope;
   try {
     identity = paperIdentityFromState(state);
     envelope = await serializeEnvelope(state, { savedExplanations, presentation, now });
   } catch (error) {
+    if (!current()) return { status: "cancelled", reason: "superseded" };
     if (error instanceof SnapshotValidationError) {
       return { status: "invalid_state", reason: error.reason, message: error.message };
     }
     throw error;
   }
   const key = browserSnapshotKey(identity.documentSha256);
+  // Hashing, anchor validation, and history replay are asynchronous. A clear,
+  // replacement, or newer semantic state must win before the atomic write.
+  if (!current()) return { status: "cancelled", reason: "superseded", key };
   if (envelope.bytes > MAX_BROWSER_SNAPSHOT_BYTES) {
     return {
       status: "too_large",
@@ -345,7 +378,7 @@ export async function saveBrowserSnapshot({ storage, state, savedExplanations, p
     key,
     bytes: envelope.bytes,
     savedAt: envelope.payload.savedAt,
-    workspaceRevision: state.workspaceRevision,
+    workspaceRevision: envelope.payload.workspace.current.workspaceRevision,
   };
 }
 
@@ -1176,10 +1209,12 @@ function applyDecodedState(state, decoded) {
   state.explanations = [];
 }
 
-export async function loadBrowserSnapshot({ storage, state } = {}) {
+export async function loadBrowserSnapshot({ storage, state, isCurrent } = {}) {
   validateStorage(storage);
+  const current = snapshotOperationGuard(state, isCurrent);
   const identity = paperIdentityFromState(state);
   const key = browserSnapshotKey(identity.documentSha256);
+  if (!current()) return { status: "cancelled", reason: "superseded", key };
   let raw;
   let migratedFrom;
   let legacyKey;
@@ -1214,6 +1249,7 @@ export async function loadBrowserSnapshot({ storage, state } = {}) {
   }
   let decoded;
   try {
+    if (!current()) return { status: "cancelled", reason: "superseded", key };
     decoded = await decodeEnvelope(raw, state, migratedFrom || BROWSER_SNAPSHOT_SCHEMA_VERSION);
     if (migratedFrom === 2) {
       decoded.displayTitleRefreshed = await refreshTrustedPaperTitle(decoded, state);
@@ -1229,11 +1265,15 @@ export async function loadBrowserSnapshot({ storage, state } = {}) {
       }
     }
   } catch (error) {
+    if (!current()) return { status: "cancelled", reason: "superseded", key };
     if (error instanceof SnapshotValidationError) {
-      return { status: "invalid", key, reason: error.reason, message: error.message };
+      return { status: "invalid", key, reason: error.reason, message: error.message, ...(migratedFrom ? { migratedFrom, legacyKey } : {}) };
     }
-    return { status: "invalid", key, reason: "decode_failed", message: "The stored snapshot could not be decoded." };
+    return { status: "invalid", key, reason: "decode_failed", message: "The stored snapshot could not be decoded.", ...(migratedFrom ? { migratedFrom, legacyKey } : {}) };
   }
+  // Decode never mutates live state. Check the document/edit lifetime again
+  // after every awaited validation/migration step and immediately before swap.
+  if (!current()) return { status: "cancelled", reason: "superseded", key };
   applyDecodedState(state, decoded);
   return {
     status: "restored",
@@ -1259,12 +1299,27 @@ export async function loadBrowserSnapshot({ storage, state } = {}) {
 export function clearBrowserSnapshot({ storage, documentSha256 } = {}) {
   validateStorage(storage);
   const key = browserSnapshotKey(documentSha256);
-  let existed;
+  const known = [1, 2, 3].map((version) => ({ version, key: `paperpilot:webmcp:v${version}:${documentSha256}` }));
+  const present = [];
+  // Exact current-document keys only: never enumerate storage, guess future
+  // schemas, or remove another paper. Read every target before deleting any.
   try {
-    existed = storage.getItem(key) !== null;
-    storage.removeItem(key);
+    for (const target of known) {
+      const value = storage.getItem(target.key);
+      if (value !== null && value !== undefined) present.push(target);
+    }
   } catch (error) {
-    return { ...storageFailure(error), key };
+    return { ...storageFailure(error), key, phase: "read", removedVersions: [], remainingVersions: null };
   }
-  return { status: existed ? "cleared" : "not_found", key };
+  const removedVersions = [];
+  // Legacy copies go first so a partial failure cannot remove the current v3
+  // copy and then unexpectedly revive a still-present older recovery format.
+  for (const [index, target] of present.entries()) {
+    try { storage.removeItem(target.key); } catch (error) {
+      return { ...storageFailure(error), status: removedVersions.length ? "partial_clear" : "storage_error",
+        key, phase: "remove", removedVersions, remainingVersions: present.slice(index).map(({ version }) => version) };
+    }
+    removedVersions.push(target.version);
+  }
+  return { status: removedVersions.length ? "cleared" : "not_found", key, removedVersions, remainingVersions: [] };
 }

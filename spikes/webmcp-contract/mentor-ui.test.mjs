@@ -107,6 +107,7 @@ function harness(note = draft()) {
   const navigations = [], events = [], railViews = [];
   const context = vm.createContext({
     document, elements, byId, state, savedExplanations: [], snapshotDirty: false, snapshotEnabled: false,
+    paperSessionGeneration: 1, pageLeaving: false, snapshotReady: true,
     lastInteractionRenderStamp: null, LIMITS: { workspaceRevisions: 200 },
     structuredClone, createMentorReviewViewModel, applyHumanMentorDecision, enqueueHumanWorkspaceAction, captureFocusBookmark, resolveFocusBookmark, disclosureOpenState, planInteractionRefresh,
     graphNodeLabel: (key) => context.state.graph.getNodeAttribute(key, "label"), humanReadable: (text = "") => text.replaceAll("_", " "),
@@ -293,6 +294,79 @@ test("a queued human decision captures its takeaway at click and cannot mutate a
   release(); await stale;
   assert.equal(next.events.length, 0); assert.equal(next.state.explanations.length, 1);
   assert.equal(next.elements.mentorExplanationStatus.textContent, "New paper");
+});
+
+test("queued mentor decisions cannot cross a replacement intake before the new state is installed", async () => {
+  for (const decision of ["save", "discard"]) {
+    const h = harness(); h.context.renderState();
+    const before = structuredClone(h.state.explanations);
+    let release;
+    h.state.mutationQueue = new Promise((resolve) => { release = resolve; });
+    let persistenceCalls = 0;
+    h.context.persistBrowserWorkspace = async () => { persistenceCalls += 1; return { status: "saved" }; };
+    const pending = h.context.decideMentorExplanation(decision);
+    // boot() invalidates the session and resets notes before it awaits the
+    // replacement PDF. The former state object is still installed meanwhile.
+    h.context.paperSessionGeneration += 1;
+    h.context.savedExplanations = [];
+    h.context.snapshotDirty = false;
+    h.context.snapshotReady = false;
+    h.elements.mentorExplanationStatus.textContent = "Opening a replacement PDF";
+    release(); await pending;
+    await h.context.decideMentorExplanation(decision);
+    assert.equal(h.context.state, h.state, "Exercise the pre-state-swap window.");
+    assert.deepEqual(h.state.explanations, before);
+    assert.equal(h.state.savedExplanations, undefined);
+    assert.equal(h.context.savedExplanations.length, 0);
+    assert.equal(h.context.snapshotDirty, false);
+    assert.equal(h.events.length, 0);
+    assert.equal(persistenceCalls, 0);
+    assert.equal(h.elements.mentorExplanationStatus.textContent, "Opening a replacement PDF");
+  }
+});
+
+test("page exit cancels queued and newly attempted human mentor decisions without state or UI effects", async () => {
+  for (const decision of ["save", "discard"]) {
+    const h = harness(); h.context.renderState();
+    const before = structuredClone(h.state.explanations);
+    let release;
+    h.state.mutationQueue = new Promise((resolve) => { release = resolve; });
+    let persistenceCalls = 0;
+    h.context.persistBrowserWorkspace = async () => { persistenceCalls += 1; return { status: "saved" }; };
+    const pending = h.context.decideMentorExplanation(decision);
+    h.context.pageLeaving = true;
+    h.elements.mentorExplanationStatus.textContent = "Page is leaving";
+    release(); await pending;
+    await h.context.decideMentorExplanation(decision);
+    assert.deepEqual(h.state.explanations, before);
+    assert.equal(h.state.savedExplanations, undefined);
+    assert.equal(h.context.savedExplanations.length, 0);
+    assert.equal(h.context.snapshotDirty, false);
+    assert.equal(h.events.length, 0);
+    assert.equal(persistenceCalls, 0);
+    assert.equal(h.elements.mentorExplanationStatus.textContent, "Page is leaving");
+  }
+});
+
+test("a late mentor persistence result cannot announce success in a superseding intake or departed page", async () => {
+  for (const cause of ["replacement", "page_exit"]) {
+    const h = harness(); h.context.renderState();
+    let release;
+    const persistence = new Promise((resolve) => { release = resolve; });
+    let entered;
+    const started = new Promise((resolve) => { entered = resolve; });
+    h.context.persistBrowserWorkspace = () => { entered(); return persistence; };
+    const pending = h.context.decideMentorExplanation("save");
+    await started;
+    const committed = structuredClone(h.state.savedExplanations);
+    if (cause === "replacement") h.context.paperSessionGeneration += 1;
+    else h.context.pageLeaving = true;
+    h.elements.mentorExplanationStatus.textContent = "New lifecycle status";
+    release({ status: "saved" }); await pending;
+    assert.deepEqual(h.state.savedExplanations, committed, "A completed human decision is not retroactively erased.");
+    assert.equal(h.events.length, 1);
+    assert.equal(h.elements.mentorExplanationStatus.textContent, "New lifecycle status");
+  }
 });
 
 test("the human Save limit preserves all saved notes and the draft, with an actionable status", async () => {

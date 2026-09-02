@@ -17,7 +17,8 @@ import {
   redoLastHumanChange,
   undoLastHumanChange,
 } from "./contracts.mjs";
-import { initializePaperPdfViewer, normalizePdfText, resolvePdfTextRangeGeometry } from "./pdf-viewer.mjs";
+import { ATTENTION_PDF, PDF_RELEASE_LIMITS, initializePaperPdfViewer, normalizePdfText, resolvePdfTextRangeGeometry, safePdfError } from "./pdf-viewer.mjs";
+import { PdfIntakeError, readBoundedPdfResponse, safeDemoFailure } from "./pdf-intake.mjs";
 import {
   clampGraphPosition,
   moveAnnotation,
@@ -67,6 +68,7 @@ const byId = (id) => document.getElementById(id);
 
 const elements = {
   skipLink: byId("skip-link"),
+  workspaceSkipLinks: byId("workspace-skip-links"),
   webmcpStatus: byId("webmcp-status"),
   workspaceStatus: byId("workspace-status"),
   focusStatus: byId("focus-status"),
@@ -154,6 +156,7 @@ const elements = {
   readerAnnotationLabel: byId("reader-annotation-label"),
   readerNodeKind: byId("reader-node-kind"),
   readerSelectionStatus: byId("reader-selection-status"),
+  readerAnnotationError: byId("reader-annotation-error"),
   useTextSelection: byId("use-text-selection"),
   beginRegionSelection: byId("begin-region-selection"),
   selectWholePage: byId("select-whole-page"),
@@ -182,6 +185,8 @@ const elements = {
   browserSaveCard: document.querySelector(".browser-save-card"),
   saveWorkspace: byId("save-workspace"),
   clearSavedWorkspace: byId("clear-saved-workspace"),
+  cancelClearSavedWorkspace: byId("cancel-clear-saved-workspace"),
+  browserClearWarning: byId("browser-clear-warning"),
   browserSaveStatus: byId("browser-save-status"),
   workspace: document.querySelector(".workspace"),
 };
@@ -195,6 +200,10 @@ let cleanupRequiresReload = false;
 let registrationAttempt = null;
 let toolSessionGeneration = 0;
 let paperSessionGeneration = 0;
+let paperLoadController = null;
+let demoLoadController = null;
+let paperIntakeGeneration = 0;
+let humanControlsWired = false;
 let pageLeaving = false;
 let sigmaRenderer = null;
 let sigmaGraph = null;
@@ -206,6 +215,9 @@ let paperViewer = null;
 let pendingReaderCapture = null;
 let pendingReaderOverlayId = null;
 let regionSelectionActive = false;
+let readerSelectionGeneration = 0;
+let regionSelectionTrigger = null;
+let readerAnnotationPending = null;
 let pendingRemovalAnnotationId = null;
 let removalConfirmationTimer = null;
 let annotationOrder = Object.freeze([]);
@@ -240,17 +252,23 @@ let savedExplanations = [];
 let snapshotEnabled = false;
 let snapshotDirty = false;
 let snapshotStored = false;
+let snapshotHasSavedCopies = false;
 let snapshotStatusKind = "idle";
 let snapshotStatusMessage = "Not saved · active tab only";
 let snapshotSaveQueue = Promise.resolve();
-let clearSavedCopyArmed = false;
+let snapshotGeneration = 0;
+let snapshotEditGeneration = 0;
+let snapshotReady = false;
+let snapshotPendingSaves = 0;
+let snapshotClearPending = false;
+let clearSavedCopyArmed = null;
 const criticalIdeaByNodeKey = new Map();
 const initialGraphPositions = new Map();
 const graphLayoutPositions = new Map();
 
 const reducedMotionQuery = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)");
 
-const ATTENTION_DEMO_URL = "https://arxiv.org/pdf/1706.03762";
+const ATTENTION_DEMO_URL = ATTENTION_PDF.sourceUrl;
 const ATTENTION_DEMO_FILENAME = "Attention Is All You Need.pdf";
 function timestamp() {
   return new Date().toISOString();
@@ -499,8 +517,12 @@ function renderMentorExplanation() {
 }
 
 async function decideMentorExplanation(decisionName) {
-  if (!state) return;
+  if (!state || !snapshotReady || pageLeaving) return;
   const sourceState = state;
+  const paperSession = paperSessionGeneration;
+  // A replacement invalidates human intent before its new state is installed.
+  // Checking state alone would let an old queued decision refill reset notes.
+  const currentSession = () => !pageLeaving && state === sourceState && paperSessionGeneration === paperSession;
   const initiator = document.activeElement;
   const intent = {
     explanationId: elements.mentorTakeaway.dataset.explanationId,
@@ -508,7 +530,7 @@ async function decideMentorExplanation(decisionName) {
     takeaway: elements.mentorTakeaway.value,
   };
   const decision = await enqueueHumanWorkspaceAction(sourceState, () => {
-    if (state !== sourceState) return { changed: false, code: "paper_changed" };
+    if (!currentSession()) return { changed: false, code: "paper_changed" };
     const current = state.explanations.at(-1);
     if (!current || current.explanationId !== intent.explanationId || current.responseDigest !== intent.responseDigest) {
       return { changed: false, code: "mentor_draft_changed" };
@@ -526,7 +548,7 @@ async function decideMentorExplanation(decisionName) {
     });
     return result;
   });
-  if (state !== sourceState) return;
+  if (!currentSession()) return;
   if (!decision.changed) {
     elements.mentorExplanationStatus.textContent = decision.code === "mentor_draft_changed"
       ? "A newer mentor draft arrived before this action completed. Nothing was saved or discarded. Review the current draft and choose again."
@@ -548,7 +570,7 @@ async function decideMentorExplanation(decisionName) {
     return;
   }
   const result = await persistBrowserWorkspace({ enable: true, reason: "mentor note saved" });
-  if (state !== sourceState || currentMentorReview().explanation?.explanationId !== decision.event.explanationId) return;
+  if (!currentSession() || currentMentorReview().explanation?.explanationId !== decision.event.explanationId) return;
   elements.mentorExplanationStatus.textContent = result.status === "saved"
     ? "Mentor note saved in this browser. Its original AI claims stay immutable and separate from your takeaway."
     : "Mentor note is kept in this tab, but browser recovery failed. Keep this tab open.";
@@ -558,9 +580,58 @@ function renderBrowserSaveState() {
   elements.browserSaveCard.classList.toggle("is-saved", snapshotStatusKind === "saved" || snapshotStatusKind === "restored");
   elements.browserSaveCard.classList.toggle("is-dirty", snapshotDirty && snapshotStatusKind !== "error");
   elements.browserSaveCard.classList.toggle("is-error", snapshotStatusKind === "error");
-  elements.browserSaveStatus.textContent = snapshotStatusMessage;
+  elements.browserSaveStatus.setAttribute("role", snapshotStatusKind === "error" ? "alert" : "status");
+  elements.browserSaveStatus.setAttribute("aria-live", snapshotStatusKind === "error" ? "assertive" : "polite");
+  elements.browserSaveStatus.setAttribute("aria-atomic", "true");
+  if (elements.browserSaveStatus.textContent !== snapshotStatusMessage) elements.browserSaveStatus.textContent = snapshotStatusMessage;
   elements.saveWorkspace.textContent = snapshotStored ? "Save changes" : "Save in this browser";
-  elements.clearSavedWorkspace.disabled = !snapshotStored;
+  elements.saveWorkspace.disabled = !snapshotReady;
+  elements.saveWorkspace.setAttribute("aria-disabled", String(snapshotClearPending || snapshotPendingSaves > 0));
+  elements.saveWorkspace.setAttribute("aria-busy", String(snapshotPendingSaves > 0));
+  elements.clearSavedWorkspace.disabled = !snapshotReady || !snapshotHasSavedCopies;
+  elements.clearSavedWorkspace.setAttribute("aria-disabled", String(snapshotClearPending));
+  elements.clearSavedWorkspace.setAttribute("aria-busy", String(snapshotClearPending));
+  const confirming = Boolean(clearSavedCopyArmed && isCurrentBrowserSnapshotSession(clearSavedCopyArmed));
+  elements.clearSavedWorkspace.textContent = confirming ? "Confirm clear" : "Clear saved copies";
+  elements.cancelClearSavedWorkspace.hidden = !confirming;
+  elements.cancelClearSavedWorkspace.disabled = !snapshotReady;
+  const warning = confirming
+    ? "Clear all saved versions of this paper? The active paper, annotations, graph, and PDF will stay open. Older saved versions cannot be recovered unless still open in another tab. Choose Confirm clear or Cancel clear."
+    : "";
+  elements.browserClearWarning.hidden = !confirming;
+  if (elements.browserClearWarning.textContent !== warning) elements.browserClearWarning.textContent = warning;
+}
+
+function resetBrowserWorkspacePersistence() {
+  snapshotGeneration += 1;
+  snapshotEditGeneration = 0;
+  snapshotReady = false;
+  snapshotPendingSaves = 0;
+  snapshotClearPending = false;
+  clearSavedCopyArmed = null;
+  snapshotEnabled = false;
+  snapshotStored = false;
+  snapshotHasSavedCopies = false;
+  snapshotDirty = false;
+  savedExplanations = [];
+  annotationOrder = Object.freeze([]);
+  snapshotStatusKind = "idle";
+  snapshotStatusMessage = "Not saved · waiting for this paper’s recovery check";
+  // Old operations retain their generation guard. A slow former document must
+  // not block the new document's independent save queue.
+  snapshotSaveQueue = Promise.resolve();
+  renderBrowserSaveState();
+}
+
+function captureBrowserSnapshotSession() {
+  return { generation: snapshotGeneration, paperSession: paperSessionGeneration, state, paper: state?.paper,
+    paperRef: state?.paper?.paperRef, documentSha256: state?.paper?.documentSha256, pageCount: state?.paper?.pageCount };
+}
+
+function isCurrentBrowserSnapshotSession(session) {
+  return !pageLeaving && session.generation === snapshotGeneration && session.paperSession === paperSessionGeneration
+    && session.state === state && session.paper === state?.paper && session.paperRef === state?.paper?.paperRef
+    && session.documentSha256 === state?.paper?.documentSha256 && session.pageCount === state?.paper?.pageCount;
 }
 
 function snapshotPresentation() {
@@ -570,8 +641,10 @@ function snapshotPresentation() {
 }
 
 function markSnapshotDirty({ saveIfEnabled = true } = {}) {
-  if (!state) return;
+  if (!state || !snapshotReady || pageLeaving) return;
+  snapshotEditGeneration += 1;
   snapshotDirty = true;
+  if (snapshotClearPending) return;
   if (!snapshotStored) {
     snapshotStatusKind = "idle";
     snapshotStatusMessage = "Not saved · active tab only";
@@ -591,52 +664,84 @@ function snapshotFailureMessage(result) {
 }
 
 async function persistBrowserWorkspace({ enable = false, reason = "manual save" } = {}) {
+  if (!state || !snapshotReady || snapshotClearPending || pageLeaving) return { status: "cancelled", reason: "workspace_not_ready" };
+  const session = captureBrowserSnapshotSession();
   const wasEnabled = snapshotEnabled;
   if (enable) snapshotEnabled = true;
+  snapshotPendingSaves += 1;
+  renderBrowserSaveState();
   const task = async () => {
-    const storage = browserStorageAdapter();
-    if (!storage) {
-      if (!wasEnabled) snapshotEnabled = false;
-      snapshotStatusKind = "error";
-      snapshotStatusMessage = snapshotFailureMessage({ status: "storage_error" });
-      renderBrowserSaveState();
-      return { status: "storage_error", reason: "storage_unavailable" };
-    }
-    const result = await saveBrowserSnapshot({
-      storage,
-      state,
-      savedExplanations,
-      presentation: snapshotPresentation(),
+    if (!isCurrentBrowserSnapshotSession(session) || snapshotClearPending || (!enable && !snapshotEnabled)) return { status: "cancelled", reason: "superseded" };
+    // Capture only after the canonical transaction queue settles. Otherwise an
+    // async mandatory projection could still roll back the state being saved.
+    let capturedEditGeneration;
+    const result = await enqueueHumanWorkspaceAction(session.state, async () => {
+      if (!isCurrentBrowserSnapshotSession(session) || snapshotClearPending) return { status: "cancelled", reason: "superseded" };
+      const editGeneration = snapshotEditGeneration;
+      capturedEditGeneration = editGeneration;
+      const current = () => isCurrentBrowserSnapshotSession(session) && editGeneration === snapshotEditGeneration && !snapshotClearPending;
+      const storage = browserStorageAdapter();
+      if (!storage) return { status: "storage_error", reason: "storage_unavailable" };
+      try {
+        return await saveBrowserSnapshot({ storage, state: session.state, savedExplanations,
+          presentation: snapshotPresentation(), isCurrent: current });
+      } catch { return { status: "storage_error", reason: "snapshot_failed" }; }
     });
+    if (!isCurrentBrowserSnapshotSession(session)) return { status: "cancelled", reason: "superseded" };
     if (result.status === "saved") {
       snapshotStored = true;
-      snapshotDirty = false;
-      snapshotStatusKind = "saved";
-      snapshotStatusMessage = `Saved in this browser · ${new Date(result.savedAt).toLocaleString()} · exact PDF fingerprint only`;
-      recordActivity("browser_workspace_saved", { actor: "human", status: `${reason} · revision ${state.workspaceRevision}` });
+      snapshotHasSavedCopies = true;
+      const latest = capturedEditGeneration === snapshotEditGeneration && result.workspaceRevision === state.workspaceRevision;
+      snapshotDirty = !latest;
+      snapshotStatusKind = latest ? "saved" : "dirty";
+      snapshotStatusMessage = latest
+        ? `Saved in this browser · ${new Date(result.savedAt).toLocaleString()} · exact PDF fingerprint only`
+        : "An earlier workspace version was saved. Newer changes are not saved in this browser yet.";
+      try { recordActivity("browser_workspace_saved", { actor: enable ? "human" : "page", status: `${reason} · revision ${result.workspaceRevision}` }); } catch { /* Optional activity cannot undo a successful write. */ }
+      if (!latest) {
+        renderBrowserSaveState();
+        return { ...result, status: "saved_older" };
+      }
+    } else if (result.status === "cancelled") {
+      snapshotDirty = true;
+      snapshotStatusKind = "dirty";
+      snapshotStatusMessage = "Not saved in this browser — newer changes are pending. Save again to keep the latest workspace.";
     } else {
       if (!wasEnabled) snapshotEnabled = false;
+      snapshotDirty = true;
       snapshotStatusKind = "error";
       snapshotStatusMessage = snapshotFailureMessage(result);
-      recordActivity("browser_workspace_save_failed", { actor: "page", status: result.reason || result.status });
+      try { recordActivity("browser_workspace_save_failed", { actor: "page", status: result.reason || result.status }); } catch { /* Failure status remains visible without an optional event. */ }
     }
     renderBrowserSaveState();
     return result;
   };
   snapshotSaveQueue = snapshotSaveQueue.then(task, task);
-  return snapshotSaveQueue;
+  return snapshotSaveQueue.finally(() => {
+    if (!isCurrentBrowserSnapshotSession(session)) return;
+    snapshotPendingSaves = Math.max(0, snapshotPendingSaves - 1);
+    renderBrowserSaveState();
+  });
 }
 
 async function restoreBrowserWorkspace({ isCurrent = () => true } = {}) {
+  const session = captureBrowserSnapshotSession();
+  const current = () => isCurrentBrowserSnapshotSession(session) && isCurrent();
+  if (!current()) return { status: "cancelled", reason: "superseded" };
   const storage = browserStorageAdapter();
   if (!storage) {
+    snapshotReady = true;
     snapshotStatusKind = "error";
     snapshotStatusMessage = "Browser recovery is unavailable. This workspace will remain in the active tab only.";
     renderBrowserSaveState();
     return { status: "storage_error" };
   }
-  const result = await loadBrowserSnapshot({ storage, state });
-  if (!isCurrent()) return { status: "cancelled" };
+  let result;
+  try {
+    result = await enqueueHumanWorkspaceAction(session.state, () => loadBrowserSnapshot({ storage, state: session.state, isCurrent: current }));
+  } catch { result = { status: "storage_error", reason: "snapshot_failed" }; }
+  if (!current()) return { status: "cancelled", reason: "superseded" };
+  snapshotReady = true;
   if (result.status === "restored") {
     savedExplanations = result.savedExplanations || [];
     annotationOrder = Object.freeze(result.presentation?.annotationOrder || []);
@@ -645,6 +750,7 @@ async function restoreBrowserWorkspace({ isCurrent = () => true } = {}) {
     // merely inspecting an older workspace never overwrites it via autosave.
     snapshotEnabled = !result.migratedFrom;
     snapshotStored = !result.migratedFrom;
+    snapshotHasSavedCopies = true;
     snapshotDirty = Boolean(result.displayTitleRefreshed || result.migratedFrom);
     snapshotStatusKind = snapshotDirty ? "dirty" : "restored";
     const titleNotice = (result.migratedFrom ? " · older copy preserved; Save to keep the new reversible history format"
@@ -655,21 +761,112 @@ async function restoreBrowserWorkspace({ isCurrent = () => true } = {}) {
   } else if (result.status === "legacy_preserved") {
     snapshotEnabled = false;
     snapshotStored = false;
+    snapshotHasSavedCopies = true;
     snapshotDirty = false;
     snapshotStatusKind = "legacy";
     snapshotStatusMessage = "An older saved workspace is preserved in this browser. It cannot be safely imported into the new paper map yet. Save here to start a separate compatible copy.";
     recordActivity("browser_workspace_legacy_preserved", { actor: "page", status: "older format retained without changes" });
   } else if (result.status === "not_found") {
+    snapshotEnabled = false;
+    snapshotStored = false;
+    snapshotHasSavedCopies = false;
+    snapshotDirty = false;
     snapshotStatusKind = "idle";
     snapshotStatusMessage = "Not saved · active tab only";
+  } else if (result.status === "cancelled") {
+    snapshotDirty = true;
+    snapshotStatusKind = "dirty";
+    snapshotStatusMessage = "Browser restore was cancelled because this workspace changed. Current work remains in this tab.";
+  } else if (result.status === "storage_error") {
+    snapshotEnabled = false;
+    snapshotStored = false;
+    snapshotHasSavedCopies = false;
+    snapshotStatusKind = "error";
+    snapshotStatusMessage = "Browser recovery could not be read. Current work is not saved in this browser; keep this tab open.";
   } else {
-    snapshotStored = true;
+    snapshotEnabled = false;
+    snapshotStored = !result.migratedFrom;
+    snapshotHasSavedCopies = true;
     snapshotStatusKind = "error";
     snapshotStatusMessage = "A saved copy was found but failed validation. The fresh verified paper is active; no stored state was applied.";
     recordActivity("browser_workspace_restore_rejected", { actor: "page", status: result.reason || result.status });
   }
   renderBrowserSaveState();
   return result;
+}
+
+async function saveBrowserWorkspaceFromControl() {
+  if (!snapshotReady || snapshotClearPending || snapshotPendingSaves > 0 || pageLeaving) return { status: "cancelled", reason: "workspace_not_ready" };
+  clearSavedCopyArmed = null;
+  snapshotStatusKind = "dirty";
+  snapshotStatusMessage = "Saving this paper’s in-app workspace…";
+  return persistBrowserWorkspace({ enable: true, reason: "explicit reader save" });
+}
+
+function cancelClearSavedBrowserWorkspaceFromControl() {
+  if (!clearSavedCopyArmed || !isCurrentBrowserSnapshotSession(clearSavedCopyArmed) || snapshotClearPending) return { status: "cancelled", reason: "no_current_confirmation" };
+  const initiator = document.activeElement;
+  clearSavedCopyArmed = null;
+  snapshotStatusMessage = `Clear cancelled. ${snapshotStatusMessage}`;
+  renderBrowserSaveState();
+  if (initiator === elements.cancelClearSavedWorkspace
+    && [initiator, document.body, null].includes(document.activeElement)
+    && !elements.clearSavedWorkspace.disabled) elements.clearSavedWorkspace.focus({ preventScroll: true });
+  return { status: "confirmation_cancelled" };
+}
+
+async function clearSavedBrowserWorkspaceFromControl() {
+  if (!state || !snapshotReady || !snapshotHasSavedCopies || snapshotClearPending || pageLeaving) return { status: "cancelled", reason: "workspace_not_ready" };
+  if (!clearSavedCopyArmed || !isCurrentBrowserSnapshotSession(clearSavedCopyArmed)) {
+    clearSavedCopyArmed = captureBrowserSnapshotSession();
+    renderBrowserSaveState();
+    return { status: "confirmation_required" };
+  }
+  const initiator = document.activeElement;
+  // Invalidate pending and queued saves immediately, before waiting to clear.
+  // Every old save checks this generation directly before its storage write.
+  snapshotGeneration += 1;
+  snapshotPendingSaves = 0;
+  snapshotEnabled = false;
+  snapshotClearPending = true;
+  clearSavedCopyArmed = null;
+  snapshotDirty = true;
+  snapshotStatusKind = "dirty";
+  snapshotStatusMessage = "Clearing all saved versions of only this paper…";
+  const session = captureBrowserSnapshotSession();
+  renderBrowserSaveState();
+  const task = () => enqueueHumanWorkspaceAction(session.state, () => {
+    if (!isCurrentBrowserSnapshotSession(session)) return { status: "cancelled", reason: "superseded" };
+    const storage = browserStorageAdapter();
+    const result = storage ? clearBrowserSnapshot({ storage, documentSha256: session.documentSha256 })
+      : { status: "storage_error", reason: "storage_unavailable" };
+    snapshotClearPending = false;
+    if (result.status === "cleared" || result.status === "not_found") {
+      snapshotStored = false;
+      snapshotHasSavedCopies = false;
+      snapshotStatusKind = "idle";
+      snapshotStatusMessage = "All saved versions cleared · not saved in this browser. This active tab and the original PDF are unchanged.";
+      try { recordHumanEvidenceEvent("browser_workspace_cleared", { status: result.status }); } catch { /* The completed clear remains authoritative. */ }
+    } else {
+      if (Array.isArray(result.remainingVersions)) {
+        snapshotStored = result.remainingVersions.includes(3);
+        snapshotHasSavedCopies = result.remainingVersions.length > 0;
+      }
+      snapshotStatusKind = "error";
+      snapshotStatusMessage = result.status === "partial_clear"
+        ? `Some older saved versions were cleared (${result.removedVersions.map((version) => `v${version}`).join(", ")}); ${result.remainingVersions.map((version) => `v${version}`).join(", ")} could not be cleared and remain saved. Automatic saving is off. Keep this tab open and retry Clear.`
+        : "The saved copies could not be cleared. Nothing was removed; automatic saving is off. Keep this tab open.";
+    }
+    renderBrowserSaveState();
+    if (["cleared", "not_found"].includes(result.status) && initiator === elements.clearSavedWorkspace
+      && [initiator, document.body, null].includes(document.activeElement)
+      && !elements.saveWorkspace.disabled && elements.saveWorkspace.getAttribute("aria-disabled") !== "true") {
+      elements.saveWorkspace.focus({ preventScroll: true });
+    }
+    return result;
+  });
+  snapshotSaveQueue = snapshotSaveQueue.then(task, task);
+  return snapshotSaveQueue;
 }
 
 function mergeExactRangeRectsByLine(rectangles) {
@@ -2298,6 +2495,12 @@ function renderSigma() {
   // A hidden tab has no measurable canvas. Keep its renderer/camera until the
   // reader returns, then bind the latest graph without reporting a false error.
   if (activeRailView === "evidence") return;
+  if (!elements.sigmaContainer.isConnected || elements.sigmaContainer.offsetWidth <= 0 || elements.sigmaContainer.offsetHeight <= 0) {
+    disposeSigma();
+    elements.rendererStatus.textContent = "Outline fallback · no drawing area";
+    showGraphFallback("The visual map has no available drawing area. Every node, relationship and source remains in the complete outline.");
+    return;
+  }
   const cameraState = sigmaRenderer?.getCamera().getState();
   const preservedBounds = graphViewportBounds;
   if (sigmaGraph !== state.graph) disposeSigma();
@@ -2322,7 +2525,10 @@ function renderSigma() {
 
   try {
     sigmaRenderer = new SigmaConstructor(state.graph, elements.sigmaContainer, {
-      allowInvalidContainer: false,
+      // Sigma 3.0.3 also schedules its own resize frames. A frame queued before
+      // switching to Evidence can see zero dimensions; this documented setting
+      // permits that transient state without swallowing unrelated WebGL errors.
+      allowInvalidContainer: true,
       enableEdgeEvents: true,
       enableCameraRotation: false,
       renderEdgeLabels: false,
@@ -2778,6 +2984,9 @@ function replacePaperToolSession() {
 function closePaperToolSession() {
   if (pageLeaving) return;
   pageLeaving = true;
+  paperLoadController?.abort("page_unload");
+  demoLoadController?.abort("page_unload");
+  demoLoadController = null;
   disposeSuite("page_unload");
   toolSessionGeneration += 1;
   invalidateGraphNavigation();
@@ -3064,11 +3273,30 @@ function syncPersistedAnnotationOverlays() {
 }
 
 function clearPendingReaderDraft({ removeOverlay = true } = {}) {
+  readerSelectionGeneration += 1;
   if (removeOverlay && pendingReaderOverlayId && !state?.anchors?.has(pendingReaderOverlayId)) {
     paperViewer?.removeAnchorOverlay?.(pendingReaderOverlayId);
   }
   pendingReaderCapture = null;
   pendingReaderOverlayId = null;
+}
+
+function reportReaderSelection(message, { error = false, control = null } = {}) {
+  elements.readerAnnotationError.textContent = error ? message : "";
+  elements.readerSelectionStatus.textContent = error ? "" : message;
+  for (const field of [elements.readerAnnotationLabel, elements.readerRegionDescription]) {
+    if (error && field === control) field.setAttribute("aria-invalid", "true");
+    else field.removeAttribute("aria-invalid");
+  }
+}
+
+function readerSelectionFailure(error, fallback) {
+  if (error?.code === "PDF_SELECTION_CROSS_PAGE") return "Select text from one PDF page at a time, or create separate annotations.";
+  if (error?.code === "PDF_SELECTION_TOO_LARGE") return "Select a shorter passage: at most 1,200 characters and 8 KiB of text.";
+  if (["PDF_SELECTION_STALE", "PDF_REGION_SELECTION_STALE", "PDF_SELECTION_DETACHED"].includes(error?.code)) return "The selected page changed. Select the passage or region again before adding it.";
+  if (error?.code === "stale_workspace") return "The workspace changed. Check your selected source, then add the annotation again.";
+  if (["history_limit_exceeded", "graph_limit_exceeded", "annotation_limit_exceeded"].includes(error?.code)) return "This workspace has reached its editing limit. Your existing work is unchanged; keep this tab open or save it in this browser.";
+  return fallback;
 }
 
 function presentReaderSourceMode(mode) {
@@ -3086,53 +3314,80 @@ function leaveRegionSelection({ cancelViewer = true, message = "Region selection
   if (cancelViewer) paperViewer?.cancelRegionSelection?.({ notify: false });
   clearPendingReaderDraft({ removeOverlay: !cancelViewer });
   presentReaderSourceMode("text");
-  elements.readerSelectionStatus.textContent = message;
+  reportReaderSelection(message);
 }
 
-async function startRegionSelection(initialBounds) {
+function cancelReaderSelection() {
+  const trigger = regionSelectionActive ? regionSelectionTrigger || elements.beginRegionSelection : elements.useTextSelection;
+  if (regionSelectionActive) leaveRegionSelection();
+  else {
+    clearPendingReaderDraft();
+    globalThis.getSelection?.()?.removeAllRanges?.();
+    reportReaderSelection("Selection cleared. Highlight text, mark a region, or use the whole page.");
+  }
+  if (trigger?.isConnected && !trigger.disabled) trigger.focus({ preventScroll: true });
+}
+
+async function startRegionSelection(initialBounds, { trigger = elements.beginRegionSelection } = {}) {
   if (typeof paperViewer?.beginRegionSelection !== "function") {
-    elements.readerSelectionStatus.textContent = "Region selection is unavailable in this viewer build.";
+    reportReaderSelection("Region selection is unavailable in this viewer build.", { error: true });
     return;
   }
   clearPendingReaderDraft();
+  const generation = readerSelectionGeneration;
+  const sourceState = state;
+  const viewer = paperViewer;
+  const current = () => generation === readerSelectionGeneration && state === sourceState && paperViewer === viewer && !pageLeaving;
+  regionSelectionTrigger = trigger;
   globalThis.getSelection?.()?.removeAllRanges?.();
   presentReaderSourceMode("region");
   if (elements.readerNodeKind.value === "concept") elements.readerNodeKind.value = "figure";
-  elements.readerSelectionStatus.textContent = "Opening a page-owned region lens…";
+  reportReaderSelection("Opening a page-owned region lens…");
   try {
-    await paperViewer.beginRegionSelection({
+    await viewer.beginRegionSelection({
       ...(initialBounds ? { initialBounds } : {}),
       onChange({ phase, pageNumber, normalizedBounds, inputMethod }) {
+        if (!current()) return;
         const region = normalizedBounds[0];
         const width = Math.round(region.width * 100);
         const height = Math.round(region.height * 100);
         const left = Math.round(region.x * 100);
         const top = Math.round(region.y * 100);
-        elements.readerSelectionStatus.textContent = `Page ${pageNumber} region ${phase} · ${left}% from left, ${top}% from top · ${width}% wide × ${height}% high · ${inputMethod}. Add a nonvisual description before saving.`;
+        reportReaderSelection(`Page ${pageNumber} region ${phase} · ${left}% from left, ${top}% from top · ${width}% wide × ${height}% high · ${inputMethod}. Add a nonvisual description before saving.`);
       },
       onConfirm() {
-        elements.readerSelectionStatus.textContent = "Region confirmed. Describe what is visible, name the idea, then add it to the graph.";
+        if (!current()) return;
+        reportReaderSelection("Region confirmed. Describe what is visible, name the idea, then add it to the graph.");
         elements.readerRegionDescription.focus();
       },
       onCancel() {
+        if (!current()) return;
         leaveRegionSelection({ cancelViewer: false });
-        elements.beginRegionSelection.focus();
+        if (trigger?.isConnected && !trigger.disabled) trigger.focus({ preventScroll: true });
       },
     });
-    pendingReaderOverlayId = "anchor:region:draft";
+    if (current()) pendingReaderOverlayId = "anchor:region:draft";
   } catch (error) {
-    leaveRegionSelection({ cancelViewer: false, message: error?.message || "The region lens could not start." });
+    if (!current()) return;
+    leaveRegionSelection({ cancelViewer: false });
+    reportReaderSelection(readerSelectionFailure(error, "The region lens could not start. Try the current page again."), { error: true });
+    if (trigger?.isConnected && !trigger.disabled) trigger.focus({ preventScroll: true });
   }
 }
 
 async function captureReaderSelection({ announceFailure = false } = {}) {
   if (regionSelectionActive) return null;
   if (typeof paperViewer?.captureSelection !== "function") {
-    if (announceFailure) elements.readerSelectionStatus.textContent = "Selection capture is unavailable in this viewer build.";
+    if (announceFailure) reportReaderSelection("Selection capture is unavailable. Use Mark a region or Use whole page.", { error: true });
     return null;
   }
+  const generation = ++readerSelectionGeneration;
+  const sourceState = state;
+  const viewer = paperViewer;
+  const current = () => generation === readerSelectionGeneration && state === sourceState && paperViewer === viewer && !pageLeaving;
   try {
-    const rawCapture = await paperViewer.captureSelection();
+    const rawCapture = await viewer.captureSelection();
+    if (!current()) return null;
     const capture = selectedReaderCapture(rawCapture);
     if (pendingReaderOverlayId && pendingReaderOverlayId !== rawCapture.anchorId && !state.anchors.has(pendingReaderOverlayId)) {
       paperViewer.removeAnchorOverlay?.(pendingReaderOverlayId);
@@ -3140,16 +3395,134 @@ async function captureReaderSelection({ announceFailure = false } = {}) {
     pendingReaderOverlayId = rawCapture.anchorId || null;
     pendingReaderCapture = capture;
     const excerpt = capture.exactText.length > 150 ? `${capture.exactText.slice(0, 147)}…` : capture.exactText;
-    elements.readerSelectionStatus.textContent = `Page ${capture.pageIndex + 1} selected · “${excerpt}”`;
+    reportReaderSelection(`Page ${capture.pageIndex + 1} selected · “${excerpt}”`);
     if (!elements.readerAnnotationLabel.value.trim()) {
       const suggested = capture.exactText.replace(/\s+/gu, " ").trim().slice(0, 72);
       elements.readerAnnotationLabel.value = suggested;
     }
     return capture;
   } catch (error) {
+    if (!current()) return null;
     clearPendingReaderDraft();
-    if (announceFailure) elements.readerSelectionStatus.textContent = error?.message || "Select text inside one PDF page first.";
+    if (announceFailure) reportReaderSelection(readerSelectionFailure(error, "Select text inside one PDF page first, or use Mark a region."), { error: true });
     return null;
+  }
+}
+
+async function performReaderAnnotationSubmission(event, request) {
+  event.preventDefault();
+  const { sourceState, viewer, current } = request;
+  let committedResult = null;
+  let capture;
+  if (regionSelectionActive) {
+    const description = elements.readerRegionDescription.value.trim();
+    if (!description) {
+      reportReaderSelection("Describe the visible region so a screen-reader user can inspect it.", { error: true, control: elements.readerRegionDescription });
+      elements.readerRegionDescription.focus();
+      return;
+    }
+    try {
+      capture = selectedRegionCapture(await viewer.captureRegionSelection(), description);
+    } catch (error) {
+      if (current()) reportReaderSelection(readerSelectionFailure(error, "Mark a PDF region before adding it to the graph."), { error: true });
+      return;
+    }
+  } else {
+    capture = pendingReaderCapture || await captureReaderSelection({ announceFailure: true });
+  }
+  if (!capture || !current()) return;
+  const label = elements.readerAnnotationLabel.value.trim();
+  const nodeKind = elements.readerNodeKind.value;
+  if (!label) {
+    reportReaderSelection("Name the idea before adding it to the graph.", { error: true, control: elements.readerAnnotationLabel });
+    elements.readerAnnotationLabel.focus();
+    return;
+  }
+  try {
+    const anchor = await mintReaderAnchor(sourceState, capture);
+    if (!current()) return;
+    const exactTextSummary = capture.sourceKind === "exact_text"
+      ? capture.exactText.replace(/\s+/gu, " ").trim()
+      : capture.regionDescription;
+    const result = await applyReaderAnnotation(sourceState, {
+      baseWorkspaceRevision: sourceState.workspaceRevision,
+      baseWorkspaceDigest: sourceState.workspaceDigest,
+      anchor,
+      annotation: capture.sourceKind === "exact_text"
+        ? { kind: "highlight", label }
+        : { kind: "region", label, body: capture.regionDescription },
+      node: {
+        kind: nodeKind,
+        label,
+        summary: capture.sourceKind === "exact_text"
+          ? `Reader-authored idea grounded in page ${capture.pageIndex + 1}: “${exactTextSummary.slice(0, 700)}${exactTextSummary.length > 700 ? "…" : ""}”`
+          : `Reader-authored idea grounded in a described PDF region on page ${capture.pageIndex + 1}: ${exactTextSummary.slice(0, 700)}${exactTextSummary.length > 700 ? "…" : ""}`,
+        salience: 0.8,
+      },
+    });
+    committedResult = result;
+    if (!current()) return;
+    markSnapshotDirty();
+    const draftOverlayId = pendingReaderOverlayId;
+    state.focusAnchorId = result.anchorId;
+    clearPendingReaderDraft({ removeOverlay: false });
+    elements.readerAnnotationLabel.value = "";
+    globalThis.getSelection?.()?.removeAllRanges?.();
+    if (regionSelectionActive) {
+      paperViewer?.cancelRegionSelection?.({ notify: false });
+      presentReaderSourceMode("text");
+      elements.readerRegionDescription.value = "";
+    }
+    if (draftOverlayId && draftOverlayId !== result.anchorId) {
+      paperViewer?.removeAnchorOverlay?.(draftOverlayId);
+    }
+    paperViewer?.upsertAnchorOverlay?.({
+      anchorId: result.anchorId,
+      pageIndex: anchor.pageIndex,
+      normalizedBounds: anchor.normalizedBounds,
+      className: capture.sourceKind === "exact_text" ? "is-reader is-exact-text" : "is-reader is-page-region",
+      ariaLabel: `${label}, reader ${capture.sourceKind === "exact_text" ? "highlight" : "region"} on page ${anchor.pageLabel}`,
+      ariaDescription: capture.sourceKind === "exact_text" ? capture.exactText : capture.regionDescription,
+      visibleLabel: capture.sourceKind === "visual_region" ? `${label} · p.${anchor.pageLabel}` : "",
+    });
+    reportReaderSelection(`Added “${label}” from page ${anchor.pageLabel} as a ${capture.sourceKind === "exact_text" ? "text highlight" : "described region"}. Human Undo is available.`);
+    recordActivity("reader_annotation_graph_created", {
+      actor: "human",
+      status: `${result.nodeKey} · ${result.annotationId}`,
+    });
+    renderLastResult(result);
+    renderState();
+    await ensureAnchorVisible(result.anchorId, { moveKeyboardFocus: false, scrollIntoView: false });
+  } catch (error) {
+    if (!current()) return;
+    if (committedResult) {
+      reportReaderSelection("The annotation was added, but its preview could not refresh. Use the Annotations tab to inspect it; Undo remains available.", { error: true });
+      renderLastResult(committedResult);
+      return;
+    }
+    reportReaderSelection(readerSelectionFailure(error, "The annotation could not be added. Check the selected source and try again."), { error: true });
+    recordActivity("reader_annotation_graph_failed", { actor: "human", status: error?.code || error?.name || "error" });
+    renderLastResult({ status: "reader_annotation_failed", code: error?.code || "annotation_failed", message: "The reader annotation could not be added." });
+  }
+}
+
+async function submitReaderAnnotation(event) {
+  event.preventDefault();
+  if (!state || readerAnnotationPending) return;
+  const sourceState = state;
+  const viewer = paperViewer;
+  const request = { sourceState, viewer, current: () => state === sourceState && paperViewer === viewer && readerAnnotationPending === request && !pageLeaving };
+  readerAnnotationPending = request;
+  elements.createReaderAnnotation.setAttribute("aria-disabled", "true");
+  elements.createReaderAnnotation.setAttribute("aria-busy", "true");
+  try {
+    await performReaderAnnotationSubmission(event, request);
+  } finally {
+    if (readerAnnotationPending === request) {
+      readerAnnotationPending = null;
+      elements.createReaderAnnotation.removeAttribute("aria-disabled");
+      elements.createReaderAnnotation.removeAttribute("aria-busy");
+    }
   }
 }
 
@@ -3261,6 +3634,18 @@ function showGraphRailView(view, { focus = false } = {}) {
   if (view !== "evidence") requestAnimationFrame(() => renderSigma());
 }
 
+function navigateWorkspaceRegion(region) {
+  if (!state || elements.workspace.inert) return false;
+  if (region === "graph") showGraphRailView("map");
+  else if (region === "evidence") showGraphRailView("evidence");
+  const id = { paper: "paper-heading", mentor: "activity-heading", graph: "graph-heading", evidence: "evidence-heading" }[region];
+  const target = id && byId(id);
+  if (!target) return false;
+  target.focus({ preventScroll: true });
+  target.scrollIntoView({ block: "nearest", behavior: prefersReducedMotion() ? "instant" : "smooth" });
+  return true;
+}
+
 function recordHumanEvidenceEvent(eventType, details = {}) {
   const record = {
     eventId: state.id("event"),
@@ -3276,6 +3661,16 @@ function recordHumanEvidenceEvent(eventType, details = {}) {
 }
 
 function wireHumanControls() {
+  // Stable page controls already read the current document through trusted refs.
+  // Rebinding on retry/replacement could turn one Clear click into two actions.
+  if (humanControlsWired) return;
+  humanControlsWired = true;
+  for (const link of document.querySelectorAll("[data-workspace-skip]")) {
+    link.addEventListener("click", (event) => {
+      event.preventDefault();
+      navigateWorkspaceRegion(link.dataset.workspaceSkip);
+    });
+  }
   for (const tab of elements.graphRailTabs) {
     tab.addEventListener("click", () => showGraphRailView(tab.dataset.railTab));
     tab.addEventListener("keydown", (event) => {
@@ -3305,9 +3700,7 @@ function wireHumanControls() {
     button.addEventListener("click", async () => {
       const anchorId = button.dataset.focusAnchor;
       if (!state.anchors.has(anchorId)) return;
-      state.focusAnchorId = anchorId;
-      recordActivity("source_focused", { actor: "human", status: anchorId });
-      await ensureAnchorVisible(anchorId, { moveKeyboardFocus: true, scrollIntoView: true });
+      await navigateGraphSource(anchorId, { eventType: "source_focused" });
     });
   }
 
@@ -3315,51 +3708,9 @@ function wireHumanControls() {
   elements.disposeTools.addEventListener("click", () => disposeSuite("manual"));
   elements.replayAgentAction.addEventListener("click", () => enqueueObservedTraceReplay(lastObservedTrace));
 
-  elements.saveWorkspace.addEventListener("click", async () => {
-    elements.saveWorkspace.disabled = true;
-    snapshotStatusKind = "dirty";
-    snapshotStatusMessage = "Saving this paper’s in-app workspace…";
-    renderBrowserSaveState();
-    try {
-      await persistBrowserWorkspace({ enable: true, reason: "explicit reader save" });
-    } finally {
-      elements.saveWorkspace.disabled = false;
-    }
-  });
-
-  elements.clearSavedWorkspace.addEventListener("click", () => {
-    if (!clearSavedCopyArmed) {
-      clearSavedCopyArmed = true;
-      elements.clearSavedWorkspace.textContent = "Confirm clear";
-      snapshotStatusMessage = "Clear only the browser-saved copy? The active paper, annotations, graph, and PDF will stay open.";
-      renderBrowserSaveState();
-      setTimeout(() => {
-        if (!clearSavedCopyArmed) return;
-        clearSavedCopyArmed = false;
-        elements.clearSavedWorkspace.textContent = "Clear saved copy";
-        renderBrowserSaveState();
-      }, 6_000);
-      return;
-    }
-    clearSavedCopyArmed = false;
-    elements.clearSavedWorkspace.textContent = "Clear saved copy";
-    const storage = browserStorageAdapter();
-    const result = storage
-      ? clearBrowserSnapshot({ storage, documentSha256: state.paper.documentSha256 })
-      : { status: "storage_error", reason: "storage_unavailable" };
-    if (result.status === "cleared" || result.status === "not_found") {
-      snapshotEnabled = false;
-      snapshotStored = false;
-      snapshotDirty = true;
-      snapshotStatusKind = "idle";
-      snapshotStatusMessage = "Saved copy cleared · this active tab and the original PDF are unchanged";
-      recordHumanEvidenceEvent("browser_workspace_cleared", { status: result.status });
-    } else {
-      snapshotStatusKind = "error";
-      snapshotStatusMessage = "The saved copy could not be cleared because browser storage is unavailable.";
-    }
-    renderBrowserSaveState();
-  });
+  elements.saveWorkspace.addEventListener("click", () => void saveBrowserWorkspaceFromControl());
+  elements.clearSavedWorkspace.addEventListener("click", () => void clearSavedBrowserWorkspaceFromControl());
+  elements.cancelClearSavedWorkspace.addEventListener("click", cancelClearSavedBrowserWorkspaceFromControl);
 
   elements.goToExplanation.addEventListener("click", goToMentorExplanation);
   elements.saveExplanation.addEventListener("click", () => void decideMentorExplanation("save"));
@@ -3375,112 +3726,16 @@ function wireHumanControls() {
     if (regionSelectionActive) leaveRegionSelection();
     else {
       presentReaderSourceMode("text");
-      elements.readerSelectionStatus.textContent = "Select text directly on one rendered PDF page, then name the idea.";
+      reportReaderSelection("Select text directly on one rendered PDF page, then name the idea. For a keyboard alternative, use Mark a region or Use whole page.");
     }
   });
-  elements.beginRegionSelection.addEventListener("click", () => { void startRegionSelection(); });
+  elements.beginRegionSelection.addEventListener("click", () => { void startRegionSelection(undefined, { trigger: elements.beginRegionSelection }); });
   elements.selectWholePage.addEventListener("click", () => {
-    void startRegionSelection({ x: 0, y: 0, width: 1, height: 1 });
+    void startRegionSelection({ x: 0, y: 0, width: 1, height: 1 }, { trigger: elements.selectWholePage });
   });
-  elements.cancelRegionSelection.addEventListener("click", () => {
-    if (regionSelectionActive) leaveRegionSelection();
-    else {
-      clearPendingReaderDraft();
-      globalThis.getSelection?.()?.removeAllRanges?.();
-      elements.readerSelectionStatus.textContent = "Selection cleared. Highlight text, mark a region, or use the whole page.";
-    }
-    (regionSelectionActive ? elements.beginRegionSelection : elements.useTextSelection).focus();
-  });
+  elements.cancelRegionSelection.addEventListener("click", cancelReaderSelection);
 
-  elements.readerAnnotationForm.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    let capture;
-    if (regionSelectionActive) {
-      const description = elements.readerRegionDescription.value.trim();
-      if (!description) {
-        elements.readerSelectionStatus.textContent = "Describe the visible region so a screen-reader user can inspect it.";
-        elements.readerRegionDescription.focus();
-        return;
-      }
-      try {
-        capture = selectedRegionCapture(await paperViewer.captureRegionSelection(), description);
-      } catch (error) {
-        elements.readerSelectionStatus.textContent = error?.message || "Mark a PDF region before adding it to the graph.";
-        return;
-      }
-    } else {
-      capture = pendingReaderCapture || await captureReaderSelection({ announceFailure: true });
-    }
-    if (!capture) return;
-    const label = elements.readerAnnotationLabel.value.trim();
-    const nodeKind = elements.readerNodeKind.value;
-    if (!label) {
-      elements.readerSelectionStatus.textContent = "Name the idea before adding it to the graph.";
-      elements.readerAnnotationLabel.focus();
-      return;
-    }
-    const submitButton = elements.readerAnnotationForm.querySelector('[type="submit"]');
-    submitButton.disabled = true;
-    try {
-      const anchor = await mintReaderAnchor(state, capture);
-      const exactTextSummary = capture.sourceKind === "exact_text"
-        ? capture.exactText.replace(/\s+/gu, " ").trim()
-        : capture.regionDescription;
-      const result = await applyReaderAnnotation(state, {
-        baseWorkspaceRevision: state.workspaceRevision,
-        baseWorkspaceDigest: state.workspaceDigest,
-        anchor,
-        annotation: capture.sourceKind === "exact_text"
-          ? { kind: "highlight", label }
-          : { kind: "region", label, body: capture.regionDescription },
-        node: {
-          kind: nodeKind,
-          label,
-          summary: capture.sourceKind === "exact_text"
-            ? `Reader-authored idea grounded in page ${capture.pageIndex + 1}: “${exactTextSummary.slice(0, 700)}${exactTextSummary.length > 700 ? "…" : ""}”`
-            : `Reader-authored idea grounded in a described PDF region on page ${capture.pageIndex + 1}: ${exactTextSummary.slice(0, 700)}${exactTextSummary.length > 700 ? "…" : ""}`,
-          salience: 0.8,
-        },
-      });
-      if (pendingReaderOverlayId && pendingReaderOverlayId !== result.anchorId) {
-        paperViewer?.removeAnchorOverlay?.(pendingReaderOverlayId);
-      }
-      paperViewer?.upsertAnchorOverlay?.({
-        anchorId: result.anchorId,
-        pageIndex: anchor.pageIndex,
-        normalizedBounds: anchor.normalizedBounds,
-        className: capture.sourceKind === "exact_text" ? "is-reader is-exact-text" : "is-reader is-page-region",
-        ariaLabel: `${label}, reader ${capture.sourceKind === "exact_text" ? "highlight" : "region"} on page ${anchor.pageLabel}`,
-        ariaDescription: capture.sourceKind === "exact_text" ? capture.exactText : capture.regionDescription,
-        visibleLabel: capture.sourceKind === "visual_region" ? `${label} · p.${anchor.pageLabel}` : "",
-      });
-      state.focusAnchorId = result.anchorId;
-      pendingReaderCapture = null;
-      pendingReaderOverlayId = null;
-      if (regionSelectionActive) {
-        paperViewer?.cancelRegionSelection?.({ notify: false });
-        presentReaderSourceMode("text");
-        elements.readerRegionDescription.value = "";
-      }
-      globalThis.getSelection?.()?.removeAllRanges?.();
-      elements.readerAnnotationLabel.value = "";
-      elements.readerSelectionStatus.textContent = `Added “${label}” from page ${anchor.pageLabel} as a ${capture.sourceKind === "exact_text" ? "text highlight" : "described region"}. Human Undo is available.`;
-      recordActivity("reader_annotation_graph_created", {
-        actor: "human",
-        status: `${result.nodeKey} · ${result.annotationId}`,
-      });
-      renderLastResult(result);
-      renderState();
-      await ensureAnchorVisible(result.anchorId, { moveKeyboardFocus: false, scrollIntoView: false });
-      markSnapshotDirty();
-    } catch (error) {
-      elements.readerSelectionStatus.textContent = error?.message || "The reader annotation could not be added.";
-      recordActivity("reader_annotation_graph_failed", { actor: "human", status: error?.code || error?.name || "error" });
-      renderLastResult({ status: "reader_annotation_failed", code: error?.code, message: error?.message });
-    } finally {
-      submitButton.disabled = false;
-    }
-  });
+  elements.readerAnnotationForm.addEventListener("submit", submitReaderAnnotation);
 
   elements.graphSearchForm.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -3538,8 +3793,21 @@ function wireHumanControls() {
 
 async function boot({ pdfFile = null } = {}) {
   if (pageLeaving) return;
+  paperLoadController?.abort("paper_replaced");
+  paperLoadController = new AbortController();
+  const loadSignal = paperLoadController.signal;
+  clearPendingReaderDraft();
+  readerAnnotationPending = null;
+  regionSelectionTrigger = null;
+  presentReaderSourceMode("text");
+  elements.readerAnnotationLabel.value = "";
+  elements.readerRegionDescription.value = "";
+  elements.createReaderAnnotation.removeAttribute("aria-disabled");
+  elements.createReaderAnnotation.removeAttribute("aria-busy");
+  reportReaderSelection("Highlight text, mark a region, or use the whole page.");
   replacePaperToolSession();
   const paperSession = ++paperSessionGeneration;
+  resetBrowserWorkspacePersistence();
   const current = () => !pageLeaving && paperSessionGeneration === paperSession;
   lastObservedTrace = null;
   visualTrialObserved = false;
@@ -3568,6 +3836,7 @@ async function boot({ pdfFile = null } = {}) {
   elements.webmcpStatus.textContent = "Waiting for verified paper";
   let verifiedTextAnchor = null;
   const initializedViewer = await initializePaperPdfViewer({
+    signal: loadSignal,
     pdfFile,
     title: pdfFile ? paperTitleFromFilename(pdfFile.name) : undefined,
     filename: pdfFile?.name,
@@ -3856,43 +4125,122 @@ async function boot({ pdfFile = null } = {}) {
 }
 
 function reportInitializationFailure(error) {
-  elements.webmcpStatus.textContent = "Spike initialization failed";
-  elements.rendererStatus.textContent = "Accessible diagnostics only";
-  recordActivity("spike_initialization_failed", { status: error?.name || "error" });
-  renderLastResult({ status: "initialization_failed", name: error?.name, message: error?.message });
+  const safe = safePdfError(error);
+  elements.webmcpStatus.textContent = "Not registered · paper could not be opened";
+  elements.rendererStatus.textContent = "Waiting for a valid paper";
+  recordActivity("spike_initialization_failed", { status: safe.code });
+  renderLastResult({ status: "initialization_failed", code: safe.code, message: safe.message });
+  return safe;
+}
+
+function setPaperIntakeStatus(message, { error = false } = {}) {
+  elements.paperSourceGateStatus.setAttribute("role", error ? "alert" : "status");
+  elements.paperSourceGateStatus.setAttribute("aria-live", error ? "assertive" : "polite");
+  elements.paperSourceGateStatus.setAttribute("aria-atomic", "true");
+  elements.paperSourceGateStatus.textContent = message;
 }
 
 async function beginWithPaper(pdfFile = null) {
   if (pageLeaving) return;
+  const intake = ++paperIntakeGeneration;
+  const current = () => !pageLeaving && paperIntakeGeneration === intake;
   elements.workspace.inert = false;
   document.body.classList.remove("is-waiting-for-paper");
   elements.skipLink.href = "#contract-workspace";
   elements.skipLink.textContent = "Skip to PaperPilot workspace";
   try {
     await boot({ pdfFile });
-    if (pageLeaving) return;
+    if (!current()) return;
+    if (!state?.paper || !paperViewer?.documentFacts?.integrityVerified) {
+      throw new Error("The reading workspace is not ready.");
+    }
+    elements.workspaceSkipLinks.hidden = false;
     if (pdfFile) {
-      elements.paperSourceGateStatus.textContent = `${pdfFile.name} is active in this tab.`;
+      setPaperIntakeStatus(`${pdfFile.name} is active in this tab.`);
       elements.paperFileInput.disabled = true;
       elements.loadAttentionDemo.disabled = true;
       elements.paperSourceGate.hidden = true;
     }
   } catch (error) {
-    if (pageLeaving) return;
-    reportInitializationFailure(error);
+    if (!current()) return;
+    const safe = reportInitializationFailure(error);
     if (pdfFile) {
+      paperLoadController?.abort();
       paperViewer?.destroy();
       paperViewer = null;
       elements.paperFileInput.disabled = false;
       elements.loadAttentionDemo.disabled = false;
       elements.paperFileInput.value = "";
-      elements.paperSourceGateStatus.textContent = `${error?.message || "The PDF could not be opened."} Choose another PDF.`;
+      setPaperIntakeStatus(`${safe.message} Choose another PDF.`, { error: true });
+      elements.paperSourceGate.hidden = false;
+      elements.workspaceSkipLinks.hidden = true;
       elements.workspace.inert = true;
       document.body.classList.add("is-waiting-for-paper");
       elements.skipLink.href = "#paper-source-gate";
       elements.skipLink.textContent = "Skip to paper intake";
     }
   }
+}
+
+async function loadAttentionDemo() {
+  if (pageLeaving || demoLoadController) return;
+  const controller = new AbortController();
+  demoLoadController = controller;
+  const current = () => !pageLeaving && demoLoadController === controller;
+  const timer = setTimeout(() => controller.abort(), 45_000);
+  elements.loadAttentionDemo.disabled = true;
+  elements.paperFileInput.disabled = true;
+  setPaperIntakeStatus("Fetching the official arXiv v7 Attention paper into this tab…");
+  try {
+    const response = await fetch(ATTENTION_DEMO_URL, {
+      mode: "cors", credentials: "omit", redirect: "error", signal: controller.signal,
+    });
+    const bytes = await readBoundedPdfResponse(response, { maxBytes: PDF_RELEASE_LIMITS.maxBytes, signal: controller.signal });
+    if (!current()) return;
+    if (controller.signal.aborted) throw new PdfIntakeError("intake_cancelled");
+    const digest = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)), (byte) => byte.toString(16).padStart(2, "0")).join("");
+    if (!current()) return;
+    if (controller.signal.aborted) throw new PdfIntakeError("intake_cancelled");
+    if (bytes.byteLength !== ATTENTION_PDF.byteLength || digest !== ATTENTION_PDF.sha256) {
+      throw new PdfIntakeError("demo_integrity_mismatch");
+    }
+    const pdfFile = new File([bytes], ATTENTION_DEMO_FILENAME, { type: "application/pdf", lastModified: 0 });
+    setPaperIntakeStatus("Opening the exact Attention v7 PDF locally—nothing is being uploaded.");
+    clearTimeout(timer);
+    await beginWithPaper(pdfFile);
+  } catch (error) {
+    if (!current()) return;
+    const safe = safeDemoFailure(controller.signal.aborted ? new PdfIntakeError("intake_cancelled") : error);
+    setPaperIntakeStatus(safe.message, { error: true });
+    elements.loadAttentionDemo.disabled = false;
+    elements.paperFileInput.disabled = false;
+  } finally {
+    clearTimeout(timer);
+    if (demoLoadController === controller) demoLoadController = null;
+  }
+}
+
+function openSelectedPaper() {
+  if (pageLeaving) return;
+  const [pdfFile] = elements.paperFileInput.files || [];
+  if (!pdfFile) return;
+  // A file-picker completion is a newer reader intent, even if its change event
+  // was queued before the demo button disabled intake controls.
+  demoLoadController?.abort();
+  demoLoadController = null;
+  if (pdfFile.size === 0 || pdfFile.size > PDF_RELEASE_LIMITS.maxBytes) {
+    setPaperIntakeStatus(pdfFile.size === 0
+      ? "That file is empty. Choose a PDF with paper content."
+      : "That PDF is larger than the 25 MiB browser-local limit. Choose a smaller PDF.", { error: true });
+    elements.paperFileInput.value = "";
+    elements.paperFileInput.disabled = false;
+    elements.loadAttentionDemo.disabled = false;
+    return;
+  }
+  elements.paperFileInput.disabled = true;
+  elements.loadAttentionDemo.disabled = true;
+  setPaperIntakeStatus(`Opening ${pdfFile.name} locally—nothing is being uploaded.`);
+  void beginWithPaper(pdfFile);
 }
 
 const startupParameters = new URLSearchParams(globalThis.location.search);
@@ -3911,42 +4259,6 @@ if (localFixtureMode) {
   renderToolList();
   void renderContractManifest();
   renderActivity();
-  elements.loadAttentionDemo.addEventListener("click", async () => {
-    elements.loadAttentionDemo.disabled = true;
-    elements.paperFileInput.disabled = true;
-    elements.paperSourceGateStatus.textContent = "Fetching the official arXiv v7 Attention paper into this tab…";
-    try {
-      const response = await fetch(ATTENTION_DEMO_URL, { mode: "cors", credentials: "omit", redirect: "follow" });
-      if (!response.ok) throw new Error(`arXiv returned HTTP ${response.status}.`);
-      const contentType = response.headers.get("content-type") || "";
-      if (!contentType.toLowerCase().includes("application/pdf")) throw new Error("arXiv did not return a PDF response.");
-      const blob = await response.blob();
-      if (blob.size === 0 || blob.size > 64 * 1024 * 1024) throw new Error("The demo paper was empty or exceeded the 64 MiB browser limit.");
-      const pdfFile = new File([blob], ATTENTION_DEMO_FILENAME, { type: "application/pdf", lastModified: 0 });
-      elements.paperSourceGateStatus.textContent = "Opening the verified Attention paper locally—nothing is being uploaded.";
-      await beginWithPaper(pdfFile);
-    } catch (error) {
-      elements.loadAttentionDemo.disabled = false;
-      elements.paperFileInput.disabled = false;
-      elements.paperSourceGateStatus.textContent = `${error?.message || "The demo paper could not be fetched."} Choose a local PDF instead.`;
-    }
-  });
-  elements.paperFileInput.addEventListener("change", () => {
-    const [pdfFile] = elements.paperFileInput.files || [];
-    if (!pdfFile) return;
-    if (pdfFile.size === 0) {
-      elements.paperSourceGateStatus.textContent = "That file is empty. Choose a PDF with paper content.";
-      elements.paperFileInput.value = "";
-      return;
-    }
-    if (pdfFile.size > 64 * 1024 * 1024) {
-      elements.paperSourceGateStatus.textContent = "That PDF is larger than the 64 MiB browser-memory limit.";
-      elements.paperFileInput.value = "";
-      return;
-    }
-    elements.paperFileInput.disabled = true;
-    elements.loadAttentionDemo.disabled = true;
-    elements.paperSourceGateStatus.textContent = `Opening ${pdfFile.name} locally—nothing is being uploaded.`;
-    void beginWithPaper(pdfFile);
-  });
+  elements.loadAttentionDemo.addEventListener("click", () => void loadAttentionDemo());
+  elements.paperFileInput.addEventListener("change", openSelectedPaper);
 }

@@ -1273,10 +1273,10 @@ test("clears only the exact document snapshot and reports storage failures", asy
   const storage = memoryStorage();
   storage.values.set(key, "snapshot");
   storage.values.set(browserSnapshotKey("f".repeat(64)), "other");
-  assert.deepEqual(clearBrowserSnapshot({ storage, documentSha256: digest }), { status: "cleared", key });
+  assert.deepEqual(clearBrowserSnapshot({ storage, documentSha256: digest }), { status: "cleared", key, removedVersions: [3], remainingVersions: [] });
   assert.equal(storage.values.has(key), false);
   assert.equal(storage.values.size, 1);
-  assert.deepEqual(clearBrowserSnapshot({ storage, documentSha256: digest }), { status: "not_found", key });
+  assert.deepEqual(clearBrowserSnapshot({ storage, documentSha256: digest }), { status: "not_found", key, removedVersions: [], remainingVersions: [] });
 
   const removeError = new Error("Storage blocked");
   removeError.name = "SecurityError";
@@ -1287,5 +1287,8 @@ test("clears only the exact document snapshot and reports storage failures", asy
     reason: "storage_unavailable",
     errorName: "SecurityError",
     key,
+    phase: "remove",
+    removedVersions: [],
+    remainingVersions: [3],
   });
 });
