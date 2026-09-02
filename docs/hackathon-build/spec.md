@@ -164,82 +164,38 @@ Normative behavior:
 
 ## File Structure
 
-The public source becomes modular and reproducibly bundled. Generated assets are not hand-edited.
+The public source is modular native ESM with strict JSDoc/checkJs boundaries. The implemented layout below supersedes the initial proposed `webmcp/*.ts` tree; generated assets are never hand-edited.
 
 ```text
 PaperPilot/
-├─ package.json                                      [M]
-│  Add exact Graphology/Sigma/layout and browser-bundle scripts.
-├─ package-lock.json                                 [M]
-├─ webmcp/                                           [A]
-│  ├─ index.html
-│  │  Source template for the anonymous page.
-│  ├─ main.ts
-│  │  Composition/bootstrap and the declared WebMCP registration entrypoint.
-│  ├─ styles.css
-│  │  Paper-dominant layout, layers, graph/evidence rail, reflow, focus.
-│  ├─ contracts.ts
-│  │  Closed versioned document, anchor, annotation, graph, command, tool schemas.
-│  ├─ pdf/
-│  │  ├─ reader.ts
-│  │  │  PDF.js lifecycle, continuous multi-page rendering, text layers, outline, virtual page cache.
-│  │  ├─ document-index.ts
-│  │  │  Progressive page/text/heading index and coverage ledger.
-│  │  ├─ anchors.ts
-│  │  │  Range geometry, PDF-space conversion, region anchors, digest binding.
-│  │  ├─ annotation-overlay.ts
-│  │  │  Render/focus marks from canonical geometry; no source authority.
-│  │  └─ region-controller.ts
-│  │     Pointer/numeric region mode and cancellation.
-│  ├─ graph/
-│  │  ├─ graph-store.ts
-│  │  │  Graphology MultiDirectedGraph and canonical import/export projection.
-│  │  ├─ structural-map.ts
-│  │  │  Outline/heading/page-group seed and coverage state.
-│  │  ├─ graph-commands.ts
-│  │  │  Atomic validation, forward/inverse patch reducer, revision/digest logic.
-│  │  ├─ graph-view.ts
-│  │  │  Sigma projection, filters, focus, and layout preferences.
-│  │  └─ graph-outline.ts
-│  │     Accessible node/edge list with equivalent actions.
-│  ├─ mentor/
-│  │  ├─ explanation-contract.ts
-│  │  │  Graph-aware seven-section validation.
-│  │  └─ mentor-panel.ts
-│  │     Review UI, authority labels, source and graph links.
-│  ├─ webmcp/
-│  │  ├─ tool-contracts.ts
-│  │  │  Closed schemas and bounded results.
-│  │  └─ register-tools.ts
-│  │     Feature detection, registration lifecycle, trusted refs, callbacks.
-│  ├─ provenance/
-│  │  ├─ event-ledger.ts
-│  │  │  Append-only observed action records.
-│  │  └─ evidence-panel.ts
-│  │     Simple trail and technical details.
-│  ├─ persistence/
-│  │  └─ browser-snapshot.ts
-│  │     Bounded schema migration and digest-keyed localStorage.
-│  └─ tests/
-│     Contract/reducer/geometry/index/fallback fixtures.
-├─ scripts/
-│  └─ build-webmcp.mjs                               [A]
-│     Reproducible bundle/copy/worker build into public/webmcp.
-├─ public/webmcp/                                    [generated/release output]
-│  ├─ index.html
-│  └─ assets/*
-├─ .github/workflows/pages.yml                       [M]
-│  Run npm ci + build:webmcp, then upload public/.
-├─ scripts/check-devpost-readiness.mjs               [M]
-│  Gate spatial Reader, graph tools, mutation, Undo/Redo, a11y, and no export.
-├─ devpost-requirements.json                         [M]
-├─ README.md                                         [M]
-└─ docs/
-   ├─ ADR-PDF-ANNOTATION-RUNTIME.md                  [A]
-   ├─ DEVPOST-JUDGE-GUIDE.md                         [M]
-   ├─ DEVPOST-COMPLIANCE.md                          [M]
-   ├─ DEMO-VIDEO-PLAN.md                             [M]
-   └─ hackathon-build/*                              [M]
+├─ package.json / package-lock.json   Exact browser dependencies and build commands
+├─ tsconfig.webmcp.json              Strict checkJs module boundary
+├─ spikes/webmcp-contract/           Active authored public application
+│  ├─ index.html / spike.css         Centered paper and accessible rails
+│  ├─ app.mjs                       Composition, human controls, tool mounting
+│  ├─ contracts.mjs                 Frozen tools, trusted state and command queue
+│  ├─ pdf-intake.mjs / pdf-viewer.mjs  Bounded intake and continuous PDF.js viewer
+│  ├─ spatial-anchor.mjs            Document-bound immutable PDF geometry
+│  ├─ structural-map.mjs / paper-analysis.mjs  Coverage and unreviewed candidates
+│  ├─ graph-view-model.mjs / presentation-layout.mjs  Sigma/outline view state
+│  ├─ workspace-patch.mjs           Canonical reversible graph/annotation patches
+│  ├─ mentor-contract.mjs / mentor-review.mjs  Claim authority and human review
+│  ├─ activity-ledger.mjs / webmcp-observer.mjs  Actual callback evidence
+│  ├─ accessibility-projection.mjs / interaction-state.mjs  Equivalent controls
+│  ├─ browser-snapshot.mjs          Bounded SHA-qualified recovery and migration
+│  ├─ *.test.mjs                    Unit, actual-handler and real-PDF regressions
+│  └─ test-support/                 Original synthetic PDF fixtures
+├─ scripts/package-webmcp-pages.mjs  Fingerprinted, reproducible Pages packager
+├─ scripts/serve-webmcp-contract-spike.mjs  Constrained source or --pages server
+├─ .paperpilot-pages/               Ignored generated release output
+│  ├─ webmcp/                       Versioned authored modules and HTML
+│  └─ vendor/                       Pinned PDF.js, Graphology and Sigma
+├─ public/webmcp/                   Historical two-tool source; not the Pages artifact
+├─ .github/workflows/pages.yml      Clean install, browser gates, Pages publication
+├─ scripts/check-devpost-readiness.mjs  Technical/human/submission gate separation
+├─ scripts/devpost-release-evidence.mjs  Closed evidence and artifact validation
+├─ devpost-requirements.json        Judge requirements and evidence pointers
+└─ docs/release/                    Dated proof, JSON evidence and screenshots
 ```
 
 Later authenticated port:
@@ -1528,23 +1484,27 @@ Tool registration proves only availability. Each claim requires the matching cal
 
 ```text
 npm ci
-npm run build:webmcp
-npm run test:webmcp
 npm run lint
 npm run typecheck
+npm run typecheck:webmcp
 npm test
+npm run test:webmcp:contracts
+npm run test:webmcp:pages
+node --test scripts/devpost-release-evidence.test.mjs
 npm run build
+npm run webmcp:pages:build
+npm run devpost:check -- --phase technical
 npm run devpost:check
 ```
 
-The public release must also be loaded from the deployed HTTPS URL in a clean context. Automated adapter tests do not replace real named-client callback proof.
+The public release must also be loaded from the deployed HTTPS URL in a clean context. Automated adapter tests do not replace real named-client callback proof. `--phase technical` leaves human accessibility and submission controls visibly pending; its success is not overall readiness. The default full check remains red until those actual checks are completed. Use `npm run webmcp:pages:serve` to inspect the same packaged app locally without starting a database.
 
 ## Deployment Strategy
 
 ### Public vertical slice
 
 - GitHub Pages remains the first release path because the URL already works anonymously.
-- Workflow runs `npm ci`, `npm run build:webmcp`, automated WebMCP tests, and uploads `public/`.
+- The Pages workflow runs `npm ci --ignore-scripts`, `typecheck:webmcp`, `test:webmcp:contracts`, `test:webmcp:pages`, and `webmcp:pages:build`, then uploads `.paperpilot-pages/`. Root `npm run build` verifies the separate Next.js service; it does not create the judged Pages artifact.
 - Bundle Graphology/Sigma/PDF.js from the lockfile; use a same-origin PDF.js worker.
 - No environment secret or backend endpoint enters the bundle.
 - Preserve the existing live proof document as historical; create a new redesign proof record tied to the new commit/client tuple.

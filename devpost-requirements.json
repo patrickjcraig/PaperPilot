@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "event": {
     "name": "The WebMCP Challenge",
     "slug": "webmcp",
@@ -19,30 +19,61 @@
     "liveUrl": "https://patrickjcraig.github.io/PaperPilot/webmcp/",
     "repositoryUrl": "https://github.com/patrickjcraig/PaperPilot",
     "demoVideoUrl": "",
-    "releaseCommit": "c99a42dba2c4fb1c746c1146e335e665d6624c93",
-    "releaseProofPath": "docs/release/WEBMCP-LIVE-PROOF.md",
+    "releaseCommit": "673726c0f00756bdbfa57a4c1c72ab3d61062d4a",
+    "releaseProofPath": "docs/release/PUBLIC-RELEASE-PROOF-2026-09-02.md",
+    "releaseEvidencePath": "docs/release/public-release-proof.json",
     "demoVideoPlanPath": "docs/DEMO-VIDEO-PLAN.md"
   },
   "judgeExperience": {
     "instructionsPath": "docs/DEVPOST-JUDGE-GUIDE.md",
     "productScopePath": "docs/hackathon-build/scope.md",
     "productRequirementsPath": "docs/hackathon-build/prd.md",
-    "paperPilotToolIntegrationPath": "public/webmcp/paperpilot.js",
+    "technicalSpecificationPath": "docs/hackathon-build/spec.md",
+    "readerEntryPath": "spikes/webmcp-contract/index.html",
+    "paperPilotToolIntegrationPath": "spikes/webmcp-contract/contracts.mjs",
     "requiresPaperAgnosticPdfFlow": true,
     "prohibitsPaperSpecificDemoLogic": true,
+    "requiresCenteredSpatialPdfWorkspace": true,
+    "prohibitsPersistentVisibleTranscript": true,
+    "requiresAutomaticWholePaperKnowledgeMap": true,
+    "requiresReversibleAgentGraphMutation": true,
+    "requiresReversibleAgentAnnotationMutation": true,
+    "requiresHumanOnlyUndoRedo": true,
+    "requiresAccessibleGraphOutline": true,
+    "prohibitsPdfExport": true,
+    "rejectsCrossPaperOperations": true,
     "requiredSelectionKinds": [
-      "exact-text",
+      "spatial-exact-text",
       "page-region",
       "whole-figure",
       "figure-region",
-      "same-paper-synthesis"
+      "whole-paper-knowledge-map"
     ],
     "requiredWebMcpCapabilities": [
-      "read-bounded-active-pdf-selection",
-      "stage-structured-mentor-explanation"
+      "read-bounded-spatial-focus",
+      "read-source-grounded-knowledge-graph",
+      "navigate-pdf-annotation-and-graph",
+      "apply-reversible-source-grounded-graph-mutation",
+      "apply-reversible-anchor-annotation",
+      "stage-source-and-graph-grounded-explanation"
+    ],
+    "requiredWebMcpToolNames": [
+      "paperpilot.read_focus",
+      "paperpilot.read_graph",
+      "paperpilot.stage_explain",
+      "paperpilot.apply_graph",
+      "paperpilot.apply_annotation",
+      "paperpilot.focus_source"
     ],
     "testedClients": [
-      "OpenAI Codex desktop 26.820.10647.0 — in-app browser WebMCP capability, Chromium 151.0.7922.170, on Windows (tested 2026-08-30)"
+      {
+        "name": "OpenAI Codex In-app Browser WebMCP",
+        "os": "Windows",
+        "observedOn": "2026-09-02",
+        "browserVersion": null,
+        "agentVersion": null,
+        "versionNote": "Exact browser and agent build strings were not exposed during this run. Historical August 30 versions are not reused as current evidence."
+      }
     ]
   },
   "manualVerifications": {
@@ -50,11 +81,25 @@
     "licenseVisibleOnRepositoryHome": true,
     "liveUrlAnonymousOrCredentialsVerified": true,
     "liveUrlWebMcpVerified": true,
-    "paperAgnosticPdfFlowVerified": false,
-    "requiredSelectionKindsVerified": false,
-    "observableWebMcpActivityVerified": false,
+    "redesignedWebMcpSuiteVerified": true,
+    "paperAgnosticPdfFlowVerified": true,
+    "requiredSelectionKindsVerified": true,
+    "observableWebMcpActivityVerified": true,
     "accessibilityPrimaryFlowVerified": false,
-    "truthfulFallbackVerified": false,
+    "browser200PercentZoomVerified": false,
+    "liveUrlAnotherMachineVerified": false,
+    "centeredPdfWorkspaceVerified": true,
+    "noPersistentSourceTranscriptVerified": true,
+    "spatialAnnotationVerified": true,
+    "wholePaperMapCoverageVerified": true,
+    "graphNavigationVerified": true,
+    "reversibleAgentGraphMutationVerified": true,
+    "reversibleAgentAnnotationMutationVerified": true,
+    "undoRedoVerified": true,
+    "graphAccessibilityVerified": false,
+    "noPdfExportVerified": true,
+    "crossPaperRejectionVerified": true,
+    "truthfulFallbackVerified": true,
     "demoVideoUnderThreeMinutes": false,
     "demoVideoHasExplanatoryAudio": false,
     "submissionNotDraft": false,
@@ -65,7 +110,7 @@
       "OpenAI Codex"
     ],
     "webMcpClients": [
-      "OpenAI Codex desktop 26.820.10647.0 in-app browser WebMCP capability"
+      "OpenAI Codex In-app Browser WebMCP on Windows; tested 2026-09-02, exact current browser/agent builds unavailable"
     ],
     "learningLevel": "",
     "careerValue": ""

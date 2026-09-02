@@ -2,49 +2,70 @@
 
 PaperPilot is a research workspace for discovering scholarly literature, collecting it with source provenance, organizing it around explicit research questions, and turning close reading into an auditable evidence trail.
 
-## Try the live WebMCP mentor
+## Try the live WebMCP paper mentor
 
-Open the [public PaperPilot WebMCP demo](https://patrickjcraig.github.io/PaperPilot/webmcp/) in a WebMCP-capable browser. Upload any born-digital scientific PDF, freeze a difficult passage, and let an agent call `paperpilot.read_sources` and `paperpilot.stage_explanation`. The proposal remains unsaved until the reader explicitly keeps or discards it, and the source/callback trail can be downloaded as JSON.
+Open the [public PaperPilot WebMCP reader](https://patrickjcraig.github.io/PaperPilot/webmcp/?release=673726c) in a WebMCP-capable browser. Choose the official **Attention Is All You Need** demo or your own admitted PDF, read its continuous pages in the center, highlight a difficult passage or describe a region, and ask the browser mentor to explain it and evolve its source-linked knowledge graph. Six real site tools support reads, source navigation, explanation staging, and reversible graph/annotation edits. Human-only **Undo** and **Redo** keep those edits reviewable; explanation **Save** and **Discard** remain separate decisions.
 
-This public hackathon slice processes the PDF and optional saved note in the browser. It proves real WebMCP registration, bounded source disclosure, staged mentor output, and human review; it does not claim server custody, OCR, figure understanding, scientific verification, or completion of the Supabase service described below.
+The reproduced public checkpoint is source `673726c0f00756bdbfa57a4c1c72ab3d61062d4a`, packaged fingerprint `d66782d3e9a1d6c723f93374b3d622268801a489337245218f17cace2c1b7ace`, deployed by [Pages run 33640830540](https://github.com/patrickjcraig/PaperPilot/actions/runs/33640830540). Fresh public Attention and GW150914 runs each completed all six native tools, exact-source graph/annotation edits, source reopening and exact three-digest Undo/Redo round-trips. The four-page weak-text fixture retained its three limited-page warnings and visibly returned to page 3 after Undo/Redo. These are previously used fixtures through the shared arbitrary-PDF pipeline, not newly unseen papers. This follow-up fixes source navigation after Undo/Redo and first/last-word reads with empty surrounding quote context. The release query avoids stale entry HTML; it is not a permanently pinned deployment URL. The [current release proof index](docs/release/PUBLIC-RELEASE-PROOF-2026-09-02.md) separates those results from the earlier [hardening record at `274c739`](docs/release/RECOVERY-ACCESSIBILITY-HARDENING-2026-09-02.md), including its native public receipts, local/automated checks and remaining human gates. The [old two-tool recording](docs/release/WEBMCP-LIVE-PROOF.md) is historical only.
 
-> **Active build focus (2026-08-29): an accessible WebMCP research mentor for scientific PDFs.** A reader uploads a previously unseen PDF that meets published admission limits, selects exact text, an equation, a page or figure region, a whole figure, or a bounded same-paper source set, and asks a browser agent for help. PaperPilot exposes only that frozen source through WebMCP, stages the mentor's structured response unchanged, shows a source → WebMCP → mentor → human evidence trail, and lets the reader explicitly **Save to notes** or **Discard** it. New crawler/networking, Zotero, collaboration, and scale work is deferred until this loop is proven. The canonical requirements are the guided [Scope](docs/hackathon-build/scope.md) and [PRD](docs/hackathon-build/prd.md).
+> **Current public scope:** the actual PDF is central, with no persistent transcript. The automatic map covers document structure, not complete semantic understanding. Arbitrary bounded PDFs use the same pipeline; limits are 25 MiB and 200 pages, and weak text stays explicitly limited. Figures and regions are page-bound locators with reader descriptions: `locator_only`, `pixelUseVerified: false`, not verified image understanding. The original PDF is immutable and never exported. Human screen-reader, literal 200% browser zoom, forced-colors/reduced-motion inspection and another-machine review remain pending; this is not an accessibility-certification or submission-complete claim. The canonical requirements are the guided [Scope](docs/hackathon-build/scope.md), [PRD](docs/hackathon-build/prd.md), and [technical Spec](docs/hackathon-build/spec.md).
 
-> **Approved deployment architecture (2026-08-30): serverless only.** The
-> release target is Vercel Next.js Functions + Vercel Workflow + one fresh
+> **Later authenticated service architecture: serverless only.** The
+> account-synchronized port targets Vercel Next.js Functions + Vercel Workflow + one fresh
 > non-persistent Vercel Sandbox per PDF attempt, backed by Supabase PostgreSQL
 > and private Supabase Storage. There is no release VPS, Compose host, polling
 > worker, shared local volume, production-local filesystem, or local database.
 > Browser PDF transfers bypass Function bodies through short-lived exact-object
-> capabilities. See the canonical [serverless architecture decision](docs/SERVERLESS-ARCHITECTURE.md).
+> capabilities. This later port, Zotero, crawler acquisition, collaboration and cross-paper graph UI are not required to run the anonymous GitHub Pages reader. See the canonical [serverless architecture decision](docs/SERVERLESS-ARCHITECTURE.md).
+
+### Run the same public reader locally
+
+The authored entrypoint is [spikes/webmcp-contract/index.html](spikes/webmcp-contract/index.html), composed by [app.mjs](spikes/webmcp-contract/app.mjs). [contracts.mjs](spikes/webmcp-contract/contracts.mjs) owns the six closed tool contracts and registration boundary. The lockfile-based packager creates `.paperpilot-pages/` with same-origin PDF.js, Graphology and Sigma assets; it does not package paper bytes or secrets. This path needs no database, Supabase credentials or model-server key.
+
+```bash
+npm ci --ignore-scripts
+npm run typecheck:webmcp
+npm run test:webmcp:contracts
+npm run test:webmcp:pages
+npm run webmcp:pages:build
+npm run webmcp:pages:serve
+```
+
+Then open `http://127.0.0.1:4175/webmcp/`. Choose your own PDF or explicitly open the live demo; there are no tools until a paper is ready. A browser without WebMCP can still use the local reader, annotations and graph, but has no native mentor callback proof. The separate `spike:webmcp:serve` command serves authored development files; it is not the packaged-release verification command.
+
+The optional `spike:webmcp:paper:fetch` and `spike:webmcp:paper:verify` commands reproduce the ignored Attention fixture for development. Its [source manifest](spikes/webmcp-contract/assets/papers/attention-is-all-you-need-1706.03762v7.source.json) records the official URL, attribution and byte digest. The paper uses arXiv's non-exclusive distribution license, not PaperPilot's MIT license. Pinning the optional demo's bytes does not specialize the arbitrary-PDF parser or graph logic.
+
+Recovery is opt-in through the human Save controls. A bounded 4 MiB `paperpilot:webmcp:v3:<PDF-SHA-256>` snapshot stores graph/annotation state, reversible history and saved mentor notes—not the PDF bytes. Reload requires reuploading byte-identical PDF data. Legacy v1/v2 copies are preserved during ordinary load/migration/Save; explicit, cancellable **Clear saved copies** removes only the current paper's known saved versions and leaves its open workspace intact. Failed or quota-limited saves remain explicitly unsaved. There are no local-database or server writes in this public slice.
 
 ## The WebMCP Challenge build
 
-PaperPilot is being entered in [The WebMCP Challenge](https://webmcp.devpost.com/) as an **existing application with new WebMCP work**. The submission centers on an actual `document.modelContext.registerTool` Reader loop: a browser agent reads one bounded, user-visible PDF source or same-paper source set and stages a structured research-mentor explanation for private review. PaperPilot keeps exact document evidence, page-image-derived context, mentor knowledge, external citations, observed WebMCP callbacks, and the authenticated reader's save/discard decision distinct. The staged response is immutable; the reader may add a separately labeled **My takeaway**.
+PaperPilot is being entered in [The WebMCP Challenge](https://webmcp.devpost.com/) as an **existing application with new WebMCP work**. The release uses real `document.modelContext.registerTool` callbacks with six frozen names: `paperpilot.read_focus`, `paperpilot.read_graph`, `paperpilot.focus_source`, `paperpilot.stage_explain`, `paperpilot.apply_graph`, and `paperpilot.apply_annotation`. Fresh public Attention and GW150914 walkthroughs invoked all six through Codex desktop's In-app Browser on Windows; unreported browser/model build strings are not inferred from the older recording. PaperPilot keeps automatic structure, exact paper evidence, mentor interpretation/background, unverified external citations, observed callbacks, graph/annotation revisions, human Undo/Redo, and explanation Save/Discard distinct. New explanations carry per-claim authority and source/graph links; older string notes remain explicitly unclassified.
 
 Repository readiness is intentionally fail-closed. Run:
 
 ```bash
+npm run devpost:check -- --phase technical
 npm run devpost:check
 ```
 
-The command audits the canonical Scope/PRD, paper-agnostic PDF and selection requirements, public repository, license, live HTTPS experience, real Reader registration, cross-PDF proof matrix, observable WebMCP activity, accessibility verification, truthful fallback, tested clients, demo video, dated new-work evidence, and release freeze. Missing evidence fails the command instead of being silently treated as complete.
+The technical phase audits the implemented public artifact and reproduced technical evidence. The default full check additionally requires human accessibility/access inspection, final narrated video, handoff and submission/freeze evidence; it is expected to remain red until those checks are actually complete. Neither phase treats a registered tool as an invocation or automated accessibility tests as a human screen-reader pass. Missing evidence remains an explicit failure.
 
 - [Canonical guided Scope](docs/hackathon-build/scope.md)
 - [Canonical product requirements](docs/hackathon-build/prd.md)
 - [Devpost compliance requirements](docs/DEVPOST-COMPLIANCE.md)
 - [Judge guide and under-three-minute flow](docs/DEVPOST-JUDGE-GUIDE.md)
 - [Dated baseline/new-work disclosure](docs/HACKATHON-CHANGELOG.md)
+- [Current public release proof index](docs/release/PUBLIC-RELEASE-PROOF-2026-09-02.md)
 - [Superseded webpage-provenance architecture reference](docs/WEBMCP-PROVENANCE-SCOPE.md)
 - [Machine-readable readiness manifest](devpost-requirements.json)
 
 The repository now contains three intentionally separate product paths:
 
-- `/webmcp/` is the deployed hackathon vertical slice. It accepts arbitrary born-digital PDFs in the browser, registers the two canonical Reader tools, stages a mentor proposal, and shows callback provenance without exposing an agent-callable Save/Discard action. This is the current judged proof path.
+- `/webmcp/` is the deployed six-tool, centered continuous-PDF reader with structural mapping, spatial annotations, graph navigation, claim-level mentor proposals, reversible edits and browser-local recovery. It is the judged public proof path. Its release record separately identifies passing technical checks and pending human acceptance.
 - `/` is the legacy deterministic, browser-local product demo. It remains the fastest way to exercise Discover, Inbox, Reader, evidence, and collections without an account, but it is not the judged WebMCP Challenge proof path.
 - `/app` is the live-service path. It has verified email/password sessions, a PostgreSQL-backed workspace, live OpenAlex discovery, durable projects/imports/collections/evidence, credential-safe Zotero OAuth plus explicit library discovery/selection and background metadata synchronization, authenticated upload and governed one-PDF crawler custody through quarantine, validation, and user-directed custody retirement, explicit paper linking, a bounded Reader over authoritative embedded-text extraction, immutable manifest-bound passage capture, and explicit review/re-anchor successor revisions with a visible audit ledger. Start at `/sign-up` to use it.
 
-The split is deliberate. Authenticated features never silently fall back to browser persistence. The `/webmcp/` slice supplies the immediate public registration/callback/core-flow proof with explicit browser-local boundaries; the authenticated Reader remains the target for durable account-synchronized records and the complete production service.
+The split is deliberate. Authenticated features never silently fall back to browser persistence. The `/webmcp/` release has explicit browser-local recovery; the authenticated Reader remains the later port for durable account-synchronized records and the complete serverless service. The service sections below do not describe a backend requirement for the public reader.
 
 ## Current service status
 
@@ -60,7 +81,7 @@ The split is deliberate. Authenticated features never silently fall back to brow
 | Accounts and sessions | Not required | Better Auth database sessions, verification, recovery, and shared throttling |
 | Zotero | Product preview | Read-only OAuth 1.0a, personal/group discovery, explicit selection, durable cursor-safe metadata sync, sanitized attachment discovery, opt-in one-file imports, and shared quarantine/validation/extraction custody; metadata and attachment workers run separately |
 | PDF upload | Product preview | Existing exact-custody domain path is implemented; the required direct-to-private-Supabase reserve/finalize adapter and Workflow/Sandbox runtime are the active Gate 0 migration and are not yet release-verified |
-| WebMCP/MCP review | Legacy browser-local surfaces; not challenge proof | Metadata proposals already stage into a digest-bound human-review dossier. The challenge Reader target is specified but not release-verified: real `document.modelContext` tools read bounded exact-text, page/figure/region, or same-paper synthesis sources and stage immutable structured mentor responses for explicit human retention. Direct MCP tokens and remote byte acquisition remain deferred |
+| WebMCP/MCP review | Legacy `/` surfaces are not the judged proof | The separate public `/webmcp/` release has six reproduced native capabilities, source-linked graph/annotation revisions and human Undo/Redo. Porting those contracts into authenticated `/app` durability remains later work; metadata proposals in the existing service are not the public reader's execution path. Direct MCP tokens and remote byte acquisition remain deferred. |
 | Crawler | Live first mode | The existing supervised-worker implementation is retained as migration reference, not as a serverless release path. It must be converted to bounded event-driven Workflow/Sandbox execution after the upload/WebMCP vertical slice; no daemon or local-quarantine fallback is allowed in Production |
 
 The UI labels live, demo, preview, and upcoming states explicitly. A metadata result is never presented as processed full text.
@@ -315,7 +336,7 @@ Browser
                                                    │
                                                    ├─ auth + authorization + idempotency
                                                    ├─ Prisma → Supavisor transaction pooler
-                                                   ├─ WebMCP read/stage control plane
+                                                   ├─ WebMCP focus/graph/navigation/explanation/reversible-mutation control plane
                                                    └─ reserve/finalize PDF object + start Workflow
 
 Browser ── short-lived exact-object capability ──> private Supabase Storage
@@ -432,7 +453,7 @@ Private PDF retirement is not whole-record erasure. Immutable receipts, pseudony
 
 ### Browser snapshot v3
 
-The demo snapshot key is `paperpilot:workspace:v3`. It now preserves projects, imports, Inbox entries, evidence notes, collections, and the active project together. Legacy v2 snapshots migrate forward, malformed/future data fails safely, and OAuth-style page reloads no longer discard in-memory evidence.
+This section describes the legacy product demo at `/`, not the public `/webmcp/` reader. Its snapshot key is `paperpilot:workspace:v3`, preserving projects, imports, Inbox entries, evidence notes, collections, and the active project together. Legacy v2 snapshots migrate forward, malformed/future data fails safely, and OAuth-style page reloads no longer discard in-memory evidence. The public reader instead uses the separate PDF-digest-qualified `paperpilot:webmcp:v3:<sha>` recovery contract described above.
 
 The demo workspace client adds a bounded `paperpilot:workspace-client:v1` sidecar for optimistic versions and idempotency receipts. This is a demo compatibility layer; the authenticated service uses database receipts.
 
@@ -551,8 +572,10 @@ the later Workflow/Sandbox steps remain under construction:
    reconciler stops tagged Sandboxes left by external Workflow cancellation or
    platform termination; `finally` alone is not accepted as orphan proof.
 9. Exercise two unrelated previously unseen PDFs through direct upload,
-   admission, Reader render, exact-text readiness when available, source freeze,
-   real WebMCP read/stage, human Save/Discard, refresh, and source reopen. Record
+   admission, centered multi-page Reader render with no transcript, automatic
+   structural mapping, spatial text/region anchors, real WebMCP focus/graph/
+   navigation/explanation/mutation callbacks, graph ↔ PDF source return,
+   human Undo/Redo, explanation Save/Discard, and byte-identical restore. Record
    the exact Vercel URL/deployment, commit, Supabase project, Workflow/Sandbox
    correlations, policy/toolchain identities, accessibility results, and
    sanitized evidence bundle.
@@ -572,13 +595,13 @@ observability, recovery drills, Preview evidence, and the WebMCP client gates.
 
 ## Known boundaries
 
-- Authenticated Discover → Inbox → project import, project detail, collection writes, structured manual evidence, Zotero OAuth connect/status/disconnect, library discovery/selection, durable metadata synchronization, sanitized attachment discovery, opt-in manual stored-PDF import, metadata-only WebMCP proposals, digest-bound human review/OpenAlex-backed canonical promotion, the governed explicit one-PDF crawler plus confirmed custody retirement, PDF quarantine, durable validation/extraction, explicit validated-PDF linking, bounded live Reader pagination, immutable grounded passage capture, explicit review/re-anchor successors, revision-ledger history, and collaborative workspace invitations/roles/rosters/switching are implemented in the existing domain architecture. Challenge-scoped figure/region interaction, same-paper selection sets, Reader mentor WebMCP tools, private Supabase Storage transfer, Vercel Workflow, and Vercel Sandbox execution are specified but not yet release-verified. Broad OCR plus automatic figure, panel, caption, equation, and section detection; append-only WebMCP duplicate-refresh successors; direct MCP authorization; remote WebMCP byte acquisition; comment/mention activity; note/annotation bodies; and exports remain subsequent slices.
+- Authenticated Discover → Inbox → project import, project detail, collection writes, structured manual evidence, Zotero OAuth connect/status/disconnect, library discovery/selection, durable metadata synchronization, sanitized attachment discovery, opt-in manual stored-PDF import, metadata-only WebMCP proposals, digest-bound human review/OpenAlex-backed canonical promotion, the governed explicit one-PDF crawler plus confirmed custody retirement, PDF quarantine, durable validation/extraction, explicit validated-PDF linking, bounded live Reader pagination, immutable grounded passage capture, explicit review/re-anchor successors, revision-ledger history, and collaborative workspace invitations/roles/rosters/switching are implemented in the existing domain architecture. Separately, the public `/webmcp/` reader has released technical proof for its centered PDF, whole-paper structural map, Graphology/Sigma and DOM outline, six tools, reversible graph/annotation revisions and Undo/Redo; full human accessibility acceptance remains open. Cross-paper graph UI, broad OCR/automatic figure-panel-caption-equation detection, direct MCP authorization, remote WebMCP byte acquisition, collaboration activity, and annotated-PDF export remain subsequent slices. The original PDF stays immutable, and the current scope exposes no PDF writer or export control.
 - PDF quarantine is deliberately not a safety verdict. Neither quarantined bytes, metadata, a merely `READY` document, nor unlinked extracted storage unlocks Reader. The Reader serves only an explicitly linked document whose current accepted validation and authoritative current-policy extraction generation agree.
 - The validation/extraction contracts, leases, retries, dead letters, immutable attestations/generations, standalone tools, and one-shot worker functions exist. The old polling entrypoints and Compose topologies are not deployable production paths. Gate 0 must build, scan, digest-pin, and adversarially exercise the PDF-tools image in one fresh non-persistent Vercel Sandbox per attempt.
 - The reference extractor's single-use mode is only migration input. Production requires a new Sandbox for every attempt, bounded resources, deny-all egress while parsing, exact object capabilities, receipt fencing, and unconditional termination. Its self-reported toolchain digest detects drift only; pinned-image and release evidence are still required.
 - The current upload adapter uses a private local filesystem and the current Reader route proxies complete PDFs. Both are explicitly blocked for Vercel release. Direct private Supabase Storage reserve/finalize upload and exact-generation signed Reader download are required before upload traffic is enabled.
 - Reader, workspace bootstrap, and upload polling share the same fail-closed validation/extraction authority. PostgreSQL now creates an immutable admission seal only after the complete manifest passes ordered/canonical-text/hash/locator checks; Reader requires that seal, verifies a user/workspace/paper-bound HMAC cursor, and keyset-reads only the requested page plus one boundary predecessor. Bootstrap and upload status fetch no chunk text, and the public Reader route atomically consumes dedicated user/workspace/trusted-IP read budgets. Production must use separate non-owner runtime and migration roles because a table owner or superuser can bypass trigger-based integrity controls.
-- The guided demo Reader still uses bundled papers. The live Reader serves verified chunks only after explicit linking and authoritative extraction; an OpenAlex result remains metadata until that custody path completes. Live Reader capture creates a source-current but researcher-unreviewed `captured` record. Review and source re-anchoring create immutable successors and preserve the prior quote/anchor; they do not turn metadata-only results into possessed full text.
+- The legacy `/` demo Reader still uses bundled papers; the public `/webmcp/` reader accepts arbitrary admitted local PDFs plus an explicit optional Attention download. The authenticated `/app` Reader serves verified chunks only after explicit linking and authoritative extraction; an OpenAlex result remains metadata until that custody path completes. Live Reader capture creates a source-current but researcher-unreviewed `captured` record. Review and source re-anchoring create immutable successors and preserve the prior quote/anchor; they do not turn metadata-only results into possessed full text.
 - Zotero connection alone does not import metadata or files: an owner/admin must discover and explicitly select readable libraries, request or await a scheduled metadata run, and keep the metadata worker online. Stored PDFs require a second owner/admin policy decision, one explicit file command, a deployment-reviewed redirect allowlist, and the separate attachment worker. Cursored metadata sync, sanitized attachment projection, fenced download/quarantine handoff, validation/extraction lifecycle projection, tombstones, provider backoff, and provenance are implemented; notes/annotation bodies, streaming notifications, and conflict-aware write-back are not.
 - PaperPilot does not directly scrape Google Scholar. Scholar-origin discoveries can enter through user-reviewed Zotero records, identifier/file intake, or the metadata-only WebMCP proposal route. The live crawler is an explicit one-PDF custody command, not a search-results scraper or autonomous discovery spider.
 - The crawler first mode and user-directed local custody retirement are implemented, but production enablement must remain allowlisted, policy-aware, rate-limited, separately supervised, and separate from Zotero attachment ingestion. It still requires reviewed deployment values, a durable version-addressable private storage backend, explicit storage-authority generation management, public-origin and deletion-race adversarial drills, monitoring, alerts, backups/retention policy, and recovery runbooks.

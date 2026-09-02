@@ -61,6 +61,24 @@ These capabilities may provide context for the demo, but they must not be repres
 - Public release-evidence commit: [`503cfee0ee714428dc466ce29b6a2dff85881ad8`](https://github.com/patrickjcraig/PaperPilot/commit/503cfee0ee714428dc466ce29b6a2dff85881ad8).
 - Successful GitHub Pages deployment: [workflow run 33326383034](https://github.com/patrickjcraig/PaperPilot/actions/runs/33326383034).
 
+### 2026-08-30 — Approved graph-first spatial Reader requirements rebaseline
+
+- Replaced the transcript-oriented target with a centered multi-page PDF, PDF-aligned text and annotation overlays, a compact mentor surface, and a Graph/Evidence rail.
+- Added an automatic whole-paper structural map with honest fallbacks, Graphology/Sigma navigation plus an accessible outline, and paper-grounded semantic enrichment.
+- Expanded the target WebMCP contract from two tools to bounded focus/graph reads, source navigation, explanation staging, and reversible graph/annotation mutation capabilities.
+- Required trusted atomic command application, visible change notices, reversible tombstones, human-only Undo/Redo, cross-paper rejection, and no PDF export.
+- Recorded `highkite/pdfAnnotate`/`annotpdf` as an evaluated future PDF-byte writer rather than a runtime dependency while export remains excluded; PaperPilot's PDF-space anchor contract preserves a future integration boundary.
+- Updated requirements and planning documents only. No graph, annotation, richer-client, redesigned-layout, or redeployment implementation is claimed by this entry; the existing two-tool public release remains historical baseline evidence.
+- The approved scope is preserved in public commit [`414aaa3`](https://github.com/patrickjcraig/PaperPilot/commit/414aaa3). Later implementation evidence is recorded separately below; this requirements entry is not itself runtime proof.
+
+### 2026-09-02 — Delivered spatial reader, graph, mentor provenance and release hardening
+
+- The anonymous public reader now renders continuous arbitrary admitted PDFs, creates reader-originated spatial annotations, exposes a whole-paper structural map and separately labeled semantic ideas, and lets a native browser agent read, search, navigate, explain, and reversibly mutate graph/annotation records through six frozen WebMCP tools.
+- Added canonical forward/inverse history, human-only Undo/Redo, claim-level mentor provenance, source-linked explanations, opt-in SHA-qualified browser recovery, protected structure, bounded intake, and safe cross-paper rejection. PDF bytes remain immutable and are never saved in the recovery snapshot or exported.
+- Reproduced and fixed a post-Undo/Redo navigation defect: a successful source receipt could previously accompany a final scroll to the older focus. Explicit-target scrolling preserves the core's post-navigation commit and stale-request checks. Empty optional quote context is now omitted without changing exact text, anchor identity or authority.
+- Runtime checkpoints: [`1119ece`](https://github.com/patrickjcraig/PaperPilot/commit/1119ece) (canonical history), [`3cf6972`](https://github.com/patrickjcraig/PaperPilot/commit/3cf6972) (WebMCP lifecycle), [`fe1e603`](https://github.com/patrickjcraig/PaperPilot/commit/fe1e603) (mentor provenance), [`274c739`](https://github.com/patrickjcraig/PaperPilot/commit/274c739) (recovery/accessibility hardening), and [`673726c`](https://github.com/patrickjcraig/PaperPilot/commit/673726c) (source-navigation/context corrections).
+- Consolidated evidence and current limitations: [public release proof](release/PUBLIC-RELEASE-PROOF-2026-09-02.md). Human accessibility/access review, the narrated video and submission confirmation remain separate unfinished gates. The later authenticated Supabase/Vercel service is not represented as deployed by this public slice.
+
 ## Entry template
 
 Copy this block for each material addition:
