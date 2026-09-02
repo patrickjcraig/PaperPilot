@@ -53,7 +53,22 @@ PDF: Attention Is All You Need, official arXiv v7, 15 pages, SHA-256 `bdfaa68d89
 
 ## Publication
 
-Source checkpoint and fresh deployed verification will be appended after the scoped commit passes GitHub Pages CI. Local receipts above are not represented as deployed proof.
+Source checkpoint: `1119eceeb2d4bf2ccee9316929d4087c636e3bce`, published through successful [GitHub Pages run 33586931856](https://github.com/patrickjcraig/PaperPilot/actions/runs/33586931856). The workflow repeated strict WebMCP typechecking, all 399 module/contract tests, all 4 packaging tests and artifact construction before deployment.
+
+Fresh public URL: [PaperPilot WebMCP demo](https://patrickjcraig.github.io/PaperPilot/webmcp/). The browser-observed entrypoint and vendor script fingerprint matched the final local package: `c0930e815c2f2ec81bcc2c592106a8a24992eac447a5dcd13d9c9c1478eb65f6`.
+
+The same Codex desktop native browser capability invoked all six tool types against the deployed app, after loading Attention through its explicit demo button:
+
+1. `read_focus` callback `callback:d879a16a-4684-45f5-a240-0d4a15af5745` returned the exact PDF digest and revision-1 baseline. `read_graph` callback `callback:d6e4e93a-e40f-4a9b-9783-0c5a8ee3d5b5` found the scaling candidate. `focus_source` callback `callback:3c284a6c-d100-46c8-bd7b-1689ef80fa11` navigated to its page-4 sentence; the subsequent native read returned anchor digest `558a968665a5c7788bde515cf7d2b97896bbd6a8872e689c1755e4b8ab8d80cd`.
+2. `apply_graph` callback `callback:ae976036-0934-4bb6-9eb4-0a24bb4c1ad4` created **Why attention scores are scaled** and one grounded relation at revision 2. Operation: `operation:b18aeec9-df58-4919-9ebf-f804b6a8cc94`; revision: `revision:b689de01-ec78-453f-a192-520341b977fc`. Identical retry callback `callback:cb16da97-b379-4a77-be47-f983a1761046` returned that original operation without another edit.
+3. Human Undo revision 3 restored workspace digest `58fd5a4fba5b8d3d7e3c97b38dfe0fe521decafa98834c4dc98051f3b06f174e`; Redo revision 4 restored `56311f479e5a8c7295654f3e700456fd1b80537f890aca0aa13055db89a01a3f`. Native reads also confirmed the graph and annotation digests separately and the unchanged source-anchor digest.
+4. `apply_annotation` callback `callback:a3f86696-9b5d-41cc-9ba1-42172fc31712` created **Why scale the attention dot products?**, linked to that exact sentence and the issued graph node/relation, at revision 5. Operation: `operation:dc8c1365-dc11-4b66-b482-a0bf9ccbdbbf`; revision: `revision:19204c38-9f2d-43ac-871c-361734799ed0`. Human Undo revision 6 and Redo revision 7 reproduced all three semantic digests; final workspace digest was `c7d4b5d02d133b49f7771dc3798e83681e7256f240ef53bfd6d87fd67b837df7`. The exact anchor digest remained unchanged.
+5. `stage_explain` callback `callback:6e56b8af-8950-4358-a1c2-6d37d44dc2f6` staged a seven-section undergraduate mentor note, separating the selected paper sentence from background arithmetic and explicitly limiting its claims. It was neither saved nor verified.
+6. The visible Review changes panel contained six attributed original/compensating revisions. Expanding revision 7 showed the created annotation, one retained inverse record, one source anchor and the matching before/after workspace fingerprints. Visual inspection confirmed the centered exact PDF, visible question markup, staged mentor note and readable revision trail. Browser warning/error logs were empty.
+
+The public older-copy notice preserved the pre-existing legacy save; the tested workspace ended **Not saved · active tab only**, with no Save/Clear action. The public tab remains open on page 4 with its staged note and Review changes expanded. A final local reopen using this same release fingerprint recovered revision 8 and its previously recorded exact digest.
+
+CI emitted a non-blocking action-runtime deprecation warning for existing GitHub Actions versions. Updating those workflow actions remains a separate maintenance task; deployment itself completed successfully. Unrelated working-tree edits were excluded from the source checkpoint.
 
 ## Remaining boundaries
 
