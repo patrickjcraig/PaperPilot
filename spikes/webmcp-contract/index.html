@@ -254,41 +254,89 @@
           <div class="button-row">
             <button id="register-tools" type="button">Register tools</button>
             <button id="dispose-tools" type="button">Dispose tools</button>
-            <button id="human-undo" type="button">Human Undo</button>
-            <button id="human-redo" type="button" disabled>Human Redo</button>
           </div>
           <p class="hint">
             Ask the browser agent to inspect the ranked critical-idea candidates, navigate to one,
             refine or remove a node, and add one grounded relation. Undo is deliberately UI-only.
           </p>
-          <details class="activity-trail" open>
-            <summary>Evidence trail · observed WebMCP callbacks</summary>
-            <ol id="activity-list" tabindex="0" aria-label="Observed WebMCP callback receipts"></ol>
-          </details>
-          <details>
-            <summary>Frozen tool surface</summary>
-            <ol id="tool-list"></ol>
-          </details>
-          <details>
-            <summary>Frozen contract manifest</summary>
-            <dl class="contract-manifest">
-              <div><dt>Schema set SHA-256</dt><dd><code id="schema-set-hash">Computing…</code></dd></div>
-              <div><dt>Input / result ceilings</dt><dd id="byte-ceilings">32 KiB / 48 KiB</dd></div>
-              <div><dt>Runtime pins</dt><dd id="runtime-pins">Loading…</dd></div>
-              <div><dt>Visual evidence</dt><dd>locator_only until a controlled human-reviewed A/B pass</dd></div>
-            </dl>
-          </details>
-          <details>
-            <summary>Last structured result</summary>
-            <pre id="last-result">No callback observed yet.</pre>
-          </details>
         </aside>
 
         <aside class="graph-panel" aria-labelledby="graph-heading">
-          <header>
-            <p class="eyebrow">Graphology model · Sigma renderer</p>
-            <h2 id="graph-heading">Graph &amp; annotations</h2>
+          <header class="graph-rail-heading">
+            <div>
+              <p class="eyebrow">Your evidence desk</p>
+              <h2 id="graph-heading" tabindex="-1">Knowledge graph</h2>
+            </div>
+            <div class="graph-history-controls" role="group" aria-label="Reversible workspace changes">
+              <button id="human-undo" type="button" aria-label="Human Undo" title="Undo the last graph or annotation edit">Undo</button>
+              <button id="human-redo" type="button" aria-label="Human Redo" title="Redo the last undone edit" disabled>Redo</button>
+            </div>
           </header>
+          <div class="graph-rail-tabs" role="tablist" aria-label="Knowledge graph views">
+            <button id="graph-map-tab" type="button" role="tab" aria-selected="true" aria-controls="graph-map-panel" data-rail-tab="map">Map</button>
+            <button id="graph-annotations-tab" type="button" role="tab" aria-selected="false" aria-controls="graph-annotations-panel" tabindex="-1" data-rail-tab="annotations">Annotations <span id="annotation-count" class="count-chip">0</span></button>
+            <button id="graph-evidence-tab" type="button" role="tab" aria-selected="false" aria-controls="graph-evidence-panel" tabindex="-1" data-rail-tab="evidence">Evidence</button>
+          </div>
+          <section id="graph-visual-workspace" class="graph-visual-workspace" aria-label="Interactive map">
+            <div class="graph-view-toolbar">
+              <div role="group" aria-label="Map density">
+                <button id="graph-view-focus" type="button" aria-pressed="true">Key ideas</button>
+                <button id="graph-view-all" type="button" aria-pressed="false">All nodes</button>
+              </div>
+              <button id="graph-fit" type="button">Fit map</button>
+            </div>
+            <p id="graph-view-summary" class="graph-view-summary">A navigable map will appear with your paper.</p>
+            <div id="graph-canvas-shell" class="graph-canvas-shell">
+              <div id="sigma-container" class="sigma-container" aria-hidden="true"></div>
+              <div id="graph-drop-hint" class="graph-drop-hint" aria-hidden="true">Drop to place the linked idea</div>
+              <p id="graph-visual-fallback" class="graph-visual-fallback" hidden>Use the complete outline below to explore this map.</p>
+            </div>
+            <div class="graph-legend" aria-label="Node origin legend">
+              <span class="legend-structure">Structure</span><span class="legend-idea">Paper idea</span><span class="legend-reader">Reader</span><span class="legend-agent">Agent</span>
+            </div>
+            <div class="graph-arranger" aria-labelledby="graph-arranger-heading">
+              <h3 id="graph-arranger-heading" class="sr-only">Arrange the selected graph node</h3>
+              <div class="graph-nudge-row" role="group" aria-label="Move the selected graph node">
+                <button type="button" data-graph-nudge="left" aria-label="Move selected graph node left" disabled>←</button>
+                <button type="button" data-graph-nudge="up" aria-label="Move selected graph node up" disabled>↑</button>
+                <button type="button" data-graph-nudge="down" aria-label="Move selected graph node down" disabled>↓</button>
+                <button type="button" data-graph-nudge="right" aria-label="Move selected graph node right" disabled>→</button>
+                <button id="graph-layout-reset" type="button">Reset layout</button>
+              </div>
+              <p id="graph-layout-status" role="status" aria-live="polite">Drag a node, or select Arrange in the outline. Evidence stays fixed.</p>
+            </div>
+          </section>
+          <div class="graph-rail-body">
+            <section id="graph-selection" class="graph-selection" aria-labelledby="graph-selection-heading">
+              <p class="source-kicker">Selected in the map</p>
+              <h3 id="graph-selection-heading">Choose an idea</h3>
+              <p id="graph-selection-meta">Click a node to return to its paper source. Arrange changes only its position.</p>
+              <div id="graph-selection-detail"></div>
+              <output id="graph-selection-position" class="graph-selection-position"></output>
+            </section>
+            <section id="graph-map-panel" role="tabpanel" aria-labelledby="graph-map-tab" tabindex="0">
+              <form id="graph-search-form" class="graph-search" role="search" aria-labelledby="graph-search-heading">
+                <h3 id="graph-search-heading">Find an idea</h3>
+                <label class="sr-only" for="graph-search-query">Search graph nodes</label>
+                <div class="graph-search-row">
+                  <input id="graph-search-query" type="search" maxlength="120" placeholder="Search labels and summaries" />
+                  <button type="submit">Search</button>
+                  <button id="clear-graph-search" type="button">Clear</button>
+                </div>
+                <div class="graph-search-filters">
+                  <label>Type <select id="graph-filter-kind"><option value="">All types</option><option value="paper">Paper</option><option value="section">Section</option><option value="main_idea">Main idea</option><option value="concept">Concept</option><option value="term">Term</option><option value="method">Method</option><option value="result">Result</option><option value="prerequisite">Prerequisite</option><option value="figure">Figure</option><option value="equation">Equation</option></select></label>
+                  <label>Source <select id="graph-filter-authority"><option value="">All sources</option><option value="document_structure">Document structure</option><option value="paper_grounded">Paper-grounded</option><option value="mentor_background">Mentor background</option><option value="reader_authored">Reader-authored</option></select></label>
+                </div>
+                <p id="graph-search-status" role="status" aria-live="polite">Search uses the same label-and-summary matching as WebMCP.</p>
+                <ul id="graph-search-results" aria-label="Graph search results"></ul>
+              </form>
+              <details id="graph-outline-details" class="graph-outline-details" open>
+                <summary id="outline-heading">Complete graph outline <span id="graph-outline-count"></span></summary>
+                <p class="outline-help">Every node and directed relationship, including sources. The canvas is optional.</p>
+                <ul id="graph-outline" aria-label="Complete knowledge graph"></ul>
+              </details>
+              <details class="paper-route-details">
+                <summary>Whole-paper coverage &amp; route</summary>
           <section id="paper-map" class="paper-map" aria-labelledby="paper-map-heading" aria-describedby="paper-map-boundary" tabindex="-1">
             <div class="paper-map-heading">
               <div>
@@ -312,43 +360,16 @@
             <p id="paper-map-boundary" class="paper-map-boundary">
               Structure tells you where material appears. It does not mean PaperPilot understood every scientific claim.
             </p>
-            <details class="paper-structure-details" open>
+            <details class="paper-structure-details">
               <summary>Paper structure · <span id="paper-structure-count">0 ranges</span></summary>
               <ol id="paper-structure-list" aria-label="Page-ordered document structure">
                 <li>Paper structure has not been built.</li>
               </ol>
             </details>
           </section>
-          <section class="graph-arranger" aria-labelledby="graph-arranger-heading">
-            <div class="graph-arranger-copy">
-              <p class="eyebrow">Evidence desk</p>
-              <h3 id="graph-arranger-heading">Arrange the map</h3>
-              <p>Drag a node, or drop an annotation card onto the map to place its linked idea. Layout changes the view only—paper evidence and WebMCP facts stay fixed.</p>
-            </div>
-            <div class="graph-arranger-actions">
-              <p id="graph-layout-status" role="status" aria-live="polite">Choose a graph node or annotation to arrange it.</p>
-              <div class="graph-nudge-row" role="group" aria-label="Move the selected graph node">
-                <button type="button" data-graph-nudge="left" aria-label="Move selected graph node left" disabled>←</button>
-                <button type="button" data-graph-nudge="up" aria-label="Move selected graph node up" disabled>↑</button>
-                <button type="button" data-graph-nudge="down" aria-label="Move selected graph node down" disabled>↓</button>
-                <button type="button" data-graph-nudge="right" aria-label="Move selected graph node right" disabled>→</button>
-                <button id="graph-layout-reset" type="button">Reset graph</button>
-              </div>
-            </div>
-          </section>
-          <div id="graph-canvas-shell" class="graph-canvas-shell">
-            <div id="sigma-container" class="sigma-container" aria-hidden="true"></div>
-            <div id="graph-drop-hint" class="graph-drop-hint" aria-hidden="true">Drop to place the linked idea</div>
-          </div>
-          <section aria-labelledby="annotation-heading">
-            <div class="section-heading-row">
-              <h3 id="annotation-heading">Annotations</h3>
-              <span id="annotation-count" class="count-chip">0</span>
-            </div>
-            <p class="annotation-boundary">Annotations stay inside PaperPilot. Use “Save in this browser” to recover them after reopening the same exact PDF; the original file is never rewritten.</p>
-            <p id="annotation-layout-status" class="annotation-layout-status" role="status" aria-live="polite">Drag a card to reorder it, or drag it onto the map. Keyboard controls are inside each card.</p>
-            <ul id="annotation-list" tabindex="-1"><li>Loading annotations…</li></ul>
-          </section>
+              </details>
+              <details class="idea-candidates-details">
+                <summary>About the automatic idea suggestions</summary>
           <section class="critical-map" aria-labelledby="critical-map-heading">
             <div class="critical-map-heading">
               <div>
@@ -369,24 +390,31 @@
               <li>Paper analysis has not started.</li>
             </ol>
           </section>
-          <form id="graph-search-form" class="graph-search" role="search" aria-labelledby="graph-search-heading">
-            <div>
-              <h3 id="graph-search-heading">Find an idea in this paper</h3>
-              <p>Human search uses the same bounded label-and-summary matching exposed by <code>paperpilot.read_graph</code>.</p>
-            </div>
-            <label class="sr-only" for="graph-search-query">Search graph nodes</label>
-            <div class="graph-search-row">
-              <input id="graph-search-query" type="search" maxlength="120" placeholder="Search concepts, methods, or results" />
-              <button type="submit">Search</button>
-              <button id="clear-graph-search" type="button">Clear</button>
-            </div>
-            <p id="graph-search-status" role="status" aria-live="polite">Showing the whole map.</p>
-            <ul id="graph-search-results" aria-label="Graph search results"></ul>
-          </form>
-          <section aria-labelledby="outline-heading">
-            <h3 id="outline-heading">Accessible graph outline</h3>
-            <ul id="graph-outline"></ul>
-          </section>
+              </details>
+            </section>
+            <section id="graph-annotations-panel" role="tabpanel" aria-labelledby="graph-annotations-tab" tabindex="0" hidden>
+              <h3 id="annotation-heading">Your annotations</h3>
+              <p class="annotation-boundary">Drag a grip onto the map to place its linked idea, or onto another card to reorder. The PDF mark stays where you made it.</p>
+              <p id="annotation-layout-status" class="annotation-layout-status" role="status" aria-live="polite">Keyboard alternatives: Arrange linked node, arrow controls, Move earlier and Move later.</p>
+              <ul id="annotation-list" tabindex="-1"><li>Loading annotations…</li></ul>
+            </section>
+            <section id="graph-evidence-panel" role="tabpanel" aria-labelledby="graph-evidence-tab" tabindex="0" hidden>
+              <h3>Evidence trail</h3>
+              <p class="annotation-boundary">Observed actions, not hidden reasoning. A source link or digest does not verify a scientific claim.</p>
+              <ol id="activity-list" tabindex="0" aria-label="Observed WebMCP callback receipts"></ol>
+              <details><summary>Registered tool surface</summary><ol id="tool-list"></ol></details>
+              <details>
+                <summary>Frozen contract manifest</summary>
+                <dl class="contract-manifest">
+                  <div><dt>Schema set SHA-256</dt><dd><code id="schema-set-hash">Computing…</code></dd></div>
+                  <div><dt>Input / result ceilings</dt><dd id="byte-ceilings">32 KiB / 48 KiB</dd></div>
+                  <div><dt>Runtime pins</dt><dd id="runtime-pins">Loading…</dd></div>
+                  <div><dt>Visual evidence</dt><dd>locator_only until a controlled human-reviewed A/B pass</dd></div>
+                </dl>
+              </details>
+              <details><summary>Last structured result</summary><pre id="last-result">No callback observed yet.</pre></details>
+            </section>
+          </div>
         </aside>
       </section>
     </main>

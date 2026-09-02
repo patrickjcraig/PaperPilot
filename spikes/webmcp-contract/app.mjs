@@ -7,6 +7,7 @@ import {
   canonicalJson,
   createSpikeState,
   createToolSuite,
+  graphNodeReferencesAnchor,
   mintReaderAnchor,
   applyReaderAnnotation,
   removeReaderAnnotation,
@@ -22,6 +23,7 @@ import {
   reconcileAnnotationOrder,
   resolvePrimaryGraphNodeKey,
 } from "./presentation-layout.mjs";
+import { createGraphLayout, graphDisplayLabel, projectGraphView } from "./graph-view-model.mjs";
 import { analyzePaperPages } from "./paper-analysis.mjs";
 import { createWholePaperStructuralMap } from "./structural-map.mjs";
 import {
@@ -81,6 +83,22 @@ const elements = {
   graphLayoutReset: byId("graph-layout-reset"),
   graphNudgeButtons: [...document.querySelectorAll("[data-graph-nudge]")],
   graphOutline: byId("graph-outline"),
+  graphOutlineCount: byId("graph-outline-count"),
+  graphOutlineDetails: byId("graph-outline-details"),
+  graphSelection: byId("graph-selection"),
+  graphSelectionHeading: byId("graph-selection-heading"),
+  graphSelectionMeta: byId("graph-selection-meta"),
+  graphSelectionDetail: byId("graph-selection-detail"),
+  graphSelectionPosition: byId("graph-selection-position"),
+  graphViewSummary: byId("graph-view-summary"),
+  graphViewFocus: byId("graph-view-focus"),
+  graphViewAll: byId("graph-view-all"),
+  graphFit: byId("graph-fit"),
+  graphVisualWorkspace: byId("graph-visual-workspace"),
+  graphVisualFallback: byId("graph-visual-fallback"),
+  graphFilterKind: byId("graph-filter-kind"),
+  graphFilterAuthority: byId("graph-filter-authority"),
+  graphRailTabs: [...document.querySelectorAll("[data-rail-tab]")],
   paperMap: byId("paper-map"),
   paperMapState: byId("paper-map-state"),
   paperMapStatus: byId("paper-map-status"),
@@ -182,10 +200,30 @@ let pendingRemovalAnnotationId = null;
 let removalConfirmationTimer = null;
 let annotationOrder = Object.freeze([]);
 let selectedGraphNodeKey = null;
+let selectedGraphEdgeKey = null;
+let lastGraphFocusAnchorId = null;
+let graphNavigationGeneration = 0;
+let pendingGraphNavigation = null;
+const graphToolNavigationGenerations = new WeakMap();
+let linkedFocusNodeKeys = new Set();
+let linkedFocusEdgeKeys = new Set();
+let graphViewMode = "focus";
+let activeRailView = "map";
+let graphView = null;
+let graphVisibleNodeKeys = new Set();
+let graphVisibleEdgeKeys = new Set();
+let graphViewportBounds = null;
+let graphSelectionStamp = null;
+const graphSelectionDisclosureStates = new Map();
+let graphFactsCache = null;
+let graphFactsGraph = null;
+let graphClickSuppressedUntil = 0;
 let draggedAnnotationId = null;
 let draggedAnnotationNodeKey = null;
+let annotationPointerDrag = null;
 let draggedGraphNodeKey = null;
 let graphDragStartPosition = null;
+let graphDragMoved = false;
 let paperAnalysis = null;
 let paperStructuralMap = null;
 let savedExplanations = [];
@@ -612,7 +650,16 @@ async function ensureAnchorVisible(anchorId, {
   moveKeyboardFocus = false,
   scrollIntoView = true,
   behavior = prefersReducedMotion() ? "auto" : "smooth",
+  navigationRequest = null,
 } = {}) {
+  // External source controls win immediately, even while a previous graph
+  // navigation is awaiting page rendering. Passive callback markers do not.
+  if ((scrollIntoView || moveKeyboardFocus) && pendingGraphNavigation !== navigationRequest) invalidateGraphNavigation();
+  if (navigationRequest && !isCurrentGraphNavigation(navigationRequest)) return null;
+  const sourceNavigationGeneration = graphNavigationGeneration;
+  const navigationIsCurrent = () => (!scrollIntoView && !moveKeyboardFocus)
+    || (sourceNavigationGeneration === graphNavigationGeneration
+      && (!navigationRequest || isCurrentGraphNavigation(navigationRequest)));
   const anchor = state?.anchors.get(anchorId);
   if (!anchor) return null;
   const diagnosticVisual = anchor.sourceKind === "visual_region"
@@ -620,10 +667,11 @@ async function ensureAnchorVisible(anchorId, {
   if (paperViewer && !diagnosticVisual) {
     if (anchor.sourceKind === "whole_page") {
       if (scrollIntoView || moveKeyboardFocus) {
-        await paperViewer.showPage(anchor.pageIndex + 1, {
+        const destination = await paperViewer.showPage(anchor.pageIndex + 1, {
           behavior,
           block: "start",
         });
+        if (!destination || !navigationIsCurrent()) return null;
       }
       renderFocus({ moveKeyboardFocus, scrollIntoView: false });
       return paperViewer.getPageSurface?.(anchor.pageIndex + 1) || elements.paperStage;
@@ -648,20 +696,29 @@ async function ensureAnchorVisible(anchorId, {
       });
     }
     if (typeof paperViewer.focusAnchor === "function") {
+      if (scrollIntoView) {
+        // The viewer's combined helper scrolls again after its render await.
+        // Split that await from final focus so an older request cannot move the
+        // paper after a newer reader action has already won.
+        const destination = await paperViewer.showPage(anchor.pageIndex + 1, { behavior: "auto", block: "nearest" });
+        if (!destination || !navigationIsCurrent()) return null;
+      }
       await paperViewer.focusAnchor(anchorId, {
         behavior,
         block: "center",
-        scrollIntoView,
-        moveKeyboardFocus,
+        scrollIntoView: false,
+        moveKeyboardFocus: false,
       });
     } else {
-      await paperViewer.showPage(anchor.pageIndex + 1);
+      const destination = await paperViewer.showPage(anchor.pageIndex + 1);
+      if (!destination || !navigationIsCurrent()) return null;
     }
   }
+  if (!navigationIsCurrent()) return null;
   if (diagnosticVisual) {
     elements.visualRegionA.closest("details")?.setAttribute("open", "");
   }
-  renderFocus({ moveKeyboardFocus, scrollIntoView: diagnosticVisual && scrollIntoView });
+  renderFocus({ moveKeyboardFocus, scrollIntoView });
   return focusElementForAnchor(anchorId);
 }
 
@@ -825,6 +882,7 @@ function renderFocus({ moveKeyboardFocus = false, scrollIntoView = moveKeyboardF
     const keyboardTarget = target && !target.hidden ? target : pageSurface || scrollTarget;
     keyboardTarget?.focus({ preventScroll: true });
   }
+  synchronizeGraphSourceFocus();
 }
 
 function activeGraphNodeKeys() {
@@ -839,18 +897,87 @@ function reconcileGraphPresentation() {
     graphLayoutPositions.delete(key);
     initialGraphPositions.delete(key);
   }
-  state.graph.forEachNode((key, attributes) => {
-    const current = clampGraphPosition({ x: attributes.x, y: attributes.y });
-    const preferred = graphLayoutPositions.get(key);
-    if (!preferred) {
-      graphLayoutPositions.set(key, current);
-      initialGraphPositions.set(key, current);
-      return;
+  const anchorPageIndices = new Map([...state.anchors].map(([key, anchor]) => [key, anchor.pageIndex]));
+  graphView = projectGraphView(state.graph, { selectedNodeKey: selectedGraphNodeKey,
+    selectedEdgeKey: selectedGraphEdgeKey, mode: graphViewMode, anchorPageIndices });
+  graphVisibleNodeKeys = new Set(graphView.visibleNodeKeys);
+  graphVisibleEdgeKeys = new Set(graphView.visibleEdgeKeys);
+  const layout = createGraphLayout(state.graph, { nodeKeys: graphView.visibleNodeKeys,
+    anchorPageIndices, existingPositions: graphLayoutPositions });
+  const defaults = createGraphLayout(state.graph, { nodeKeys: graphView.visibleNodeKeys, anchorPageIndices });
+  for (const [key, position] of layout) {
+    if (!graphLayoutPositions.has(key)) graphLayoutPositions.set(key, position);
+    if (!initialGraphPositions.has(key)) initialGraphPositions.set(key, defaults.get(key) || position);
+  }
+  for (const [key, preferred] of graphLayoutPositions) {
+    const current = state.graph.getNodeAttributes(key);
+    if (current.x !== preferred.x || current.y !== preferred.y) state.graph.mergeNodeAttributes(key, preferred);
+  }
+  const counts = graphView.counts;
+  elements.graphViewSummary.textContent = `${counts.visibleNodes} of ${counts.activeNodes} nodes · ${counts.visibleEdges} of ${counts.activeEdges} relationships. ${graphView.truncated ? "Every item is in the outline." : "Full active map."}`;
+  elements.graphViewFocus.setAttribute("aria-pressed", String(graphViewMode === "focus"));
+  elements.graphViewAll.setAttribute("aria-pressed", String(graphViewMode === "all"));
+  elements.graphCanvasShell.dataset.visibleNodes = String(counts.visibleNodes);
+  elements.graphCanvasShell.dataset.visibleEdges = String(counts.visibleEdges);
+  elements.graphCanvasShell.dataset.totalNodes = String(counts.activeNodes);
+  elements.graphCanvasShell.dataset.totalEdges = String(counts.activeEdges);
+}
+
+function graphFacts() {
+  if (!graphFactsCache || graphFactsGraph !== state.graph) {
+    graphFactsCache = projectAccessibleGraphOutline(state.graph, criticalIdeaByNodeKey);
+    graphFactsGraph = state.graph;
+  }
+  return graphFactsCache;
+}
+
+function graphSourceIds(attributes) {
+  return [...new Set([...(attributes.sourceAnchorIds || []),
+    ...(attributes.structuralCoverage || []).map((range) => range.primaryAnchorId)])];
+}
+
+function invalidateGraphNavigation() {
+  graphNavigationGeneration += 1;
+  pendingGraphNavigation = null;
+}
+
+function isCurrentGraphNavigation(request) {
+  return pendingGraphNavigation === request && request.generation === graphNavigationGeneration
+    && request.paperRef === state.paper.paperRef && request.anchorId === state.focusAnchorId
+    && state.anchors.has(request.anchorId)
+    && (!request.nodeKey || (state.graph.hasNode(request.nodeKey) && state.graph.getNodeAttribute(request.nodeKey, "status") === "active"))
+    && (!request.edgeKey || (state.graph.hasEdge(request.edgeKey) && state.graph.getEdgeAttribute(request.edgeKey, "status") === "active"));
+}
+
+function synchronizeGraphSourceFocus() {
+  if (!state?.graph) return;
+  const changed = lastGraphFocusAnchorId !== state.focusAnchorId;
+  if (pendingGraphNavigation && pendingGraphNavigation.anchorId !== state.focusAnchorId) invalidateGraphNavigation();
+  const previousVisibleNodes = graphVisibleNodeKeys;
+  lastGraphFocusAnchorId = state.focusAnchorId;
+  linkedFocusNodeKeys = new Set(activeGraphNodeKeys().filter((key) =>
+    graphNodeReferencesAnchor(state.graph.getNodeAttributes(key), state.focusAnchorId)));
+  linkedFocusEdgeKeys = new Set(state.graph.edges().filter((key) =>
+    state.graph.getEdgeAttribute(key, "status") === "active"
+      && (state.graph.getEdgeAttribute(key, "sourceAnchorIds") || []).includes(state.focusAnchorId)));
+  for (const annotation of state.annotations.values()) {
+    if (annotation.status !== "active" || annotationAnchorId(annotation) !== state.focusAnchorId) continue;
+    for (const key of annotation.graphNodeKeys || []) {
+      if (state.graph.hasNode(key) && state.graph.getNodeAttribute(key, "status") === "active") linkedFocusNodeKeys.add(key);
     }
-    if (current.x !== preferred.x || current.y !== preferred.y) {
-      state.graph.mergeNodeAttributes(key, preferred);
+    for (const key of annotation.graphEdgeKeys || []) {
+      if (state.graph.hasEdge(key) && state.graph.getEdgeAttribute(key, "status") === "active") linkedFocusEdgeKeys.add(key);
     }
-  });
+  }
+  const requestedSelection = pendingGraphNavigation && isCurrentGraphNavigation(pendingGraphNavigation)
+    && ((pendingGraphNavigation.nodeKey && pendingGraphNavigation.nodeKey === selectedGraphNodeKey)
+      || (pendingGraphNavigation.edgeKey && pendingGraphNavigation.edgeKey === selectedGraphEdgeKey));
+  if (changed && !requestedSelection && !linkedFocusNodeKeys.has(selectedGraphNodeKey)) {
+    selectedGraphNodeKey = [...linkedFocusNodeKeys].sort()[0] || null;
+    selectedGraphEdgeKey = null;
+  }
+  updateGraphSelectionPresentation();
+  if (changed && selectedGraphNodeKey && !previousVisibleNodes.has(selectedGraphNodeKey)) fitGraphView();
 }
 
 function graphNodeLabel(key) {
@@ -868,14 +995,22 @@ function updateGraphSelectionPresentation() {
     state?.graph?.hasNode(selectedGraphNodeKey) &&
     state.graph.getNodeAttribute(selectedGraphNodeKey, "status") === "active";
   if (!selectedIsActive) selectedGraphNodeKey = null;
+  if (selectedGraphEdgeKey && (!state.graph.hasEdge(selectedGraphEdgeKey)
+    || state.graph.getEdgeAttribute(selectedGraphEdgeKey, "status") !== "active")) selectedGraphEdgeKey = null;
 
   for (const button of elements.graphNudgeButtons) button.disabled = !selectedGraphNodeKey;
   elements.graphLayoutReset.disabled = initialGraphPositions.size === 0;
   for (const item of document.querySelectorAll("[data-graph-node-key]")) {
     const selected = item.dataset.graphNodeKey === selectedGraphNodeKey;
     item.classList.toggle("is-selected", selected);
+    item.classList.toggle("is-source-linked", linkedFocusNodeKeys.has(item.dataset.graphNodeKey));
     if (item.matches("button")) item.setAttribute("aria-pressed", String(selected));
   }
+  for (const item of document.querySelectorAll("[data-graph-edge-key]")) {
+    item.classList.toggle("is-selected", item.dataset.graphEdgeKey === selectedGraphEdgeKey);
+  }
+  reconcileGraphPresentation();
+  renderGraphSelection();
   if (sigmaRenderer && sigmaGraph === state.graph) sigmaRenderer.scheduleRefresh();
 }
 
@@ -887,8 +1022,12 @@ function selectGraphNode(nodeKey, { announce = true } = {}) {
   ) {
     return false;
   }
+  invalidateGraphNavigation();
+  const wasVisible = graphVisibleNodeKeys.has(nodeKey);
   selectedGraphNodeKey = nodeKey;
+  selectedGraphEdgeKey = null;
   updateGraphSelectionPresentation();
+  if (!wasVisible) fitGraphView();
   if (announce) {
     elements.graphLayoutStatus.textContent = `Selected “${graphNodeLabel(nodeKey)}.” Drag it in the map or use the arrow controls. Evidence stays fixed.`;
   }
@@ -898,15 +1037,94 @@ function selectGraphNode(nodeKey, { announce = true } = {}) {
 async function focusGraphNodeEvidence(nodeKey) {
   if (!selectGraphNode(nodeKey)) return false;
   const attributes = state.graph.getNodeAttributes(nodeKey);
-  const anchorId = attributes.sourceAnchorIds?.[0] || attributes.structuralCoverage?.[0]?.primaryAnchorId;
+  const anchorId = graphSourceIds(attributes).find((key) => state.anchors.has(key));
   if (!anchorId || !state.anchors.has(anchorId)) {
-    elements.graphLayoutStatus.textContent = `Selected “${graphNodeLabel(nodeKey)},” but it has no navigable paper source.`;
+    elements.graphLayoutStatus.textContent = attributes.authority === "mentor_background"
+      ? `Selected “${graphNodeLabel(nodeKey)}.” Mentor background is not a claim made by this paper.`
+      : `Selected “${graphNodeLabel(nodeKey)}.” Source incomplete: no paper source is available.`;
     return true;
   }
-  state.focusAnchorId = anchorId;
-  recordActivity("graph_node_source_focused", { actor: "human", status: nodeKey });
-  await ensureAnchorVisible(anchorId, { moveKeyboardFocus: true, scrollIntoView: true });
+  return navigateGraphSource(anchorId, { nodeKey, eventType: "graph_node_source_focused" });
+}
+
+function selectGraphEdge(edgeKey) {
+  if (!state.graph.hasEdge(edgeKey) || state.graph.getEdgeAttribute(edgeKey, "status") !== "active") return false;
+  invalidateGraphNavigation();
+  const wasVisible = graphVisibleEdgeKeys.has(edgeKey);
+  selectedGraphEdgeKey = edgeKey;
+  selectedGraphNodeKey = null;
+  updateGraphSelectionPresentation();
+  if (!wasVisible) fitGraphView();
   return true;
+}
+
+async function focusGraphEdgeEvidence(edgeKey, { navigate = true } = {}) {
+  if (!selectGraphEdge(edgeKey)) return false;
+  const attributes = state.graph.getEdgeAttributes(edgeKey);
+  const anchorId = graphSourceIds(attributes).find((key) => state.anchors.has(key));
+  if (navigate && anchorId) {
+    return navigateGraphSource(anchorId, { edgeKey, eventType: "graph_edge_source_focused" });
+  } else if (navigate) {
+    elements.graphLayoutStatus.textContent = attributes.authority === "mentor_background"
+      ? "This relationship is mentor background, not a paper claim."
+      : "Source incomplete: this relationship has no available paper anchor.";
+  }
+  return true;
+}
+
+async function navigateGraphSource(anchorId, { nodeKey = null, edgeKey = null, eventType = "graph_source_focused" } = {}) {
+  if (!state.anchors.has(anchorId)) return false;
+  if (nodeKey && !selectGraphNode(nodeKey, { announce: false })) return false;
+  if (edgeKey && !selectGraphEdge(edgeKey)) return false;
+  if (!nodeKey && !edgeKey) invalidateGraphNavigation();
+  const request = { generation: graphNavigationGeneration, paperRef: state.paper.paperRef, anchorId, nodeKey, edgeKey };
+  pendingGraphNavigation = request;
+  state.focusAnchorId = anchorId;
+  try {
+    const destination = await ensureAnchorVisible(anchorId, {
+      moveKeyboardFocus: true, scrollIntoView: true, navigationRequest: request,
+    });
+    if (!isCurrentGraphNavigation(request)) return false;
+    if (!destination) throw new Error("Source destination unavailable");
+    if (nodeKey || edgeKey) {
+      selectedGraphNodeKey = nodeKey;
+      selectedGraphEdgeKey = edgeKey;
+      updateGraphSelectionPresentation();
+    }
+    try {
+      recordActivity(eventType, { actor: "human", status: nodeKey || edgeKey || anchorId });
+    } catch { /* An optional activity renderer cannot reverse a completed source navigation. */ }
+    return true;
+  } catch {
+    if (!isCurrentGraphNavigation(request)) return false;
+    elements.graphLayoutStatus.textContent = "Could not open this paper source. Try another source or the paper controls. Graph and annotation evidence were not changed.";
+    try {
+      recordActivity("graph_source_navigation_failed", { actor: "human", status: "navigation_failed" });
+    } catch { /* Keep the safe associated failure even if activity rendering is unavailable. */ }
+    return false;
+  } finally {
+    if (pendingGraphNavigation === request) pendingGraphNavigation = null;
+  }
+}
+
+function synchronizeGraphToolNavigation(input, result) {
+  const generation = graphToolNavigationGenerations.get(input);
+  graphToolNavigationGenerations.delete(input);
+  if ((generation !== undefined && generation !== graphNavigationGeneration) || result.anchorId !== state.focusAnchorId) return;
+  if (result.targetType === "node" || result.targetType === "section") selectGraphNode(result.targetId, { announce: false });
+  else if (result.targetType === "edge") selectGraphEdge(result.targetId);
+}
+
+async function navigateObservedPaperSource(anchor) {
+  try {
+    recordActivity("navigation_callback_observed", { actor: "page", status: anchor.anchorId });
+  } catch { /* Optional callback presentation does not control navigation authority. */ }
+  try {
+    const destination = await ensureAnchorVisible(anchor.anchorId, { moveKeyboardFocus: false, scrollIntoView: true });
+    if (!destination) throw new Error("Source destination unavailable");
+  } catch {
+    throw new Error("The requested paper source could not be opened. Read the current focus and retry.");
+  }
 }
 
 function setGraphNodePosition(nodeKey, position, { announce = true, record = true } = {}) {
@@ -923,15 +1141,12 @@ function setGraphNodePosition(nodeKey, position, { announce = true, record = tru
   if (next.x === current.x && next.y === current.y) return false;
   graphLayoutPositions.set(nodeKey, next);
   state.graph.mergeNodeAttributes(nodeKey, next);
+  renderGraphPosition();
   sigmaRenderer?.scheduleRefresh({ partialGraph: { nodes: [nodeKey] } });
   if (announce) {
     elements.graphLayoutStatus.textContent = `Moved “${graphNodeLabel(nodeKey)}.” Only its view position changed; provenance and WebMCP facts are unchanged.`;
   }
   if (record) {
-    recordActivity("graph_layout_changed", {
-      actor: "human",
-      status: `${nodeKey} · presentation only`,
-    });
     markSnapshotDirty();
   }
   return true;
@@ -948,12 +1163,11 @@ function resetGraphLayout() {
     state.graph.mergeNodeAttributes(key, position);
     restored += 1;
   }
-  sigmaRenderer?.setCustomBBox(null);
-  sigmaRenderer?.refresh();
+  fitGraphView();
+  renderGraphPosition();
   elements.graphLayoutStatus.textContent = restored
     ? `Reset ${restored} ${restored === 1 ? "node" : "nodes"} to the initial view. Evidence and WebMCP facts were not changed.`
     : "The graph is already in its initial view. Evidence and WebMCP facts were not changed.";
-  recordActivity("graph_layout_reset", { actor: "human", status: `${restored} presentation positions` });
   if (restored) markSnapshotDirty();
 }
 
@@ -964,11 +1178,132 @@ function clearAnnotationDropIndicators() {
 }
 
 function finishAnnotationDrag() {
+  const pointer = annotationPointerDrag;
+  annotationPointerDrag = null;
   draggedAnnotationId = null;
   draggedAnnotationNodeKey = null;
+  if (pointer) {
+    pointer.item.classList.remove("is-dragging");
+    try {
+      if (pointer.handle.hasPointerCapture?.(pointer.pointerId)) pointer.handle.releasePointerCapture(pointer.pointerId);
+    } catch { /* A replaced or detached grip may already have lost capture. */ }
+  }
   clearAnnotationDropIndicators();
   elements.graphCanvasShell.classList.remove("is-drop-target");
   for (const item of elements.annotationList.querySelectorAll(".is-dragging")) item.classList.remove("is-dragging");
+}
+
+function captureAnnotationDragIdentity(annotationId) {
+  const annotation = state?.annotations?.get(annotationId);
+  const anchorId = annotationAnchorId(annotation);
+  const anchor = state?.anchors?.get(anchorId);
+  if (!annotation || annotation.status !== "active" || annotation.paperRef !== state.paper.paperRef || !anchor) return null;
+  return {
+    annotationId,
+    nodeKey: linkedGraphNode(annotation),
+    signature: canonicalJson({
+      paperRef: state.paper.paperRef,
+      annotationId,
+      entityRevision: annotation.entityRevision,
+      anchorId,
+      anchorDigest: anchor.anchorDigest,
+      graphNodeKeys: [...(annotation.graphNodeKeys || [])].sort(),
+      graphEdgeKeys: [...(annotation.graphEdgeKeys || [])].sort(),
+    }),
+  };
+}
+
+function currentAnnotationPointerDrag(event) {
+  const gesture = annotationPointerDrag;
+  if (!gesture || (event && event.pointerId !== gesture.pointerId)) return null;
+  const current = captureAnnotationDragIdentity(gesture.identity.annotationId);
+  if (!gesture.handle.isConnected || !current || current.signature !== gesture.identity.signature
+    || current.nodeKey !== gesture.identity.nodeKey) return null;
+  return gesture;
+}
+
+function beginAnnotationPointerDrag(event, annotationId, handle, item) {
+  if (event.button !== 0 || event.isPrimary === false || annotationPointerDrag
+    || !Number.isFinite(event.clientX) || !Number.isFinite(event.clientY)
+    || typeof handle.setPointerCapture !== "function" || !elements.annotationList.contains(item)
+    || item.dataset.annotationId !== annotationId) return false;
+  const identity = captureAnnotationDragIdentity(annotationId);
+  if (!identity) return false;
+  event.preventDefault();
+  annotationPointerDrag = { pointerId: event.pointerId, handle, item, identity,
+    startX: event.clientX, startY: event.clientY, moved: false };
+  draggedAnnotationId = identity.annotationId;
+  draggedAnnotationNodeKey = identity.nodeKey;
+  try {
+    handle.setPointerCapture(event.pointerId);
+  } catch {
+    finishAnnotationDrag();
+    return false;
+  }
+  return true;
+}
+
+function annotationPointerDestination(clientX, clientY) {
+  if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return null;
+  const target = document.elementFromPoint(clientX, clientY);
+  const row = target?.closest?.("[data-annotation-id]");
+  const annotationId = row?.dataset.annotationId;
+  if (row && elements.annotationList.contains(row) && annotationId !== draggedAnnotationId
+    && captureAnnotationDragIdentity(annotationId)) {
+    const rect = row.getBoundingClientRect();
+    if (!Number.isFinite(rect.top) || !Number.isFinite(rect.height) || rect.height <= 0) return null;
+    return { kind: "annotation", annotationId, row, placement: clientY < rect.top + rect.height / 2 ? "before" : "after" };
+  }
+  if (target && elements.sigmaContainer.contains(target) && sigmaRenderer && currentDraggedAnnotationNode()) return { kind: "graph" };
+  return null;
+}
+
+function moveAnnotationPointerDrag(event) {
+  if (!annotationPointerDrag || event.pointerId !== annotationPointerDrag.pointerId) return;
+  const gesture = currentAnnotationPointerDrag(event);
+  if (!gesture) { finishAnnotationDrag(); return; }
+  event.preventDefault();
+  if (!gesture.moved && Math.hypot(event.clientX - gesture.startX, event.clientY - gesture.startY) < 5) return;
+  gesture.moved = true;
+  gesture.item.classList.add("is-dragging");
+  clearAnnotationDropIndicators();
+  elements.graphCanvasShell.classList.remove("is-drop-target");
+  const destination = annotationPointerDestination(event.clientX, event.clientY);
+  if (destination?.kind === "annotation") destination.row.classList.add(`is-drop-${destination.placement}`);
+  else if (destination?.kind === "graph") elements.graphCanvasShell.classList.add("is-drop-target");
+}
+
+function placeDraggedAnnotationNode(clientX, clientY) {
+  const nodeKey = currentDraggedAnnotationNode();
+  if (!nodeKey || !sigmaRenderer || !Number.isFinite(clientX) || !Number.isFinite(clientY)) return false;
+  if (!selectGraphNode(nodeKey, { announce: false })) return false;
+  const bounds = elements.sigmaContainer.getBoundingClientRect();
+  const position = sigmaRenderer.viewportToGraph({ x: clientX - bounds.left, y: clientY - bounds.top });
+  if (!Number.isFinite(position.x) || !Number.isFinite(position.y)) return false;
+  const annotation = state.annotations.get(draggedAnnotationId);
+  const body = annotation?.body || annotation?.label || draggedAnnotationId;
+  const changed = setGraphNodePosition(nodeKey, position);
+  elements.annotationLayoutStatus.textContent = `Placed the linked idea for “${body}” in the map. The PDF annotation itself did not move.`;
+  return changed;
+}
+
+function finishAnnotationPointerDrag(event) {
+  if (!annotationPointerDrag || event.pointerId !== annotationPointerDrag.pointerId) return false;
+  const gesture = currentAnnotationPointerDrag(event);
+  try {
+    if (!gesture?.moved) return false;
+    event.preventDefault();
+    const destination = annotationPointerDestination(event.clientX, event.clientY);
+    if (destination?.kind === "annotation") return reorderAnnotation(gesture.identity.annotationId, destination.annotationId, destination.placement);
+    if (destination?.kind === "graph") return placeDraggedAnnotationNode(event.clientX, event.clientY);
+    return false;
+  } finally {
+    finishAnnotationDrag();
+  }
+}
+
+function cancelAnnotationPointerDrag(event) {
+  if (annotationPointerDrag && (!event || event.pointerId === annotationPointerDrag.pointerId)) finishAnnotationDrag();
 }
 
 function focusReorderButton(annotationId, direction) {
@@ -992,10 +1327,6 @@ function reorderAnnotation(annotationId, targetId, placement, { direction = null
   const annotation = state.annotations.get(annotationId);
   const body = annotation?.body || annotation?.label || annotationId;
   elements.annotationLayoutStatus.textContent = `Moved “${body}” ${placement} its neighbor. Paper anchors and graph identity are unchanged.`;
-  recordActivity("annotation_layout_reordered", {
-    actor: "human",
-    status: `${annotationId} · presentation only`,
-  });
   renderAnnotations();
   markSnapshotDirty();
   if (direction) focusReorderButton(annotationId, direction);
@@ -1221,43 +1552,196 @@ function renderCriticalIdeaMap() {
   }
 }
 
-function renderGraphOutline() {
-  elements.graphOutline.replaceChildren();
-  const outline = projectAccessibleGraphOutline(state.graph, criticalIdeaByNodeKey);
-  for (const node of outline.nodes) {
-    const key = node.key;
-    const item = appendTextListItem(elements.graphOutline, node.text);
-    item.dataset.graphNodeKey = key;
-    const actions = document.createElement("div");
-    actions.className = "graph-outline-actions";
-    if (node.status === "active") {
-      const arrangeButton = document.createElement("button");
-      arrangeButton.type = "button";
-      arrangeButton.dataset.graphNodeKey = key;
-      arrangeButton.textContent = "Arrange this node";
-      arrangeButton.setAttribute("aria-pressed", String(key === selectedGraphNodeKey));
-      arrangeButton.addEventListener("click", () => selectGraphNode(key));
-      actions.append(arrangeButton);
+function graphSourceActions(sourceIds, { nodeKey = null, edgeKey = null } = {}) {
+  const actions = document.createElement("div");
+  actions.className = "graph-source-actions";
+  for (const [index, anchorId] of sourceIds.entries()) {
+    const anchor = state.anchors.get(anchorId);
+    if (!anchor) {
+      const missing = document.createElement("span");
+      missing.className = "graph-fact-meta";
+      missing.textContent = `Source ${index + 1} incomplete`;
+      actions.append(missing);
+      continue;
     }
-    const primaryAnchorId = node.primarySourceId;
-    if (primaryAnchorId && state.anchors.has(primaryAnchorId)) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.textContent = "Go to paper source";
-      button.addEventListener("click", async () => {
-        state.focusAnchorId = primaryAnchorId;
-        recordActivity("graph_source_focused", { actor: "human", status: key });
-        await ensureAnchorVisible(primaryAnchorId, { moveKeyboardFocus: true, scrollIntoView: true });
-      });
-      actions.append(button);
-    }
-    if (actions.childElementCount) item.append(actions);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.interactionKey = `source:${anchorId}`;
+    button.textContent = `Page ${anchor.pageLabel} · ${humanReadable(anchor.sourceKind)}`;
+    button.setAttribute("aria-label", `Go to source ${index + 1} on page ${anchor.pageLabel}, ${humanReadable(anchor.sourceKind)}`);
+    button.addEventListener("click", async () => {
+      await navigateGraphSource(anchorId, { nodeKey, edgeKey });
+    });
+    actions.append(button);
   }
-  for (const edge of outline.edges) appendTextListItem(elements.graphOutline, edge.text);
+  return actions;
+}
+
+function graphRelationList(edgeKeys, nodeKey = null) {
+  const list = document.createElement("ul");
+  list.className = "graph-relations";
+  const edges = new Map(graphFacts().edges.map((edge) => [edge.key, edge]));
+  for (const edgeKey of edgeKeys) {
+    const edge = edges.get(edgeKey);
+    if (!edge) continue;
+    const item = document.createElement("li");
+    const direction = nodeKey ? edge.sourceKey === nodeKey ? "Outgoing" : "Incoming" : "Relationship";
+    const title = `${direction}: ${edge.sourceLabel} → ${humanReadable(edge.relation)} → ${edge.targetLabel}`;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = title;
+    button.dataset.graphEdgeKey = edgeKey;
+    button.dataset.interactionKey = `relation:${edgeKey}`;
+    button.disabled = edge.status !== "active";
+    button.addEventListener("click", () => { void focusGraphEdgeEvidence(edgeKey); });
+    const evidence = document.createElement("div");
+    evidence.className = "graph-fact-meta";
+    evidence.textContent = `${humanReadable(edge.authority)} · ${humanReadable(edge.origin)} · ${edge.sourceStatusText} · ${edge.statusText}`;
+    item.append(button, evidence);
+    list.append(item);
+  }
+  return list;
+}
+
+function renderGraphPosition() {
+  const position = selectedGraphNodeKey && state.graph.hasNode(selectedGraphNodeKey)
+    ? clampGraphPosition(state.graph.getNodeAttributes(selectedGraphNodeKey)) : null;
+  elements.graphSelectionPosition.textContent = position
+    ? `View position ${position.x.toFixed(2)}, ${position.y.toFixed(2)} · not evidence` : "";
+  elements.graphSelectionPosition.dataset.nodeKey = selectedGraphNodeKey || "";
+}
+
+function graphCandidateStateText(fact) {
+  if (fact.candidateState === "agent refined") return "agent refined, unreviewed";
+  if (fact.candidateState) return fact.candidateState;
+  return fact.origin === "automatic_map" && fact.authority !== "document_structure"
+    ? "automatically suggested, unreviewed" : "";
+}
+
+function renderGraphSelection() {
+  const key = selectedGraphEdgeKey || selectedGraphNodeKey;
+  renderGraphPosition();
+  if (graphSelectionStamp?.key === key && graphSelectionStamp.graph === state.graph) return;
+  const previousRelationships = elements.graphSelectionDetail.querySelector("details[data-selection-relations]");
+  if (previousRelationships && graphSelectionStamp?.key) {
+    graphSelectionDisclosureStates.set(graphSelectionStamp.key, previousRelationships.open);
+  }
+  graphSelectionStamp = { key, graph: state.graph };
+  const outline = graphFacts();
+  const fact = selectedGraphEdgeKey ? outline.edges.find((edge) => edge.key === key)
+    : outline.nodes.find((node) => node.key === key);
+  elements.graphSelectionDetail.replaceChildren();
+  elements.graphSelection.dataset.interactionKey = key || "no-selection";
+  if (!fact) {
+    elements.graphSelectionHeading.textContent = "Choose an idea";
+    elements.graphSelectionMeta.textContent = "Open a node to see its source and connections. Arrange moves only its position.";
+    return;
+  }
+  elements.graphSelectionHeading.textContent = fact.type === "node" ? fact.label
+    : `${fact.sourceLabel} → ${humanReadable(fact.relation)} → ${fact.targetLabel}`;
+  const candidateState = graphCandidateStateText(fact);
+  elements.graphSelectionMeta.textContent = `${humanReadable(fact.type === "node" ? fact.kind : fact.relation)} · ${humanReadable(fact.authority)} · ${humanReadable(fact.origin)} · ${fact.statusText}${candidateState ? ` · ${candidateState}` : ""}`;
+  const summary = document.createElement("p");
+  summary.textContent = fact.summary || (fact.type === "node" ? "No summary added yet." : "No relationship claim added yet.");
+  const sourceStatus = document.createElement("p");
+  sourceStatus.className = "graph-fact-meta";
+  sourceStatus.textContent = `${fact.sourceStatusText}${fact.type === "node" && fact.structuralRangeText ? ` · ${fact.structuralRangeText}` : ""}`;
+  elements.graphSelectionDetail.append(summary, sourceStatus, graphSourceActions(fact.sourceIds,
+    fact.type === "node" ? { nodeKey: key } : { edgeKey: key }));
+  if (fact.type === "node") {
+    const edgeKeys = [...new Set([...fact.incomingEdgeKeys, ...fact.outgoingEdgeKeys])];
+    if (edgeKeys.length) {
+      const details = document.createElement("details");
+      details.dataset.selectionRelations = key;
+      details.open = graphSelectionDisclosureStates.get(key) === true;
+      const heading = document.createElement("summary");
+      heading.dataset.interactionKey = "selection-relations";
+      heading.textContent = `${edgeKeys.length} directed ${edgeKeys.length === 1 ? "relationship" : "relationships"}`;
+      details.append(heading, graphRelationList(edgeKeys, key));
+      elements.graphSelectionDetail.append(details);
+    }
+  }
+}
+
+function renderGraphOutline() {
+  const openRows = new Set([...elements.graphOutline.querySelectorAll("details[open]")]
+    .map((details) => details.closest("li")?.dataset.interactionKey));
+  elements.graphOutline.replaceChildren();
+  const outline = graphFacts();
+  elements.graphOutlineCount.textContent = `· ${outline.nodes.length} nodes / ${outline.edges.length} relationships`;
+  for (const fact of [...outline.nodes, ...outline.edges]) {
+    const key = fact.key;
+    const isNode = fact.type === "node";
+    const item = document.createElement("li");
+    item.dataset.outlineKind = fact.type;
+    item.dataset.interactionKey = key;
+    item.dataset.status = fact.status;
+    if (isNode) item.dataset.graphNodeKey = key;
+    else item.dataset.graphEdgeKey = key;
+    item.classList.toggle("graph-fact-tombstoned", fact.status !== "active");
+    const title = document.createElement("button");
+    title.type = "button";
+    title.className = "graph-node-title";
+    title.textContent = isNode ? fact.label : `${fact.sourceLabel} → ${humanReadable(fact.relation)} → ${fact.targetLabel}`;
+    title.dataset.interactionKey = "open-source";
+    title.disabled = fact.status !== "active";
+    title.addEventListener("click", () => { void (isNode ? focusGraphNodeEvidence(key) : focusGraphEdgeEvidence(key)); });
+    const meta = document.createElement("p");
+    meta.className = "graph-fact-meta";
+    const candidateState = graphCandidateStateText(fact);
+    meta.textContent = `${humanReadable(isNode ? fact.kind : fact.relation)} · ${humanReadable(fact.authority)} · ${humanReadable(fact.origin)} · ${fact.statusText}${candidateState ? ` · ${candidateState}` : ""}`;
+    const sources = document.createElement("p");
+    sources.className = "graph-fact-meta";
+    sources.textContent = `${fact.sourceStatusText}${isNode && fact.structuralRangeText ? ` · ${fact.structuralRangeText}` : ""}`;
+    item.append(title, meta, sources);
+    if (isNode && fact.status === "active") {
+      const actions = document.createElement("div");
+      actions.className = "graph-outline-actions";
+      const arrange = document.createElement("button");
+      arrange.type = "button";
+      arrange.dataset.graphNodeKey = key;
+      arrange.dataset.interactionKey = "arrange";
+      arrange.textContent = "Arrange this node";
+      arrange.setAttribute("aria-pressed", String(key === selectedGraphNodeKey));
+      arrange.addEventListener("click", () => selectGraphNode(key));
+      actions.append(arrange);
+      item.append(actions);
+    }
+    const details = document.createElement("details");
+    details.className = "graph-entity-details";
+    details.open = openRows.has(key);
+    const heading = document.createElement("summary");
+    heading.textContent = "Summary, sources & relationships";
+    heading.dataset.interactionKey = "entity-details";
+    const body = document.createElement("div");
+    const summary = document.createElement("p");
+    summary.className = "graph-fact-summary";
+    summary.textContent = fact.summary || "No summary recorded.";
+    body.append(summary, graphSourceActions(fact.sourceIds, isNode ? { nodeKey: key } : { edgeKey: key }));
+    if (isNode) {
+      const related = [...new Set([...fact.incomingEdgeKeys, ...fact.outgoingEdgeKeys])];
+      if (related.length) body.append(graphRelationList(related, key));
+      if (fact.structuralRangeText) {
+        const structural = document.createElement("p");
+        structural.className = "graph-fact-meta";
+        structural.textContent = `${fact.structuralBasisText} · ${fact.structuralConfidenceText}`;
+        body.append(structural);
+      }
+    }
+    const identity = document.createElement("p");
+    identity.className = "graph-entity-key";
+    identity.textContent = `${key} · entity revision ${fact.entityRevision ?? "not recorded"}`;
+    body.append(identity);
+    details.append(heading, body);
+    item.append(details);
+    elements.graphOutline.append(item);
+  }
   updateGraphSelectionPresentation();
 }
 
 function renderAnnotations() {
+  const openSources = new Set([...elements.annotationList.querySelectorAll("details[open]")]
+    .map((details) => details.closest("[data-annotation-id]")?.dataset.annotationId));
   if (pendingRemovalAnnotationId && state.annotations.get(pendingRemovalAnnotationId)?.status !== "active") {
     pendingRemovalAnnotationId = null;
     if (removalConfirmationTimer) clearTimeout(removalConfirmationTimer);
@@ -1328,19 +1812,35 @@ function renderAnnotations() {
     const dragHandle = document.createElement("span");
     dragHandle.className = "annotation-drag-handle";
     dragHandle.draggable = true;
+    dragHandle.style.touchAction = "none";
+    dragHandle.style.userSelect = "none";
     dragHandle.title = item.title;
     dragHandle.textContent = "⠿";
     dragHandle.setAttribute("aria-hidden", "true");
+    dragHandle.addEventListener("pointerdown", (event) => beginAnnotationPointerDrag(event, key, dragHandle, item));
+    dragHandle.addEventListener("lostpointercapture", cancelAnnotationPointerDrag);
     const summary = document.createElement("span");
     summary.className = "annotation-card-summary";
-    summary.textContent = annotationView.summaryText;
+    const title = document.createElement("strong");
+    title.textContent = body;
+    const metadata = document.createElement("small");
+    metadata.textContent = `Page ${issuedAnchor?.pageLabel || "?"} · ${humanReadable(annotationView.kind)} · ${humanReadable(annotationView.authority)} · ${annotationView.status}${isAutomatic ? " · unreviewed" : ""}`;
+    summary.append(title, metadata);
     head.append(dragHandle, summary);
     item.append(head);
     if (annotationView.sourceSummary) {
+      const details = document.createElement("details");
+      details.className = "annotation-source-details";
+      details.open = openSources.has(key);
+      const heading = document.createElement("summary");
+      heading.textContent = `Source · page ${issuedAnchor?.pageLabel || "?"} · ${humanReadable(issuedAnchor?.sourceKind || "paper source")}`;
+      heading.dataset.interactionKey = "annotation-source-details";
       const sourceSummary = document.createElement("small");
       sourceSummary.className = "annotation-source-summary";
-      sourceSummary.textContent = annotationView.sourceSummary;
-      item.append(sourceSummary);
+      sourceSummary.textContent = issuedAnchor?.quote?.exact || issuedAnchor?.exactText
+        || issuedAnchor?.regionDescription || annotationView.sourceSummary;
+      details.append(heading, sourceSummary);
+      item.append(details);
     }
 
     const actions = document.createElement("div");
@@ -1442,18 +1942,17 @@ function renderAnnotations() {
     item.append(actions);
 
     item.addEventListener("dragstart", (event) => {
+      if (annotationPointerDrag || event.target !== dragHandle || !captureAnnotationDragIdentity(key)) { event.preventDefault(); return; }
       draggedAnnotationId = key;
       draggedAnnotationNodeKey = nodeKey;
       event.dataTransfer?.setData("text/plain", key);
       if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
       item.classList.add("is-dragging");
-      if (nodeKey) selectGraphNode(nodeKey, { announce: false });
-      elements.annotationLayoutStatus.textContent = nodeKey
-        ? `Moving “${body}.” Drop on another card to reorder it, or on the graph to place “${graphNodeLabel(nodeKey)}.”`
-        : `Moving “${body}.” Drop on another card to reorder it.`;
+      // Keep the target cards still until drop; replacing the selection detail
+      // or expanding the status here would move them underneath the pointer.
     });
     item.addEventListener("dragover", (event) => {
-      if (!draggedAnnotationId || draggedAnnotationId === key) return;
+      if (annotationPointerDrag || !captureAnnotationDragIdentity(draggedAnnotationId) || draggedAnnotationId === key) return;
       event.preventDefault();
       if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
       clearAnnotationDropIndicators();
@@ -1461,7 +1960,7 @@ function renderAnnotations() {
       item.classList.add(event.clientY < rect.top + rect.height / 2 ? "is-drop-before" : "is-drop-after");
     });
     item.addEventListener("drop", (event) => {
-      if (!draggedAnnotationId || draggedAnnotationId === key) return;
+      if (annotationPointerDrag || !captureAnnotationDragIdentity(draggedAnnotationId) || !captureAnnotationDragIdentity(key) || draggedAnnotationId === key) return;
       event.preventDefault();
       const rect = item.getBoundingClientRect();
       const placement = event.clientY < rect.top + rect.height / 2 ? "before" : "after";
@@ -1491,6 +1990,7 @@ function renderAnnotations() {
 function disposeSigma() {
   draggedGraphNodeKey = null;
   graphDragStartPosition = null;
+  graphDragMoved = false;
   elements.graphCanvasShell.classList.remove("is-node-dragging", "is-node-hovered");
   if (!sigmaRenderer) return;
   try {
@@ -1506,34 +2006,46 @@ function finishGraphNodeDrag(renderer = sigmaRenderer) {
   if (!draggedGraphNodeKey) return;
   const nodeKey = draggedGraphNodeKey;
   const start = graphDragStartPosition;
+  const wasDragged = graphDragMoved;
   draggedGraphNodeKey = null;
   graphDragStartPosition = null;
+  graphDragMoved = false;
   renderer?.getCamera().enable();
-  renderer?.setCustomBBox(null);
   elements.graphCanvasShell.classList.remove("is-node-dragging");
   const current = state.graph.hasNode(nodeKey)
     ? clampGraphPosition(state.graph.getNodeAttributes(nodeKey))
     : null;
   const moved = current && start && (current.x !== start.x || current.y !== start.y);
-  if (moved) {
+  if (wasDragged || moved) {
+    // Sigma's default drag counter is bypassed by our own movement handler.
+    // Suppress the trailing click explicitly so arranging cannot navigate PDF.
+    graphClickSuppressedUntil = performance.now() + 350;
     elements.graphLayoutStatus.textContent = `Placed “${graphNodeLabel(nodeKey)}.” Only its view position changed; provenance and WebMCP facts are unchanged.`;
-    recordActivity("graph_layout_changed", { actor: "human", status: `${nodeKey} · presentation only` });
-    markSnapshotDirty();
+    if (moved) markSnapshotDirty();
   }
   renderer?.refresh();
 }
 
 function bindSigmaInteractions(renderer) {
-  renderer.on("clickNode", ({ node }) => { void focusGraphNodeEvidence(node); });
+  renderer.on("clickNode", ({ node }) => {
+    if (performance.now() < graphClickSuppressedUntil) return;
+    void focusGraphNodeEvidence(node);
+  });
+  renderer.on("clickEdge", ({ edge }) => {
+    if (performance.now() < graphClickSuppressedUntil) return;
+    void focusGraphEdgeEvidence(edge);
+  });
   renderer.on("enterNode", () => elements.graphCanvasShell.classList.add("is-node-hovered"));
   renderer.on("leaveNode", () => elements.graphCanvasShell.classList.remove("is-node-hovered"));
   renderer.on("downNode", ({ node, event, preventSigmaDefault }) => {
+    graphClickSuppressedUntil = 0;
+    graphDragMoved = false;
     if (!selectGraphNode(node, { announce: false })) return;
     preventSigmaDefault();
     event.original?.preventDefault?.();
     draggedGraphNodeKey = node;
     graphDragStartPosition = clampGraphPosition(state.graph.getNodeAttributes(node));
-    const bbox = renderer.getBBox();
+    const bbox = graphViewportBounds || renderer.getBBox();
     renderer.setCustomBBox({ x: [...bbox.x], y: [...bbox.y] });
     renderer.getCamera().disable();
     elements.graphCanvasShell.classList.add("is-node-dragging");
@@ -1544,18 +2056,72 @@ function bindSigmaInteractions(renderer) {
     preventSigmaDefault();
     event.original?.preventDefault?.();
     const position = renderer.viewportToGraph({ x: event.x, y: event.y });
-    setGraphNodePosition(draggedGraphNodeKey, position, { announce: false, record: false });
+    if (setGraphNodePosition(draggedGraphNodeKey, position, { announce: false, record: false })) graphDragMoved = true;
   });
   renderer.on("upNode", () => finishGraphNodeDrag(renderer));
   renderer.on("upStage", () => finishGraphNodeDrag(renderer));
 }
 
+function fitGraphView({ resetCamera = true } = {}) {
+  if (!sigmaRenderer || !graphVisibleNodeKeys.size) return;
+  const positions = [...graphVisibleNodeKeys].filter((key) => state.graph.hasNode(key))
+    .map((key) => clampGraphPosition(state.graph.getNodeAttributes(key)));
+  const xs = positions.map(({ x }) => x);
+  const ys = positions.map(({ y }) => y);
+  const xMin = Math.min(...xs), xMax = Math.max(...xs);
+  const yMin = Math.min(...ys), yMax = Math.max(...ys);
+  const xPad = Math.max(.22, (xMax - xMin) * .12);
+  const yPad = Math.max(.22, (yMax - yMin) * .12);
+  graphViewportBounds = { x: [xMin - xPad, xMax + xPad], y: [yMin - yPad, yMax + yPad] };
+  sigmaRenderer.setCustomBBox(graphViewportBounds);
+  if (resetCamera) sigmaRenderer.getCamera().setState({ x: .5, y: .5, angle: 0, ratio: 1 });
+  sigmaRenderer.refresh();
+}
+
+function drawGraphNodeLabel(context, data, settings) {
+  if (data.viewSelected) {
+    context.beginPath();
+    context.arc(data.x, data.y, data.size + 3, 0, Math.PI * 2);
+    context.strokeStyle = "#14213d";
+    context.lineWidth = 1.5;
+    context.stroke();
+  }
+  if (!data.label) return;
+  const size = settings.labelSize;
+  const label = graphDisplayLabel(data.label, { maxLength: 26 });
+  const words = label.split(" ");
+  const lines = [""];
+  for (const word of words) {
+    const line = lines.length - 1;
+    if (lines[line] && `${lines[line]} ${word}`.length > 15 && lines.length < 2) lines.push(word);
+    else lines[line] += `${lines[line] ? " " : ""}${word}`;
+  }
+  context.font = `600 ${size}px ${settings.labelFont}`;
+  context.textAlign = "center";
+  context.textBaseline = "top";
+  for (const [index, line] of lines.entries()) {
+    const text = graphDisplayLabel(line, { maxLength: 17 });
+    const y = data.y + data.size + 4 + index * (size + 2);
+    const x = Math.max(50, Math.min(context.canvas.width / (window.devicePixelRatio || 1) - 50, data.x));
+    context.fillStyle = "rgba(251,249,254,.92)";
+    context.fillRect(x - context.measureText(text).width / 2 - 2, y - 1, context.measureText(text).width + 4, size + 3);
+    context.fillStyle = "#14213d";
+    context.fillText(text, x, y);
+  }
+}
+
 function renderSigma() {
+  // A hidden tab has no measurable canvas. Keep its renderer/camera until the
+  // reader returns, then bind the latest graph without reporting a false error.
+  if (activeRailView === "evidence") return;
+  const cameraState = sigmaRenderer?.getCamera().getState();
+  const preservedBounds = graphViewportBounds;
   if (sigmaGraph !== state.graph) disposeSigma();
   if (sigmaRenderer) {
     try {
       sigmaRenderer.refresh();
       elements.rendererStatus.textContent = "Sigma active + outline";
+      elements.graphVisualFallback.hidden = true;
       return;
     } catch (error) {
       disposeSigma();
@@ -1566,77 +2132,136 @@ function renderSigma() {
   const SigmaConstructor = globalThis.Sigma?.default || globalThis.Sigma;
   if (typeof SigmaConstructor !== "function") {
     elements.rendererStatus.textContent = "Outline fallback · Sigma missing";
+    showGraphFallback("The visual map is unavailable. Every node, relationship and source remains in the complete outline.");
     return;
   }
 
   try {
     sigmaRenderer = new SigmaConstructor(state.graph, elements.sigmaContainer, {
       allowInvalidContainer: false,
+      enableEdgeEvents: true,
+      enableCameraRotation: false,
       renderEdgeLabels: false,
+      defaultEdgeType: "arrow",
       defaultNodeColor: "#6456d6",
       defaultEdgeColor: "#8794a8",
       labelFont: "Inter, ui-sans-serif, system-ui, sans-serif",
-      labelRenderedSizeThreshold: 7,
-      stagePadding: 28,
+      labelSize: 10,
+      labelRenderedSizeThreshold: 0,
+      labelDensity: .7,
+      labelGridCellSize: 55,
+      stagePadding: 35,
+      minCameraRatio: .15,
+      maxCameraRatio: 4,
+      zoomDuration: prefersReducedMotion() ? 0 : 120,
+      doubleClickZoomingDuration: prefersReducedMotion() ? 0 : 120,
+      defaultDrawNodeLabel: drawGraphNodeLabel,
+      defaultDrawNodeHover: drawGraphNodeLabel,
       nodeReducer(node, data) {
-        if (!state.graph.hasNode(node) || state.graph.getNodeAttribute(node, "status") !== "active") {
+        if (!graphVisibleNodeKeys.has(node) || !state.graph.hasNode(node) || state.graph.getNodeAttribute(node, "status") !== "active") {
           return { ...data, hidden: true };
         }
-        if (node !== selectedGraphNodeKey) return data;
+        const selected = node === selectedGraphNodeKey;
+        const linked = linkedFocusNodeKeys.has(node)
+          || (selectedGraphEdgeKey && [state.graph.source(selectedGraphEdgeKey), state.graph.target(selectedGraphEdgeKey)].includes(node));
+        const attributes = state.graph.getNodeAttributes(node);
+        const color = attributes.origin === "reader" ? "#267c69"
+          : attributes.origin === "agent" ? "#c7513b" : attributes.authority === "document_structure" ? "#718598" : "#6456d6";
         return {
           ...data,
-          color: "#f06449",
-          highlighted: true,
-          size: Math.max(Number(data.size) || 8, 10),
-          zIndex: 2,
+          label: graphDisplayLabel(attributes.label || node, { maxLength: 32 }),
+          color,
+          viewSelected: selected,
+          highlighted: selected || linked,
+          forceLabel: selected || linked,
+          size: selected ? 8 : attributes.kind === "paper" ? 7 : linked ? 6 : 4.5,
+          zIndex: selected ? 3 : linked ? 2 : 1,
         };
       },
       edgeReducer(edge, data) {
         if (!state.graph.hasEdge(edge)) return { ...data, hidden: true };
         const source = state.graph.source(edge);
         const target = state.graph.target(edge);
-        const hidden = state.graph.getEdgeAttribute(edge, "status") !== "active"
+        const hidden = !graphVisibleEdgeKeys.has(edge) || state.graph.getEdgeAttribute(edge, "status") !== "active"
           || state.graph.getNodeAttribute(source, "status") !== "active"
           || state.graph.getNodeAttribute(target, "status") !== "active";
-        return hidden ? { ...data, hidden: true } : data;
+        const emphasized = edge === selectedGraphEdgeKey || linkedFocusEdgeKeys.has(edge)
+          || source === selectedGraphNodeKey || target === selectedGraphNodeKey;
+        return hidden ? { ...data, hidden: true } : { ...data, size: emphasized ? 1.8 : .7,
+          color: emphasized ? "#a93625" : "#b9b2c9", zIndex: emphasized ? 2 : 0 };
       },
     });
     sigmaGraph = state.graph;
     bindSigmaInteractions(sigmaRenderer);
+    if (preservedBounds) {
+      graphViewportBounds = preservedBounds;
+      sigmaRenderer.setCustomBBox(preservedBounds);
+      if (cameraState) sigmaRenderer.getCamera().setState(cameraState);
+      sigmaRenderer.refresh();
+    } else fitGraphView();
+    elements.graphVisualFallback.hidden = true;
     elements.rendererStatus.textContent = "Sigma active + outline";
     recordActivity("sigma_renderer_ready", { status: SPIKE_VERSIONS.sigma });
   } catch (error) {
     disposeSigma();
     elements.rendererStatus.textContent = "Accessible outline fallback";
+    showGraphFallback("The visual map could not render. Use the complete outline: sources, relationships and keyboard controls still work.");
     recordActivity("sigma_renderer_fallback", { status: error?.name || "error" });
   }
 }
 
+function showGraphFallback(message) {
+  elements.graphVisualFallback.textContent = message;
+  elements.graphVisualFallback.hidden = false;
+  elements.graphOutlineDetails.open = true;
+}
+
 let lastInteractionRenderStamp = null;
+
+function workspaceInteractionAvailable(element) {
+  if (!element?.isConnected || element.disabled || element.closest("[hidden], [inert]")) return false;
+  for (let ancestor = element.parentElement; ancestor; ancestor = ancestor.parentElement) {
+    if (ancestor.tagName !== "DETAILS" || ancestor.open) continue;
+    // A closed details exposes only its own summary. Check every ancestor:
+    // an inner summary is still hidden when an outer disclosure is closed.
+    const summary = ancestor.querySelector(":scope > summary");
+    if (!summary?.contains(element)) return false;
+  }
+  return true;
+}
 
 function workspaceInteractionTargets() {
   const targets = [];
-  for (const region of [elements.paperStructureList, elements.criticalIdeaList, elements.graphOutline,
+  for (const region of [elements.paperStructureList, elements.criticalIdeaList, elements.graphOutline, elements.graphSelectionDetail,
     elements.annotationList, elements.graphSearchResults, elements.mentorExplanationBody]) {
     for (const element of region.querySelectorAll("button, summary, [tabindex]")) {
       const row = element.closest("[data-annotation-id]") || element.closest("[data-mentor-section-key]")
-        || element.closest("li[data-graph-node-key]") || element.closest("[data-graph-node-key]");
+        || element.closest("li[data-interaction-key]") || element.closest("li[data-graph-node-key]")
+        || element.closest("[data-graph-node-key]") || element.closest("[data-interaction-key]");
       const rowKey = row?.dataset.annotationId || row?.dataset.graphNodeKey || row?.dataset.interactionKey || row?.dataset.mentorSectionKey
         || element.dataset.interactionKey || element.id;
       if (!rowKey) continue;
       const action = element.dataset.interactionKey || element.dataset.reorderDirection
         || (element.dataset.removeAnnotation ? "remove-annotation" : null)
         || (element === row ? "card" : element.tagName === "SUMMARY" ? "disclosure" : element.textContent);
-      const closedDisclosure = element.closest("details:not([open])");
       targets.push({
         key: JSON.stringify([region.id, rowKey, action]),
         regionKey: region.id,
         rowKey,
-        available: !element.disabled && !element.closest("[hidden], [inert]")
-          && (!closedDisclosure || closedDisclosure.querySelector(":scope > summary") === element),
+        available: workspaceInteractionAvailable(element),
         element,
       });
     }
+  }
+  for (const element of [...elements.graphNudgeButtons, elements.graphLayoutReset]) {
+    const action = element.dataset.graphNudge ? `nudge:${element.dataset.graphNudge}` : "reset-layout";
+    targets.push({
+      key: JSON.stringify([elements.graphVisualWorkspace.id, "arrangement", action]),
+      regionKey: elements.graphVisualWorkspace.id,
+      rowKey: "arrangement",
+      available: workspaceInteractionAvailable(element),
+      element,
+    });
   }
   return targets;
 }
@@ -1648,11 +2273,13 @@ function captureWorkspaceInteraction() {
 }
 
 function restoreWorkspaceInteraction(previous) {
-  if (!previous.bookmark || (previous.element?.isConnected && !previous.element.disabled)) return;
+  if (!previous.bookmark || workspaceInteractionAvailable(previous.element)) return;
   // Do not override an intentional focus change made elsewhere during rendering.
   if (document.activeElement && document.activeElement !== document.body && document.activeElement !== previous.element) return;
   const targets = workspaceInteractionTargets();
-  const key = resolveFocusBookmark(previous.bookmark, targets);
+  const disabledArrangement = previous.bookmark.target.regionKey === elements.graphVisualWorkspace.id
+    && previous.element?.disabled;
+  const key = disabledArrangement ? null : resolveFocusBookmark(previous.bookmark, targets);
   const target = targets.find((entry) => entry.key === key)?.element;
   if (target) {
     target.focus({ preventScroll: true });
@@ -1695,7 +2322,7 @@ function renderState() {
     renderCriticalIdeaMap();
     renderGraphOutline();
     renderAnnotations();
-    if (elements.graphSearchQuery.value.trim()) renderGraphSearch();
+    if (elements.graphSearchQuery.value.trim() || elements.graphFilterKind.value || elements.graphFilterAuthority.value) renderGraphSearch();
     renderSigma();
   }
   if (refresh.mentor) renderMentorExplanation();
@@ -1707,6 +2334,10 @@ function renderState() {
 function instrumentTools(rawTools) {
   return instrumentWebmcpTools(rawTools, {
     async beforeExecute({ tool, input }) {
+      if (tool.name === "paperpilot.focus_source") {
+        invalidateGraphNavigation();
+        graphToolNavigationGenerations.set(input, graphNavigationGeneration);
+      }
       recordActivity("webmcp_request_reached_page", { actor: "WebMCP caller", toolName: tool.name });
       await ensureAnchorVisible(resolveObservedAnchor(state, tool.name, input, {}), {
         moveKeyboardFocus: false,
@@ -1733,7 +2364,10 @@ function instrumentTools(rawTools) {
       ) {
         markSnapshotDirty();
       }
-      if (tool.name === "paperpilot.focus_source" && result?.status === "focused") markSnapshotDirty();
+      if (tool.name === "paperpilot.focus_source" && result?.status === "focused") {
+        synchronizeGraphToolNavigation(input, result);
+        markSnapshotDirty();
+      }
       if (tool.name === "paperpilot.stage_explain" && result?.status === "staged") {
         elements.mentorExplanationStatus.textContent = "Explanation ready for your review. Save or discard it; the browser agent cannot make that decision.";
         elements.agentAnnouncement.textContent = "A source-grounded mentor explanation is ready for human review.";
@@ -2182,27 +2816,29 @@ async function captureReaderSelection({ announceFailure = false } = {}) {
 function renderGraphSearch(query = elements.graphSearchQuery.value) {
   elements.graphSearchResults.replaceChildren();
   const normalizedQuery = normalizeGraphSearchText(query);
-  if (!normalizedQuery) {
-    elements.graphSearchStatus.textContent = "Showing the whole map.";
+  const kind = elements.graphFilterKind.value;
+  const authority = elements.graphFilterAuthority.value;
+  if (!normalizedQuery && !kind && !authority) {
+    elements.graphSearchStatus.textContent = "Search uses the same label-and-summary matching as WebMCP.";
     return;
   }
   const matches = state.graph.nodes()
     .map((key) => ({ key, attributes: state.graph.getNodeAttributes(key) }))
     .filter(({ attributes }) => attributes.status === "active")
+    .filter(({ attributes }) => (!kind || attributes.kind === kind) && (!authority || attributes.authority === authority))
     .map(({ key, attributes }) => {
       const label = normalizeGraphSearchText(attributes.label);
       const summary = normalizeGraphSearchText(attributes.summary);
-      const rank = label === normalizedQuery ? 0 : label.startsWith(normalizedQuery) ? 1 : label.includes(normalizedQuery) ? 2 : summary.includes(normalizedQuery) ? 3 : -1;
+      const rank = !normalizedQuery ? 0 : label === normalizedQuery ? 0 : label.startsWith(normalizedQuery) ? 1 : label.includes(normalizedQuery) ? 2 : summary.includes(normalizedQuery) ? 3 : -1;
       return { key, attributes, rank };
     })
     .filter(({ rank }) => rank >= 0)
-    .sort((left, right) => left.rank - right.rank || left.key.localeCompare(right.key))
-    .slice(0, 20);
+    .sort((left, right) => left.rank - right.rank || left.key.localeCompare(right.key));
 
   elements.graphSearchStatus.textContent = matches.length
-    ? `${matches.length} matching ${matches.length === 1 ? "node" : "nodes"}. WebMCP can run the same search with read_graph mode search.`
+    ? `${matches.length} matching ${matches.length === 1 ? "node" : "nodes"}${matches.length > 20 ? " · first 20 shown; refine your search" : ""}. Same filters and matching as WebMCP.`
     : "No label or summary matches in the current paper graph.";
-  for (const { key, attributes } of matches) {
+  for (const { key, attributes } of matches.slice(0, 20)) {
     const item = document.createElement("li");
     item.dataset.graphNodeKey = key;
     const summary = document.createElement("span");
@@ -2223,9 +2859,7 @@ function renderGraphSearch(query = elements.graphSearchQuery.value) {
       button.type = "button";
       button.textContent = "Go to source";
       button.addEventListener("click", async () => {
-        state.focusAnchorId = anchorId;
-        recordActivity("graph_search_source_focused", { actor: "human", status: key });
-        await ensureAnchorVisible(anchorId, { moveKeyboardFocus: true, scrollIntoView: true });
+        await focusGraphNodeEvidence(key);
       });
       actions.append(button);
     }
@@ -2250,7 +2884,8 @@ function nudgeSelectedGraphNode(direction) {
     down: { x: 0, y: 24 },
     right: { x: 24, y: 0 },
   }[direction];
-  let next = nudgeGraphPosition(current, direction);
+  const fallbackDirection = direction === "up" ? "down" : direction === "down" ? "up" : direction;
+  let next = nudgeGraphPosition(current, fallbackDirection);
   if (sigmaRenderer && viewportDelta) {
     const viewport = sigmaRenderer.graphToViewport(current);
     next = clampGraphPosition(sigmaRenderer.viewportToGraph({
@@ -2270,6 +2905,22 @@ function currentDraggedAnnotationNode() {
   return currentNodeKey === draggedAnnotationNodeKey ? currentNodeKey : null;
 }
 
+function showGraphRailView(view, { focus = false } = {}) {
+  if (!["map", "annotations", "evidence"].includes(view)) return;
+  activeRailView = view;
+  for (const button of elements.graphRailTabs) {
+    const selected = button.dataset.railTab === view;
+    button.setAttribute("aria-selected", String(selected));
+    button.tabIndex = selected ? 0 : -1;
+    byId(button.getAttribute("aria-controls")).hidden = !selected;
+    if (selected && focus) button.focus();
+  }
+  elements.graphVisualWorkspace.hidden = view === "evidence";
+  elements.graphSelection.hidden = view === "evidence";
+  document.querySelector(".graph-rail-body").scrollTop = 0;
+  if (view !== "evidence") requestAnimationFrame(() => renderSigma());
+}
+
 function recordHumanEvidenceEvent(eventType, details = {}) {
   const record = {
     eventId: state.id("event"),
@@ -2285,6 +2936,31 @@ function recordHumanEvidenceEvent(eventType, details = {}) {
 }
 
 function wireHumanControls() {
+  for (const tab of elements.graphRailTabs) {
+    tab.addEventListener("click", () => showGraphRailView(tab.dataset.railTab));
+    tab.addEventListener("keydown", (event) => {
+      const index = elements.graphRailTabs.indexOf(tab);
+      const next = event.key === "ArrowRight" ? (index + 1) % 3 : event.key === "ArrowLeft" ? (index + 2) % 3
+        : event.key === "Home" ? 0 : event.key === "End" ? 2 : null;
+      if (next === null) return;
+      event.preventDefault();
+      showGraphRailView(elements.graphRailTabs[next].dataset.railTab, { focus: true });
+    });
+  }
+  for (const [button, mode] of [[elements.graphViewFocus, "focus"], [elements.graphViewAll, "all"]]) {
+    button.addEventListener("click", () => {
+      graphViewMode = mode;
+      reconcileGraphPresentation();
+      fitGraphView();
+      elements.graphLayoutStatus.textContent = mode === "all" && graphView.counts.activeNodes > 60
+        ? "The visual overview is limited to 60 nodes. The complete outline keeps every node and relationship available."
+        : "Map density changed. Source anchors and WebMCP facts are unchanged.";
+    });
+  }
+  elements.graphFit.addEventListener("click", () => fitGraphView());
+  for (const filter of [elements.graphFilterKind, elements.graphFilterAuthority]) {
+    filter.addEventListener("change", () => renderGraphSearch());
+  }
   for (const button of document.querySelectorAll("[data-focus-anchor]")) {
     button.addEventListener("click", async () => {
       const anchorId = button.dataset.focusAnchor;
@@ -2512,6 +3188,8 @@ function wireHumanControls() {
   });
   elements.clearGraphSearch.addEventListener("click", () => {
     elements.graphSearchQuery.value = "";
+    elements.graphFilterKind.value = "";
+    elements.graphFilterAuthority.value = "";
     renderGraphSearch("");
     elements.graphSearchQuery.focus();
   });
@@ -2520,8 +3198,16 @@ function wireHumanControls() {
     button.addEventListener("click", () => nudgeSelectedGraphNode(button.dataset.graphNudge));
   }
   elements.graphLayoutReset.addEventListener("click", resetGraphLayout);
+  window.addEventListener("blur", () => { finishGraphNodeDrag(); finishAnnotationDrag(); });
+  window.addEventListener("pointermove", moveAnnotationPointerDrag, { passive: false });
+  window.addEventListener("pointerup", (event) => { finishGraphNodeDrag(); finishAnnotationPointerDrag(event); });
+  window.addEventListener("pointercancel", cancelAnnotationPointerDrag);
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") { finishGraphNodeDrag(); finishAnnotationDrag(); }
+  });
 
   elements.graphCanvasShell.addEventListener("dragover", (event) => {
+    if (annotationPointerDrag) return;
     const nodeKey = currentDraggedAnnotationNode();
     if (!nodeKey || !sigmaRenderer) return;
     event.preventDefault();
@@ -2534,20 +3220,12 @@ function wireHumanControls() {
     elements.graphCanvasShell.classList.remove("is-drop-target");
   });
   elements.graphCanvasShell.addEventListener("drop", (event) => {
+    if (annotationPointerDrag) return;
     const nodeKey = currentDraggedAnnotationNode();
     if (!nodeKey || !sigmaRenderer) return;
     event.preventDefault();
-    const bounds = elements.sigmaContainer.getBoundingClientRect();
-    const position = sigmaRenderer.viewportToGraph({
-      x: event.clientX - bounds.left,
-      y: event.clientY - bounds.top,
-    });
-    const annotation = state.annotations.get(draggedAnnotationId);
-    const body = annotation?.body || annotation?.label || draggedAnnotationId;
-    selectGraphNode(nodeKey, { announce: false });
-    setGraphNodePosition(nodeKey, position);
-    elements.annotationLayoutStatus.textContent = `Placed the linked idea for “${body}” in the map. The PDF annotation itself did not move.`;
-    finishAnnotationDrag();
+    try { placeDraggedAnnotationNode(event.clientX, event.clientY); }
+    finally { finishAnnotationDrag(); }
   });
 
   elements.humanUndo.addEventListener("click", async () => {
@@ -2799,22 +3477,20 @@ async function boot({ pdfFile = null } = {}) {
       activity.push(event);
       renderActivity();
     },
-    async onNavigate(anchor) {
-      recordActivity("navigation_callback_observed", { actor: "page", status: anchor.anchorId });
-      await ensureAnchorVisible(anchor.anchorId, { moveKeyboardFocus: false, scrollIntoView: true });
-    },
+    onNavigate: navigateObservedPaperSource,
     onStateChange() {
       renderState();
     },
   });
-  if (state.graph.hasNode("node:paper")) {
-    state.graph.mergeNodeAttributes("node:paper", { x: 0, y: -1.6, size: 16 });
-  }
-  for (const position of paperAnalysis.layout.positions) {
-    if (!state.graph.hasNode(position.nodeKey)) continue;
-    state.graph.mergeNodeAttributes(position.nodeKey, { x: position.x, y: position.y });
-  }
   const restoredWorkspace = await restoreBrowserWorkspace();
+  if (restoredWorkspace.status === "restored") {
+    // Existing browser preferences stay intact. Reset layout opts into the new seed.
+    state.graph.forEachNode((key, attributes) => {
+      if (Number.isFinite(attributes.x) && Number.isFinite(attributes.y)) {
+        graphLayoutPositions.set(key, clampGraphPosition(attributes));
+      }
+    });
+  }
   let groundedCount = 0;
   for (const seeded of state.automaticMap?.candidates || []) {
     const anchor = state.anchors.get(seeded.anchorId);

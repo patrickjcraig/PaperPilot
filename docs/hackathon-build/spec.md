@@ -756,6 +756,8 @@ This design deliberately follows Graphology's published [design choices](https:/
 - Use deterministic initial seed positions; optional ForceAtlas2 settles without mutating semantic records.
 - Respect reduced motion and stop layout work when hidden.
 
+The item-6 presentation projection starts with up to 15 key nodes and offers an expanded view capped at 60 nodes and 120 directed edges. These are drawing limits, not semantic limits: visible/total counts stay explicit and the complete outline retains every node and relationship, including tombstoned audit records. Deterministic grouped positions, source-page ordering, full-detail labels, an origin-color legend, and a selection ring replace continuous force-layout motion. Selecting a previously hidden source reveals and frames it; unrelated edits retain the camera and surviving node positions. Source navigation is generation-guarded so an older asynchronous render cannot override a newer reader selection. Node origin colors do not change when a node is selected.
+
 ### Accessible graph outline
 
 The DOM outline is a first-class alternate representation:
@@ -767,6 +769,8 @@ The DOM outline is a first-class alternate representation:
 - arrangement actions: select a node for four-direction keyboard nudging, and reorder annotation cards with focus-preserving earlier/later controls;
 - update announcements after agent mutation, rollback, Undo, and Redo;
 - stable focus restoration when an entity disappears from the active projection.
+
+The right rail exposes Map, Annotations, and Evidence tabs with roving keyboard focus. Graph details expose the complete label, summary, authority, origin, all issued source choices, and directed incoming/outgoing relationships. Expanded entity disclosures and focused controls survive unrelated graph replacement; a disabled arrangement control falls back to the graph heading. Search filters use the same literal label/summary, node-kind, and authority rules as `paperpilot.read_graph`. Arrangement has no canonical provenance event, entity revision, or semantic digest of its own.
 
 ## WebMCP Tool Contracts
 

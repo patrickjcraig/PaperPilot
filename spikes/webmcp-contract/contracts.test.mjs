@@ -1313,6 +1313,78 @@ test("requires provenance reads before staging and supports source focus without
   });
 });
 
+test("focus_source reports distinct node and edge alternatives while preserving each declared primary", async () => {
+  const navigations = [];
+  const state = await createFixture({ onNavigate: (anchor) => { navigations.push(anchor.anchorId); } });
+  state.graph.mergeNodeAttributes("node:concept:attention", {
+    sourceAnchorIds: ["anchor:text:attention", "anchor:visual:a"],
+  });
+  state.graph.mergeEdgeAttributes("edge:introduction:attention", {
+    sourceAnchorIds: ["anchor:visual:a", "anchor:text:attention", "anchor:visual:b"],
+  });
+  const before = JSON.stringify({ graph: state.graph.export(), anchors: [...state.anchors], revision: state.workspaceRevision,
+    workspaceDigest: state.workspaceDigest, graphDigest: state.graphDigest, annotationDigest: state.annotationDigest });
+  const tool = toolsFor(state).get("paperpilot.focus_source");
+  const nodeResult = await tool.execute({ targetType: "node", targetId: "node:concept:attention" });
+  assert.equal(nodeResult.status, "focused");
+  assert.equal(nodeResult.anchorId, "anchor:text:attention");
+  assert.equal(nodeResult.alternativeCount, 1);
+  const edgeResult = await tool.execute({ targetType: "edge", targetId: "edge:introduction:attention" });
+  assert.equal(edgeResult.status, "focused");
+  assert.equal(edgeResult.anchorId, "anchor:visual:a");
+  assert.equal(edgeResult.alternativeCount, 2);
+  assert.deepEqual(navigations, ["anchor:text:attention", "anchor:visual:a"]);
+  assert.equal(JSON.stringify({ graph: state.graph.export(), anchors: [...state.anchors], revision: state.workspaceRevision,
+    workspaceDigest: state.workspaceDigest, graphDigest: state.graphDigest, annotationDigest: state.annotationDigest }), before);
+});
+
+test("focus_source includes every structural coverage source without changing the first covered range", async () => {
+  const state = await createFixture({ structuralMap: structuralMapFixture() });
+  const [first, second, third] = state.structuralMap.nodes;
+  const ranges = [first, second, third].map(({ key }) => state.graph.getNodeAttributes(key).structuralCoverage[0]);
+  state.graph.mergeNodeAttributes(first.key, { sourceAnchorIds: [], structuralCoverage: ranges });
+  const focused = await toolsFor(state).get("paperpilot.focus_source").execute({ targetType: "section", targetId: first.key });
+  assert.equal(focused.status, "focused");
+  assert.equal(focused.anchorId, first.anchorId);
+  assert.equal(focused.alternativeCount, 2);
+  assert.deepEqual(focused.coveredPageRange, { startPageIndex: first.startPageIndex, endPageIndex: first.endPageIndex });
+});
+
+test("focus_source deduplicates direct/structural alternatives and excludes unavailable or foreign choices", async () => {
+  const state = await createFixture();
+  const foreign = { ...state.anchors.get("anchor:visual:b"), anchorId: "anchor:foreign", paperRef: "paper:foreign" };
+  state.anchors.set(foreign.anchorId, foreign);
+  state.graph.mergeNodeAttributes("node:concept:attention", {
+    sourceAnchorIds: ["anchor:text:attention", "anchor:visual:a", "anchor:visual:a", "anchor:missing", "anchor:foreign"],
+    structuralCoverage: [
+      { startPageIndex: 0, endPageIndex: 0, primaryAnchorId: "anchor:visual:a" },
+      { startPageIndex: 0, endPageIndex: 0, primaryAnchorId: "anchor:page:1" },
+      { startPageIndex: 0, endPageIndex: 0, primaryAnchorId: "anchor:text:attention" },
+      { startPageIndex: 0, endPageIndex: 0, primaryAnchorId: "anchor:page:1" },
+    ],
+  });
+  const tool = toolsFor(state).get("paperpilot.focus_source");
+  const focused = await tool.execute({ targetType: "node", targetId: "node:concept:attention" });
+  assert.equal(focused.status, "focused");
+  assert.equal(focused.anchorId, "anchor:text:attention");
+  assert.equal(focused.alternativeCount, 2);
+  assert.equal(JSON.stringify(focused).includes("anchor:foreign"), false);
+  const direct = await tool.execute({ targetType: "anchor", targetId: "anchor:text:attention" });
+  assert.equal(direct.status, "focused");
+  assert.equal(direct.alternativeCount, 0);
+});
+
+test("focus_source still rejects an unavailable primary instead of silently navigating an alternative", async () => {
+  const navigations = [];
+  const state = await createFixture({ onNavigate: (anchor) => { navigations.push(anchor.anchorId); } });
+  state.graph.mergeNodeAttributes("node:concept:attention", { sourceAnchorIds: ["anchor:missing", "anchor:text:attention"] });
+  const result = await toolsFor(state).get("paperpilot.focus_source").execute({ targetType: "node", targetId: "node:concept:attention" });
+  assert.equal(result.status, "rejected");
+  assert.equal(result.code, "not_found_in_active_paper");
+  assert.deepEqual(navigations, []);
+  assert.equal(state.events.filter(({ eventType }) => eventType === "source_focused").length, 0);
+});
+
 test("applies reversible graph and annotation commands against current digests", async () => {
   const state = await createFixture();
   const tools = toolsFor(state);

@@ -140,8 +140,15 @@ test("composition uses one state-change render and keeps arrangement separate fr
   for (const name of ["renderGraphOutline", "renderGraphSearch"]) {
     const start = source.indexOf(`function ${name}(`);
     const body = source.slice(start, source.indexOf("\nfunction ", start + 1));
-    assert.match(body, /arrangeButton\.addEventListener\("click", \(\) => selectGraphNode\(key\)\)/u);
-    assert.doesNotMatch(body, /focusGraphNodeEvidence\(key\)/u);
-    assert.match(body, /ensureAnchorVisible\(/u);
+    const arrangeControl = /([A-Za-z_$][\w$]*)\.textContent = "Arrange this node";/u.exec(body)?.[1];
+    assert.ok(arrangeControl, `${name} must expose a distinct Arrange control.`);
+    assert.ok(body.includes(`${arrangeControl}.addEventListener("click", () => selectGraphNode(key));`),
+      `${name}'s Arrange handler must only select the exact node, not navigate its PDF source.`);
+    assert.match(body, /focusGraphNodeEvidence\(key\)/u,
+      `${name} must retain a separate source-navigation action.`);
   }
+  const selection = /function selectGraphNode\([^]*?\n\}/u.exec(source)?.[0];
+  assert.ok(selection, "The Arrange selection entry point must exist.");
+  assert.doesNotMatch(selection, /ensureAnchorVisible\(|focusGraphNodeEvidence\(|state\.focusAnchorId\s*=/u,
+    "Selecting a node for arrangement must not move the PDF focus.");
 });

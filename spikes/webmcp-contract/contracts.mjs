@@ -1692,7 +1692,7 @@ function graphNodeSearchRank(attributes, normalizedQuery) {
   return null;
 }
 
-function graphNodeReferencesAnchor(attributes, anchorId) {
+export function graphNodeReferencesAnchor(attributes, anchorId) {
   return attributes.sourceAnchorIds?.includes(anchorId)
     || attributes.structuralCoverage?.some((coverage) => coverage.primaryAnchorId === anchorId)
     || false;
@@ -2842,6 +2842,7 @@ export function createToolSuite(state) {
       assertClosedObject(input, new Set(["targetType", "targetId"]), ["targetType", "targetId"], "focus_source_invalid");
       assertString(input.targetType, { values: ["anchor", "node", "edge", "section"] }, "focus_source_invalid");
       let anchor;
+      let alternativeCount = 0;
       let coveredPageRange = null;
       if (input.targetType === "anchor") {
         anchor = assertCurrentAnchor(state, input.targetId);
@@ -2861,6 +2862,20 @@ export function createToolSuite(state) {
         const anchorId = attributes.sourceAnchorIds?.[0] || attributes.structuralCoverage?.[0]?.primaryAnchorId;
         if (!anchorId) throw new ContractError("not_navigable", "This graph item has no compatible active-paper source.");
         anchor = assertCurrentAnchor(state, anchorId);
+        const sourceChoices = new Set([
+          ...(attributes.sourceAnchorIds || []),
+          ...(attributes.structuralCoverage || []).map((range) => range.primaryAnchorId),
+        ]);
+        sourceChoices.delete(anchor.anchorId);
+        // Count only choices the same current-paper navigation boundary admits.
+        // The existing first-source policy stays stable; a broken primary still
+        // fails closed, and missing/foreign alternatives disclose no extra data.
+        for (const sourceId of sourceChoices) {
+          try {
+            assertCurrentAnchor(state, sourceId);
+            alternativeCount += 1;
+          } catch { /* Unavailable choices are not advertised as navigable sources. */ }
+        }
       }
       state.focusAnchorId = anchor.anchorId;
       await state.onNavigate(anchor);
@@ -2875,7 +2890,7 @@ export function createToolSuite(state) {
         anchorId: anchor.anchorId,
         pageIndex: anchor.pageIndex,
         pageLabel: anchor.pageLabel,
-        alternativeCount: 0,
+        alternativeCount,
         ...(coveredPageRange ? { coveredPageRange } : {}),
       };
     }),

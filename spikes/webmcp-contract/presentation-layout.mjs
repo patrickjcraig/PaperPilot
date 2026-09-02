@@ -164,8 +164,8 @@ export function nudgeGraphPosition(position, direction, options = {}) {
     ? normalizeBounds(options.bounds)
     : DEFAULT_GRAPH_BOUNDS;
   const current = clampGraphPosition(position, bounds);
+  if (typeof direction !== "string" || !Object.hasOwn(DIRECTION_DELTAS, direction)) return current;
   const delta = DIRECTION_DELTAS[direction];
-  if (!delta) return current;
 
   const suppliedStep = isRecord(options) && Object.hasOwn(options, "step");
   const step = suppliedStep ? options.step : DEFAULT_GRAPH_NUDGE;

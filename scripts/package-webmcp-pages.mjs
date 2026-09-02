@@ -14,6 +14,7 @@ const demoFiles = Object.freeze([
   "app.mjs",
   "browser-snapshot.mjs",
   "contracts.mjs",
+  "graph-view-model.mjs",
   "interaction-state.mjs",
   "mentor-review.mjs",
   "paper-analysis.mjs",

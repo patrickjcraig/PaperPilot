@@ -18,6 +18,7 @@
   "include": [
     "spikes/webmcp-contract/accessibility-projection.mjs",
     "spikes/webmcp-contract/activity-ledger.mjs",
+    "spikes/webmcp-contract/graph-view-model.mjs",
     "spikes/webmcp-contract/interaction-state.mjs",
     "spikes/webmcp-contract/mentor-review.mjs",
     "spikes/webmcp-contract/spatial-anchor.mjs",
