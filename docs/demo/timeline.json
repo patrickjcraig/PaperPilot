@@ -1,0 +1,89 @@
+{
+  "schemaVersion": 1,
+  "sourceCommit": "9dd6bd561b3fc628907e797442a252b5a8012379",
+  "releaseFingerprint": "a0d5f6636b0eace96e04011526450f0942a6a797ee5d8fafda9faf2bbf8b7167",
+  "targetDurationSeconds": 150,
+  "disclosure": "Edited live capture · timing compressed · synthetic narration",
+  "scenes": [
+    {
+      "id": 1,
+      "outputStartSeconds": 0,
+      "targetSeconds": 15,
+      "recordedSeconds": 25.456,
+      "timingScale": 0.5892520427404149,
+      "paddingSeconds": 0,
+      "frameCount": 40,
+      "narrationSeconds": 10.0445
+    },
+    {
+      "id": 2,
+      "outputStartSeconds": 15,
+      "targetSeconds": 18,
+      "recordedSeconds": 21.308,
+      "timingScale": 0.8447531443589262,
+      "paddingSeconds": 0,
+      "frameCount": 22,
+      "narrationSeconds": 14.8195
+    },
+    {
+      "id": 3,
+      "outputStartSeconds": 33,
+      "targetSeconds": 20,
+      "recordedSeconds": 51.683,
+      "timingScale": 0.38697444033821565,
+      "paddingSeconds": 0,
+      "frameCount": 40,
+      "narrationSeconds": 13.6695
+    },
+    {
+      "id": 4,
+      "outputStartSeconds": 53,
+      "targetSeconds": 22,
+      "recordedSeconds": 69.978,
+      "timingScale": 0.3143845208494098,
+      "paddingSeconds": 0,
+      "frameCount": 177,
+      "narrationSeconds": 16.5895
+    },
+    {
+      "id": 5,
+      "outputStartSeconds": 75,
+      "targetSeconds": 22,
+      "recordedSeconds": 24.931,
+      "timingScale": 0.8824355220408326,
+      "paddingSeconds": 0,
+      "frameCount": 27,
+      "narrationSeconds": 16.2095
+    },
+    {
+      "id": 6,
+      "outputStartSeconds": 97,
+      "targetSeconds": 18,
+      "recordedSeconds": 19.011,
+      "timingScale": 0.9468202619536058,
+      "paddingSeconds": 0,
+      "frameCount": 59,
+      "narrationSeconds": 13.2145
+    },
+    {
+      "id": 7,
+      "outputStartSeconds": 115,
+      "targetSeconds": 14.5,
+      "recordedSeconds": 19.505,
+      "timingScale": 0.7433991284286081,
+      "paddingSeconds": 0,
+      "frameCount": 32,
+      "narrationSeconds": 12.1245
+    },
+    {
+      "id": 8,
+      "outputStartSeconds": 129.5,
+      "targetSeconds": 20.5,
+      "recordedSeconds": 30.016,
+      "timingScale": 0.6829690831556504,
+      "paddingSeconds": 0,
+      "frameCount": 50,
+      "narrationSeconds": 20.2895
+    }
+  ]
+}

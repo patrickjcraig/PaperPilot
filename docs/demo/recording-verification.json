@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "sourceCommit": "9dd6bd561b3fc628907e797442a252b5a8012379",
+  "releaseFingerprint": "a0d5f6636b0eace96e04011526450f0942a6a797ee5d8fafda9faf2bbf8b7167",
+  "captureManifestSha256": "1f89fafdcab950fd2e2de946ac0113533353d9a483da60ab509155127b591b14",
+  "videoSha256": "49501c8cc61a692272823cdeb46df621717f444fdccbd72f01c6eac70c302a05",
+  "captionsSha256": "246975f175631df4cd534b75cf40ebd2069d5457224a49c2e2e759521c439df2",
+  "videoBytes": 6132064,
+  "durationSeconds": 150,
+  "nativeCapture": {
+    "format": "jpeg",
+    "width": 1265,
+    "height": 712,
+    "frameCount": 447,
+    "elapsedSeconds": 261.888
+  },
+  "encodedVideo": {
+    "codec_name": "h264",
+    "codec_type": "video",
+    "width": 1266,
+    "height": 812,
+    "pix_fmt": "yuv420p",
+    "color_range": "tv",
+    "avg_frame_rate": "24/1",
+    "duration": "150.000000"
+  },
+  "encodedAudio": {
+    "codec_name": "aac",
+    "codec_type": "audio",
+    "sample_rate": "48000",
+    "channels": 1,
+    "avg_frame_rate": "0/0",
+    "duration": "150.000000"
+  },
+  "disclosure": "Edited live capture · timing compressed · synthetic narration",
+  "subtitleTiming": "Approximate word-proportional timing within unchanged synthetic narration blocks",
+  "pixelTreatment": "No crop or resize; append caption footer and at most one right/bottom pixel for even H264 dimensions",
+  "originalScreenshotsPreserved": true
+}

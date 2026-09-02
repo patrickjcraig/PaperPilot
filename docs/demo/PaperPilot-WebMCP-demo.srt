@@ -1,0 +1,114 @@
+1
+00:00:00,000 --> 00:00:05,208
+Your first hard paper can feel like a
+wall of unfamiliar words. PaperPilot keeps
+
+2
+00:00:05,208 --> 00:00:10,045
+the paper in view and turns your questions
+into a source-linked learning map.
+
+3
+00:00:15,000 --> 00:00:20,230
+This is our rehearsed Attention
+Is All You Need demo, not an
+
+4
+00:00:20,230 --> 00:00:25,025
+unseen-paper test. The real PDF scrolls
+continuously. Its automatic map covers
+
+5
+00:00:25,025 --> 00:00:29,819
+document structure; it does not
+mean an agent understood every page.
+
+6
+00:00:33,000 --> 00:00:37,825
+I highlight the passage I want
+explained, give it a question, and
+
+7
+00:00:37,825 --> 00:00:42,247
+add that highlight to the graph.
+The annotation starts with me,
+
+8
+00:00:42,247 --> 00:00:46,670
+on the paper. Its text and location
+become an immutable source.
+
+9
+00:00:53,000 --> 00:00:58,688
+Now the browser agent uses six
+bounded WebMCP tools to read my
+
+10
+00:00:58,688 --> 00:01:04,376
+focus, inspect the graph, navigate sources,
+stage explanations, and edit graph ideas
+
+11
+00:01:04,376 --> 00:01:09,590
+and annotations. These receipts show
+actual calls, not just registered tools.
+
+12
+00:01:15,000 --> 00:01:20,558
+The agent adds a linked concept and
+question. Selecting the idea takes
+
+13
+00:01:20,558 --> 00:01:26,115
+me back to the source. Its explanation
+separates the paper’s evidence from
+
+14
+00:01:26,115 --> 00:01:31,209
+teaching examples, interpretation, and
+uncertainty. Save or discard remains my choice.
+
+15
+00:01:37,000 --> 00:01:41,689
+If an edit does not help,
+I press Undo. Redo brings
+
+16
+00:01:41,689 --> 00:01:45,952
+it back. The graph and annotations
+change visibly, and their
+
+17
+00:01:45,952 --> 00:01:50,215
+recorded digests return to the
+expected state without erasing history.
+
+18
+00:01:55,000 --> 00:01:59,302
+For figures, I can describe
+a page region and connect it
+
+19
+00:01:59,302 --> 00:02:03,213
+to the map. This is locator-only
+evidence: it identifies where
+
+20
+00:02:03,213 --> 00:02:07,125
+to look, not proof that the
+agent inspected the pixels.
+
+21
+00:02:09,500 --> 00:02:16,263
+PaperPilot is browser-local, keeps original
+PDF bytes unchanged, and offers no PDF
+
+22
+00:02:16,263 --> 00:02:23,026
+export. The evidence trail records what happened,
+not scientific truth. Human accessibility
+
+23
+00:02:23,026 --> 00:02:29,790
+review is still pending. Read, question,
+connect, and return to the paper.
